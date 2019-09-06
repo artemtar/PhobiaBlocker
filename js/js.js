@@ -3,14 +3,21 @@ const tokenizer = new natural.WordTokenizer();
 const target = ["rodent", "mice", "rat", "beaver", "squirrel"];
 var imageList = [];
 var score = 0;
+const myWorker = new Worker("textAnalizer.js");
+myWorker.postMessage("hello");
 
+var blurAll = function() {
+    imageList.forEach(function(element) {
+        $(element).removeClass("noblur");
+        $(element).addClass("blur");
+    });
+}
 var updateScore = function(val) {
     score += parseInt(val);
     if (score >= 40) {
         blurAll();
     }
 }
-
 var analizeText = function(text, target) {
         var tokens = tokenizer.tokenize(text)
         var cleanWords = tokens
@@ -33,17 +40,17 @@ var analizeText = function(text, target) {
             .normalize()
             .nouns()
             .out('array');
-        // .split(' ');
         targetWords = nlp(target)
             .normalize()
             .out('array');
-        // .split(' ')
         console.log("TARGETS:  " + targetWords.join(" ") +
             "  TOCHECK:  " + wordsToCheck.join(" "));
         const intersection = wordsToCheck
             .filter(element => targetWords.includes(element))
             .filter(n => n);
-        console.log("intersection: " + intersection.join(" "))
+        if (intersection.length > 0) {
+            console.log("intersection: " + intersection.join(" "))
+        }
         return intersection.length;
     }
     // }
@@ -59,18 +66,24 @@ var analizeText = function(text, target) {
     //         }
     //     }
     // }
-    //run on images that are bigger than 10x10
-    //analyze title
-    //new element is analyzed, not whole body
+
+
+//To-DO:
+//run on images that are bigger than 10x10
+//analyze title
+//new element is analyzed, not whole body
+//store targets localy
+//interface for targets
+//concurency for analysis
 
 function checkIfImg(toCheck) {
     let images = toCheck.find('img');
     let tempImgList = [];
     for (let image of images) {
         let imageSource = $(image).attr('src');
+        tempImgList.push(image);
         if (!imageList.includes(image)) {
             imageList.push(image);
-            tempImgList.push(image);
             console.log("pushed: " + imageSource)
         }
     }
@@ -81,12 +94,14 @@ checkIfImg($(document));
 
 var text = $('body').text();
 var title = $('title').text();
+
 var checkTitle = analizeText(title, target);
 if (checkTitle != 0) {
     updateScore(40);
 }
 var countTargetWords = analizeText(text, target);
 if (countTargetWords == 0 && score < 40) {
+    console.log(imageList);
     imageList.forEach(function(element) {
         $(element).addClass("noblur")
     });
@@ -97,9 +112,11 @@ var observer = new MutationObserver(function(mutations) {
     var newTextMutation = [];
     var newImgList = [];
     mutations.forEach(function(mutation) {
-        newImgList.push(checkIfImg($(mutation.target)));
+        newImgList.concat(checkIfImg($(mutation.target)));
         newTextMutation.push($(mutation.target).text());
     });
+    console.log("new imgList: ");
+    console.log(newImgList);
     var countTargetWordsMutation = analizeText(newTextMutation.join(" "), target);
     console.log(countTargetWordsMutation + "newone")
     if (countTargetWordsMutation == 0 && score < 40) {
@@ -107,6 +124,12 @@ var observer = new MutationObserver(function(mutations) {
             $(element).addClass("noblur");
         });
     }
+    //some imges are slow to load, that might help if no target detected
+    // if (countTargetWordsMutation == 0 && score == 0) {
+    //     imageList.forEach(function(element) {
+    //         $(element).addClass("noblur");
+    //     });
+    // }
 });
 observer.observe(document, { childList: true, subtree: true });
 
@@ -116,6 +139,7 @@ document.addEventListener('contextmenu', function(event) {
 }, true);
 chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
     if (lastElementContext && message == "unblur") {
+        $(lastElementContext).removeClass("blur");
         $(lastElementContext).addClass("noblur");
     }
 });
@@ -129,12 +153,7 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
     }
 });
 
-var blurAll = function() {
-    imageList.forEach(function(element) {
-        $(element).removeClass("noblur");
-        $(element).addClass("blur");
-    });
-}
+
 chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
     if (message == "blurAll") {
         blurAll();
