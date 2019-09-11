@@ -1,6 +1,35 @@
+//To-DO:
+//run on images that are bigger than 10x10
+//analyze title(Done)
+//new element is analyzed, not whole body
+//store targets localy
+//interface for targets
+//concurency for analysis
+//intersection counts only one word per dict
+//workers for parral
+
+// }
+//     var backImg;
+//     if (toCheck.is('img')) {
+//         toCheck.addClass("blur");
+//     }
+//     else {
+//         backImg = toCheck.css('background-image');
+//         if (backImg != 'none'){
+//         console.log("back");
+//         toCheck.addClass("blur")
+//         }
+//     }
+// }
+
 const tokenizer = new natural.WordTokenizer();
 // target = ["user", "have", 'jump'];
 const target = ["rodent", "mice", "rat", "beaver", "squirrel"];
+
+chrome.runtime.sendMessage({
+    target: target
+});
+
 var imageList = [];
 var score = 0;
 var inAnalizes = 0;
@@ -53,33 +82,6 @@ var analizeText = function(text, target) {
     return intersection.length;
 }
 
-
-
-// }
-//     var backImg;
-//     if (toCheck.is('img')) {
-//         toCheck.addClass("blur");
-//     }
-//     else {
-//         backImg = toCheck.css('background-image');
-//         if (backImg != 'none'){
-//         console.log("back");
-//         toCheck.addClass("blur")
-//         }
-//     }
-// }
-
-
-//To-DO:
-//run on images that are bigger than 10x10
-//analyze title(Done)
-//new element is analyzed, not whole body
-//store targets localy
-//interface for targets
-//concurency for analysis
-//intersection counts only one word per dict
-//workers for parral
-
 function checkIfImg(toCheck) {
     let images = toCheck.find('img');
     let tempImgList = [];
@@ -92,7 +94,6 @@ function checkIfImg(toCheck) {
             console.log(image);
         }
     }
-    console.log("templist" + tempImgList);
     return tempImgList;
 };
 
@@ -129,26 +130,24 @@ var checkLandingPage = async function() {
             $(element).addClass("noblur");
         });
     }
-    console.log("finished landing");
 }();
 
-console.log("landing")
-
-var observer = new MutationObserver(function(mutations) {
+var observer = new MutationObserver(async function(mutations) {
     var newTextMutation = [];
     var newImgList = [];
     mutations.forEach(function(mutation) {
         newImgList = newImgList.concat(checkIfImg($(mutation.target)));
         newTextMutation.push($(mutation.target).text());
     });
-    console.log("new imgList: ");
-    console.log(newImgList);
-    var countTargetWordsMutation = analizeText(newTextMutation.join(" "), target);
-    console.log(countTargetWordsMutation + "newone")
-    if (countTargetWordsMutation == 0 && score < 40) {
-        newImgList.forEach(function(element) {
-            $(element).addClass("noblur");
-        });
+    console.log(newTextMutation);
+    if (newImgList) {
+        var countTargetWordsMutation = await checkTextForTarget(newTextMutation.join(" "));
+        console.log(countTargetWordsMutation + "new one")
+        if (countTargetWordsMutation == 0 && score < 40) {
+            newImgList.forEach(function(element) {
+                $(element).addClass("noblur");
+            });
+        }
     }
 });
 observer.observe(document, { childList: true, subtree: true });
@@ -158,14 +157,14 @@ document.addEventListener('contextmenu', function(event) {
     lastElementContext = event.target;
 }, true);
 chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
-    if (lastElementContext && message == "unblur") {
+    if (lastElementContext && message.type == "unblur") {
         $(lastElementContext).removeClass("blur");
         $(lastElementContext).addClass("noblur");
     }
 });
 
 chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
-    if (message == "unblurAll") {
+    if (message.type == "unblurAll") {
         imageList.forEach(function(element) {
             $(element).removeClass("blur");
             $(element).addClass("noblur");
@@ -175,13 +174,22 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
 
 
 chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
-    if (message == "blurAll") {
+    if (message.type == "blurAll") {
         blurAll();
     }
 });
 
-
-
+chrome.runtime.onMessage.addListener(
+    function(message, sender, sendResponse) {
+        switch (message.type) {
+            case "getTarget":
+                sendResponse(target);
+                break;
+                // default:
+                //     console.error("Unrecognised message: ", message);
+        }
+    }
+);
 
 // var inProsess = 0;
 

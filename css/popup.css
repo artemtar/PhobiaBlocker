@@ -6,6 +6,21 @@ h1 {
     color: #00447c
 }
 
+h3 {
+    color: #00447c
+}
+
+.box-target {
+    background-color: rgb(90, 207, 211);
+    border: 1px solid rgb(10, 34, 168);
+    color: white;
+    padding: 10px 24px;
+    margin-bottom: 4px;
+    cursor: pointer;
+    float: left;
+    width: 100%;
+}
+
 .btn-group input {
     background-color: rgb(96, 181, 221);
     border: 1px solid rgb(10, 34, 168);
