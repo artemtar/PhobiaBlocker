@@ -4,6 +4,7 @@
 //new element is analyzed, not whole body
 //store targets localy
 //interface for targets
+//able to control ammount of blur
 //concurency for analysis
 //intersection counts only one word per dict
 //workers for parral
