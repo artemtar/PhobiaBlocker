@@ -8,6 +8,7 @@
 //concurency for analysis
 //intersection counts only one word per dict
 //workers for parral
+//add stringh of blur
 
 // }
 //     var backImg;
