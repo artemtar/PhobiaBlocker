@@ -158,28 +158,6 @@ var lastElementContext;
 document.addEventListener('contextmenu', function(event) {
     lastElementContext = event.target;
 }, true);
-chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
-    if (lastElementContext && message.type == "unblur") {
-        $(lastElementContext).removeClass("blur");
-        $(lastElementContext).addClass("noblur");
-    }
-});
-
-chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
-    if (message.type == "unblurAll") {
-        imageList.forEach(function(element) {
-            $(element).removeClass("blur");
-            $(element).addClass("noblur");
-        });
-    }
-});
-
-
-chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
-    if (message.type == "blurAll") {
-        blurAll();
-    }
-});
 
 chrome.runtime.onMessage.addListener(
     function(message, sender, sendResponse) {
@@ -187,42 +165,28 @@ chrome.runtime.onMessage.addListener(
             case "getTarget":
                 sendResponse(target);
                 break;
+            case "blurAll":
+                blurAll();
+                break;
+            case "unblurAll":
+                imageList.forEach(function(element) {
+                    $(element).removeClass("blur");
+                    $(element).addClass("noblur");
+                });
+                break;
+            case "setBlur":
+                imageList.forEach(function(element) {
+                    // $(element).
+                    console.log("whatttttttttttttttttttttttttttt")
+                });
+                break;
+            case "unblur":
+                if (lastElementContext) {
+                    $(lastElementContext).removeClass("blur");
+                    $(lastElementContext).addClass("noblur");
+                }
                 // default:
                 //     console.error("Unrecognised message: ", message);
         }
     }
 );
-
-// var inProsess = 0;
-
-// var doHeavyCompute = function(mutation) {
-//     // dosomething with mutation
-//     inProsess += 1;
-//     return new Promise((resolve, err) => {
-//         resolve(2 + 2);
-//     });
-// };
-
-// var promiseWraper = async function(mutation, callback) {
-//     var res = await doHeavyCompute(mutation);
-//     callback(inProsess);
-//     inProsess -= 1;
-//     console.log('computation finished');
-//     return res
-// }
-
-// var printEverySecond = function(i) {
-//     if (i % 2 == 0) {
-//         console.log('i am second ' + i);
-//     }
-// }
-
-// myList = [];
-// var observer = new MutationObserver(function(mutations) {
-//     mutations.forEach(function(mutation) {
-//         console.log('scheduling computation');
-//         myList.concat(promiseWraper($(mutation.target), printEverySecond));
-//     });
-// });
-
-// observer.observe(document, { childList: true, subtree: true });

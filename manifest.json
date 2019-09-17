@@ -32,6 +32,7 @@
         "https://*/*",
         "http://*/*",
         "tabs",
-        "contextMenus"
+        "contextMenus",
+        "storage"
     ]
 }
