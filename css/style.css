@@ -1,15 +1,21 @@
-img {
-    filter: blur(12px);
-    -webkit-filter: blur(12px);
-    -ms-filter: blur(12px);
+:root {
+    --filterStrength: blur(12px);
 }
+
+img {
+    filter: var(--filterStrength);
+    -webkit-filter: var(--filterStrength);
+    -ms-filter: var(--filterStrength);
+}
+
 img.noblur {
     filter: none;
     -webkit-filter: none;
     -ms-filter: none;
 }
+
 img.blur {
-    filter: blur(12px);
-    -webkit-filter: blur(12px);
-    -ms-filter: blur(12px);
+    filter: var(--filterStrength);
+    -webkit-filter: var(--filterStrength);
+    -ms-filter: var(--filterStrength);
 }

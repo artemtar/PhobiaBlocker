@@ -175,9 +175,17 @@ chrome.runtime.onMessage.addListener(
                 });
                 break;
             case "setBlur":
+                chrome.storage.sync.get("blurVar", function(el) {
+                    blurVar = el['blurVar'];
+                    document.documentElement.style
+                        .setProperty('--filterStrength', blur(blurVar));
+                    console.log('blur')
+                    console.log(blurVar);
+                });
                 imageList.forEach(function(element) {
-                    // $(element).
-                    console.log("whatttttttttttttttttttttttttttt")
+
+                    let a = getComputedStyle(document.documentElement).getPropertyValue('--filterStrength');
+                    console.log(a);
                 });
                 break;
             case "unblur":
