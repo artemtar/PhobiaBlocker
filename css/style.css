@@ -1,5 +1,6 @@
 :root {
-    --filterStrength: blur(12px);
+    --mynum: 12;
+    --filterStrength: blur(var(mynum)px);
 }
 
 img {
