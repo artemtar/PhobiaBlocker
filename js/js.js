@@ -178,7 +178,7 @@ chrome.runtime.onMessage.addListener(
                 chrome.storage.sync.get("blurVar", function(el) {
                     blurVar = el['blurVar'];
                     document.documentElement.style
-                        .setProperty('--filterStrength', blur(blurVar));
+                        .setProperty('--filterNum', blurVar + 'px');
                     console.log('blur')
                     console.log(blurVar);
                 });

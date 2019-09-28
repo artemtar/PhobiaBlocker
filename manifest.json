@@ -33,6 +33,7 @@
         "http://*/*",
         "tabs",
         "contextMenus",
-        "storage"
+        "storage",
+        "cookies"
     ]
 }

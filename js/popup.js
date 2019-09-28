@@ -1,4 +1,15 @@
 $(function() {
+    chrome.storage.sync.get("blurVar", function(el) {
+        if (el) {
+            $('#range').val(el['blurVar']);
+        } else {
+            console.log('will you work')
+            var blurVar = getComputedStyle(document.documentElement)
+                .getPropertyValue('--blurVar');
+            console.log("well " + blurVar);
+            $('#range').val(blurVar);
+        }
+    });
     $('#unblurBtn').click(function() {
         chrome.tabs.query({ active: true, currentWindow: true },
             function(tabs) {
