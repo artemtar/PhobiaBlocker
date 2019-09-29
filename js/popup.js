@@ -1,13 +1,13 @@
 $(function() {
     chrome.storage.sync.get("blurVar", function(el) {
-        if (el) {
+        if (el['blurVar']) {
             $('#range').val(el['blurVar']);
+            console.log("gotten " + el['blurVar']);
         } else {
-            console.log('will you work')
-            var blurVar = getComputedStyle(document.documentElement)
-                .getPropertyValue('--blurVar');
-            console.log("well " + blurVar);
-            $('#range').val(blurVar);
+            // console.log('will you work')
+            // var blurVar = getComputedStyle(document.documentElement).getPropertyValue('--blurVar');
+            // console.log("well " + blurVar);
+            $('#range').val(2);
         }
     });
     $('#unblurBtn').click(function() {

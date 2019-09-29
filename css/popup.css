@@ -45,3 +45,33 @@ h3 {
 .btn-group input:hover {
     background-color: #136fb9;
 }
+
+.checkbox input[type="checkbox"]:focus+label::before {
+    outline: rgb(59, 153, 252) auto 5px;
+}
+
+.checkbox input[type="checkbox"]+label::after {
+    content: none;
+}
+
+.checkbox input[type="checkbox"]:checked+label::after {
+    content: "";
+}
+
+.checkbox label {
+    position: relative;
+}
+
+.checkbox label::before,
+.checkbox label::after {
+    position: absolute;
+}
+
+.checkbox label::before {
+    top: 3px;
+}
+
+.checkbox label::after {
+    left: 4px;
+    top: 7px;
+}

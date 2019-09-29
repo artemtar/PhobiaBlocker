@@ -159,6 +159,19 @@ document.addEventListener('contextmenu', function(event) {
     lastElementContext = event.target;
 }, true);
 
+function updateBLur() {
+    chrome.storage.sync.get("blurVar", function(el) {
+        blurVar = el['blurVar'];
+        if (blurVar) {
+            document.documentElement.style
+                .setProperty('--blurVar', 6 * blurVar + 'px');
+        } else {
+            document.documentElement.style
+                .setProperty('--blurVar', 12 + 'px');
+        }
+    });
+};
+
 chrome.runtime.onMessage.addListener(
     function(message, sender, sendResponse) {
         switch (message.type) {
@@ -166,6 +179,7 @@ chrome.runtime.onMessage.addListener(
                 sendResponse(target);
                 break;
             case "blurAll":
+                updateBLur();
                 blurAll();
                 break;
             case "unblurAll":
@@ -175,17 +189,11 @@ chrome.runtime.onMessage.addListener(
                 });
                 break;
             case "setBlur":
-                chrome.storage.sync.get("blurVar", function(el) {
-                    blurVar = el['blurVar'];
-                    document.documentElement.style
-                        .setProperty('--filterNum', blurVar + 'px');
-                    console.log('blur')
-                    console.log(blurVar);
-                });
+                updateBLur();
                 imageList.forEach(function(element) {
 
-                    let a = getComputedStyle(document.documentElement).getPropertyValue('--filterStrength');
-                    console.log(a);
+                    // let a = getComputedStyle(document.documentElement).getPropertyValue('--filterStrength');
+                    // console.log(a);
                 });
                 break;
             case "unblur":
