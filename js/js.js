@@ -100,7 +100,6 @@ function checkIfImg(toCheck) {
   console.log('another attemt');
   console.log(img_collect_massiv);
   if(img_collect_massiv.length > 0){
-      console.log('alliluya')
   }
   console.log('end');
 

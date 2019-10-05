@@ -35,5 +35,18 @@ $(function() {
                 chrome.tabs.sendMessage(tabs[i].id, message);
             }
         });
-    })
+    });
+
+            var input = document.querySelector('.addFromOutside'),
+                button = document.querySelector('.iambutton'),
+                tagify = new Tagify(input)
+
+            button.addEventListener("click", onAddButtonClick)
+
+            function onAddButtonClick() {
+                console.log("presed");
+                tagify.addEmptyTag()
+            }
+
 });
+
