@@ -7,40 +7,42 @@
     <script src="js/tagify.js"></script>
     <link href="https://cdn.jsdelivr.net/npm/@yaireo/tagify/dist/tagify.css" rel="stylesheet" type="text/css" />
     <link rel="stylesheet" href="css/popup.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css?family=Roboto&display=swap');
+    </style>
 </head>
 
 <body>
-    <div>
-        <h1>PhobiaBlocker</h1>
-    </div>
-    <div>
-        <h3>Supported Words:</h3>
-    </div class="box-target" id="targets">
-
+    <div class='header text-center' width='100%'>
+        <span class='text-center'>PhobiaBlocker</span>
     </div>
 
-    <div class="btn-group" width="80%">
-        <input type="button" id="unblurBtn" value="Unblur ALL">
-        <input type="button" id="blurBtn" value="Blur ALL">
-    </div>
     <div class="checkbox">
-        <input type="checkbox" id="checkbox">
-        <label for="checkbox">Always Blured</label>
     </div>
-    <div>
-        <label>
-            <h3>Set amout of blur</h3>
-        </label>
-        <input type="range" id="range" min="0" max="6" value="0">
+    <div class="outer-div">
+        <div class="btn-group inner-div">
+            <input type="button" id="unblurBtn" class='button4' value="Unblur ALL">
+            <input type="button" id="blurBtn" value="Blur ALL">
+        </div>
     </div>
-
-    <aside class="rightSide">
-        <tags class="tagify addFromOutside" aria-haspopup="true" aria-expanded="false" role="tagslist">
-            </tag><span contenteditable="" data-placeholder="​" aria-placeholder="" class="tagify__input" role="textbox"
-                aria-multiline="false"></span>
-        <button type="button" class='iambutton sss'>+</button>
-    </aside>
-
+    <div class="outer-div">
+        <div class='inner-div'>
+            <label>
+                <h3>Set amout of blur</h3>
+            </label>
+            <input type="range" id="range" min="0" max="6" width="100%">
+        </div>
+    </div>
+    <h3>Supported Words:</h3>
+    <div class="outer-div">
+        <div class="inner-div">
+            <tags class="tagify addFromOutside rightside" aria-haspopup="true" aria-expanded="false" role="tagslist">
+                </tag><span contenteditable="" data-placeholder="​" aria-placeholder="" class="tagify__input"
+                    role="textbox" aria-multiline="false"></span>
+                <button type="button" class='iambutton sss'>+</button>
+        </div>
+    </div>
+    <h3>Always Blured</h3><input type="checkbox" id="checkbox">
     <script src="js/popup.js"></script>
 </body>
 

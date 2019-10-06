@@ -1,7 +1,37 @@
-html,
+.text-center {
+  text-align: center;
+}
+.container {
+  margin-right: auto;
+  margin-left: auto;
+  padding-left: 15px;
+  padding-right: 15px;
+}
+
+
+
+.header{
+    background-color: #136fb9;
+    width: auto;
+    /* font-size: 3em; */
+    border-style: solid;
+    border-width: 2px;
+    border-color: rgb(78, 121, 121);
+    font: 700 2.5em/1.4 'Avenir', sans-serif;
+    color: #FFF;
+}
+@import "compass/css3";
+html{
+    width: 320px;
+
+}
 body {
-  font: normal 1em/1.2 Helvetica Neue, Helvetica, sans-serif;
+  /* font: normal 1em/1.2 Helvetica Neue, Helvetica, sans-serif; */
+  font: normal;
   background: rgb(210, 250, 250);
+  padding: 0px;
+  margin: 0px;
+  width: 100%;
 }
 
 h1 {
@@ -23,21 +53,33 @@ h3 {
   width: 100%;
 }
 
+
+
 .btn-group input {
   background-color: rgb(96, 181, 221);
   border: 1px solid rgb(10, 34, 168);
   color: white;
   padding: 10px 24px;
-  margin-bottom: 4px;
+  margin-top: 4px;
+  margin-bottom: 8px;
   cursor: pointer;
   float: left;
   width: 100%;
 }
 
+.outer-div
+{
+     padding: 24px;
+}
+.inner-div
+{
+     margin: 0 auto;
+     max-width: 320px; 
+}
+
 .btn-group:after {
   content: "";
   clear: both;
-  display: table;
 }
 
 .btn-group input:not(:last-child) {
@@ -86,16 +128,6 @@ label {
   display: block;
 }
 
-.addFromOutside + button {
-  background: #d3e2e2;
-  border: 0;
-  border-radius: 50%;
-  width: 1.8em;
-  height: 1.8em;
-  cursor: pointer;
-  outline: none;
-  transition: 0.13s ease-out;
-}
 button {
   -webkit-appearance: button;
   -webkit-writing-mode: horizontal-tb !important;
@@ -105,16 +137,15 @@ button {
   word-spacing: normal;
   text-transform: none;
   text-indent: 0px;
-  text-shadow: none;
   display: inline-block;
-  text-align: center;
+  text-align: left;
   align-items: flex-start;
   cursor: default;
   background-color: buttonface;
   box-sizing: border-box;
   margin: 0em;
   font: 400 13.3333px Arial;
-  padding: 1px 6px;
+  padding: 8px 6px;
   border-width: 2px;
   border-style: outset;
   border-color: buttonface;
