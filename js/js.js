@@ -28,6 +28,7 @@
 const tokenizer = new natural.WordTokenizer();
 // target = ["user", "have", 'jump'];
 var target = [];
+var lastElementContext;
 
 var blurAll = function () {
   imageList.forEach(function (element) {
@@ -67,6 +68,9 @@ var updateScore = function (val) {
       }
     });
   });
+  // await new Promise((resolve, reject) => {
+  //   updateBlur();
+  // });
   main();
 })()
 
@@ -233,7 +237,6 @@ function main() {
   });
   observer.observe(document, { childList: true, subtree: true });
 
-  var lastElementContext;
   document.addEventListener(
     "contextmenu",
     function (event) {
@@ -242,7 +245,7 @@ function main() {
     true
   );
 };
-function updateBLur() {
+function updateBlur() {
   chrome.storage.sync.get("blurVar", function (el) {
     blurVar = el["blurVar"];
     if (blurVar) {
@@ -275,7 +278,7 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
       sendResponse(target);
       break;
     case "blurAll":
-      updateBLur();
+      updateBlur();
       blurAll();
       break;
     case "unblurAll":
@@ -285,7 +288,7 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
       });
       break;
     case "setBlur":
-      updateBLur();
+      updateBlur();
       imageList.forEach(function (element) {
         // let a = getComputedStyle(document.documentElement).getPropertyValue('--filterStrength');
         // console.log(a);

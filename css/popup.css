@@ -8,8 +8,6 @@
   padding-right: 15px;
 }
 
-
-
 .header{
     background-color: #136fb9;
     width: auto;
@@ -20,10 +18,9 @@
     font: 700 2.5em/1.4 'Avenir', sans-serif;
     color: #FFF;
 }
-@import "compass/css3";
+
 html{
     width: 320px;
-
 }
 body {
   /* font: normal 1em/1.2 Helvetica Neue, Helvetica, sans-serif; */
@@ -69,7 +66,7 @@ h3 {
 
 .outer-div
 {
-     padding: 24px;
+     padding: 0px 24px 2px 24px;
 }
 .inner-div
 {
@@ -117,7 +114,7 @@ h3 {
 
 .checkbox label::after {
   left: 4px;
-  top: 7px;
+  /* top: 7px; */
 }
 
 input {
@@ -145,7 +142,7 @@ button {
   box-sizing: border-box;
   margin: 0em;
   font: 400 13.3333px Arial;
-  padding: 8px 6px;
+  /* padding: 8px 6px; */
   border-width: 2px;
   border-style: outset;
   border-color: buttonface;
