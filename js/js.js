@@ -179,7 +179,7 @@ chrome.runtime.onMessage.addListener(
                 sendResponse(target);
                 break;
             case "blurAll":
-                updateBLur();
+                // updateBLur();
                 blurAll();
                 break;
             case "unblurAll":
