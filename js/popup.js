@@ -1,4 +1,3 @@
-//TODO
 //Tags not loading on first run
 $(() => {
     chrome.storage.sync.get("blurValueAmount", function(storage) {
