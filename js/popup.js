@@ -1,29 +1,25 @@
 //TODO
 //Tags not loading on first run
-$(function() {
-    chrome.storage.sync.get("blurVar", function(el) {
-        if (el['blurVar']) {
-            $('#range').val(el['blurVar']);
+$(() => {
+    chrome.storage.sync.get("blurValueAmount", function(storage) {
+        if (el['blurValueAmount']) {
+            $('#range').val(storage['blurValueAmount']);
         } else {
             // console.log('will you work')
-            // var blurVar = getComputedStyle(document.documentElement).getPropertyValue('--blurVar');
-            // console.log("well " + blurVar);
+            // var blurValueAmount = getComputedStyle(document.documentElement).getPropertyValue('--blurValueAmount');
+            // console.log("well " + blurValueAmount);
             $('#range').val(2);
         }
     });
 
     var input = document.querySelector('.addFromOutside'),
-        button = document.querySelector('.iambutton'),
+        button = document.querySelector('.addWordBtn'),
         tagify = new Tagify(input, {
             pattern: /^.{0,30}$/,
             maxTags: 20,
         });
 
     button.addEventListener("click", onAddButtonClick)
-
-    tagify.on('edit', updateTarget)
-        .on('remove', updateTarget)
-        .on('add', updateTarget);
 
     function updateTarget(e) {
         newTarget = tagify.value.map(e => e['value']);
@@ -35,6 +31,10 @@ $(function() {
             }
         });
     }
+
+    tagify.on('edit', updateTarget)
+          .on('remove', updateTarget)
+          .on('add', updateTarget);
 
     function onAddButtonClick() {
         tagify.addEmptyTag()
@@ -61,10 +61,10 @@ $(function() {
             });
     });
     $(document).on('input', '#range', function() {
-        var blurVar = $(this).val();
-        chrome.storage.sync.set({ "blurVar": blurVar }, function() {
-            chrome.storage.sync.get("blurVar", function(el) {
-                console.log(el['blurVar']);
+        var blurValueAmount = $(this).val();
+        chrome.storage.sync.set({ "blurValueAmount": blurValueAmount }, function() {
+            chrome.storage.sync.get("blurValueAmount", function(el) {
+                console.log(el['blurValueAmount']);
             });
         });
         chrome.tabs.query({}, function(tabs) {

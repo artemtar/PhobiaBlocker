@@ -1,6 +1,6 @@
 :root {
-    --blurVar: 12px;
-    --filterStrength: blur(var(--blurVar));
+    --blurValueAmount: 12px;
+    --filterStrength: blur(var(--blurValueAmount));
 }
 
 img {

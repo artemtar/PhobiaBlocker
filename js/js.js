@@ -190,15 +190,15 @@ function main() {
 };
 
 function updateBlur() {
-    chrome.storage.sync.get("blurVar", function(el) {
-        blurVar = el["blurVar"];
-        if (blurVar) {
+    chrome.storage.sync.get("blurValueAmount", function(el) {
+        blurValueAmount = el["blurValueAmount"];
+        if (blurValueAmount) {
             document.documentElement.style.setProperty(
-                "--blurVar",
-                6 * blurVar + "px"
+                "--blurValueAmount",
+                6 * blurValueAmount + "px"
             );
         } else {
-            document.documentElement.style.setProperty("--blurVar", 12 + "px");
+            document.documentElement.style.setProperty("--blurValueAmount", 12 + "px");
         }
     });
 }
