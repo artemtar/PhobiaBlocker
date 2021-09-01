@@ -1,12 +1,12 @@
 chrome.contextMenus.create({
     title: 'Unblur',
     contexts: ['image'],
-    onclick: function(info, tab) {
+    onclick: (info, tab) => {
         chrome.tabs.sendMessage(tab.id, { type: 'unblur' });
     }
 });
 
-chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     switch (message.type) {
         case 'retriveTarget':
             retriveTarget();
@@ -17,11 +17,11 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
     }
 });
 
-let retriveTarget = function() {
-    chrome.storage.sync.get('target', function(el) {
-        if (el['target']) {} else {
+let retriveTarget = () => {
+    chrome.storage.sync.get('target', (storage) => {
+        if (storage['target']) {} else {
             defaultTarget = ["rodent", "mice", "rat", "beaver", "squirrel"];
-            chrome.storage.sync.set({ 'target': defaultTarget }, function() {});
+            chrome.storage.sync.set({ 'target': defaultTarget }, () => {});
         }
     });
 }

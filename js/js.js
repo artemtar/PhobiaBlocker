@@ -54,7 +54,7 @@ function main() {
         var tokens = tokenizer.tokenize(text);
         var cleanWords = tokens
             .map(word => word.toLowerCase())
-            .filter(word => word.length > 2 && word.length < 16)
+            .filter(word => word.length > 2)
             .filter(word => !stopWords.includes(word));
         var uniqueWords = [...new Set(cleanWords)];
         var createDictToAnalize = function(target, words) {
@@ -232,7 +232,7 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
                 $(element).addClass("noblur");
             });
             break;
-        case "setBlur":
+        case "setBlurAmount":
             updateBlur();
             imageList.forEach(function(element) {
                 // let a = getComputedStyle(document.documentElement).getPropertyValue('--filterStrength');

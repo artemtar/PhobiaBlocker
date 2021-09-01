@@ -168,32 +168,32 @@ p {
   margin: 0.3em 0.5em;
 }
 
-/*------ addFromOutside ----------*/
-.addFromOutside {
+/*------ addedWordArea ----------*/
+.addedWordArea {
   display: inline-block;
   min-width: 0;
   border: none;
 }
 
-.addFromOutside tag:last-of-type {
+.addedWordArea tag:last-of-type {
   margin-right: 1em;
 }
 
-.addFromOutside tag:only-of-type > div {
+.addedWordArea tag:only-of-type > div {
   padding-right: 0.6em;
 }
 
-.addFromOutside tag:only-of-type .tagify__tag__removeBtn {
+.addedWordArea tag:only-of-type .tagify__tag__removeBtn {
   display: none;
 }
 
-.addFromOutside tag > div {
+.addedWordArea tag > div {
   padding-top: 0.4em;
   padding-bottom: 0.4em;
   border-radius: 25px;
 }
 
-.addFromOutside + button {
+.addedWordArea + button {
   background: #d3e2e2;
   border: 0;
   border-radius: 50%;
@@ -203,10 +203,10 @@ p {
   outline: none;
 }
 
-.addFromOutside + button:hover {
+.addedWordArea + button:hover {
   opacity: 0.8;
 }
 
-.addFromOutside .tagify__input {
+.addedWordArea .tagify__input {
   display: none;
 }
