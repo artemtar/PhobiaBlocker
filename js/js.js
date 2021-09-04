@@ -2,12 +2,7 @@ const tokenizer = new natural.WordTokenizer();
 var target = [];
 var lastElementContext;
 
-var blurAll = function() {
-    imageList.forEach(function(element) {
-        $(element).removeClass("noblur");
-        $(element).addClass("blur");
-    });
-};
+
 var updateScore = function(val) {
     score += parseInt(val);
     if (score >= 40) {
@@ -17,7 +12,7 @@ var updateScore = function(val) {
 
 (async() => {
     await new Promise((resolve, reject) => {
-        chrome.runtime.sendMessage({ type: 'retriveTarget' }, function(response) {
+        chrome.runtime.sendMessage({ type: 'retriveTargetWords' }, function(response) {
             if (response) {
                 resolve();
             } else {
@@ -42,7 +37,7 @@ var updateScore = function(val) {
 })()
 
 // (function(){
-//   retriveTarget().then(console.log("too long"));
+//   retriveTargetWords().then(console.log("too long"));
 // })();
 
 var imageList = [];
@@ -143,11 +138,12 @@ function main() {
         return result * 10;
     }
 
-    var checkLandingPage = (async function() {
-        var text = $("body").text();
-        var title = $("title").text();
+    // check landing page for target words
+    (async function() {
+        let text = $("body").text();
+        let title = $("title").text();
 
-        var checkTitle = await checkTextForTarget(title, target);
+        let checkTitle = await checkTextForTarget(title, target);
         if (checkTitle != 0) {
             updateScore(40);
         }
@@ -159,7 +155,9 @@ function main() {
             });
         }
     })();
+    
 
+    // if the page has infinit scroll -> check every new elemnt
     var observer = new MutationObserver(async function(mutations) {
         var newTextMutation = [];
         var newImgList = [];
@@ -180,33 +178,36 @@ function main() {
     });
     observer.observe(document, { childList: true, subtree: true });
 
-    document.addEventListener(
-        "contextmenu",
-        function(event) {
-            lastElementContext = event.target;
-        },
-        true
-    );
+    document.addEventListener("contextmenu",
+                              (event) => {lastElementContext = event.target;},
+                              true);
 };
 
-function updateBlur() {
-    chrome.storage.sync.get("blurValueAmount", function(el) {
-        blurValueAmount = el["blurValueAmount"];
+let blurAll = () => {
+    imageList.forEach(function(element) {
+        $(element).removeClass("noblur");
+        $(element).addClass("blur");
+    });
+};
+
+let updateBlur = () => {
+    chrome.storage.sync.get("blurValueAmount", (storage) => {
+        let blurValueAmount = storage["blurValueAmount"];
         if (blurValueAmount) {
             document.documentElement.style.setProperty(
                 "--blurValueAmount",
-                6 * blurValueAmount + "px"
+                5 * blurValueAmount + "px"
             );
         } else {
-            document.documentElement.style.setProperty("--blurValueAmount", 12 + "px");
+            document.documentElement.style.setProperty("--blurValueAmount", 15 + "px");
         }
     });
 }
 
-function updateTarget() {
-    chrome.storage.sync.get('target', function(el) {
-        if (el) {
-            target = el['target'];
+let updateTargetWords = () => {
+    chrome.storage.sync.get('target', (storage) => {
+        if (storage) {
+            target = storage['target'];
             console.log(
                 'new taerget'
             );
@@ -227,27 +228,24 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
             blurAll();
             break;
         case "unblurAll":
-            imageList.forEach(function(element) {
-                $(element).removeClass("blur");
-                $(element).addClass("noblur");
+            imageList.forEach((image) => {
+                $(image).removeClass("blur");
+                $(image).addClass("noblur");
             });
             break;
         case "setBlurAmount":
             updateBlur();
-            imageList.forEach(function(element) {
-                // let a = getComputedStyle(document.documentElement).getPropertyValue('--filterStrength');
-                // console.log(a);
-            });
             break;
         case "unblur":
+            console.log("ublur")
             if (lastElementContext) {
                 $(lastElementContext).removeClass("blur");
                 $(lastElementContext).addClass("noblur");
             };
             break;
-        case 'updateTarget':
+        case 'updateTargetWords':
             break;
-            // default:
-            //     console.error("Unrecognised message: ", message);
+        default:
+            console.log("Unrecognised message: ", message);
     }
 });
