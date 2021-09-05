@@ -1,10 +1,22 @@
 {
-  "name": "PhobiaBlocker",
-  "devDependencies": {
-    "standard": "*"
-  },
+  "name": "phobiablocker",
+  "version": "1.0.0",
+  "description": "Blocks unwanted images from chrome",
+  "main": "index.js",
   "scripts": {
-    "test": "standard && node my-tests.js",
-    "std": "standard"
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/artemtar/PhobiaBlocker.git"
+  },
+  "author": "Artem Tarasov",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/artemtar/PhobiaBlocker/issues"
+  },
+  "homepage": "https://github.com/artemtar/PhobiaBlocker#readme",
+  "devDependencies": {
+    "eslint": "^7.32.0"
   }
 }
