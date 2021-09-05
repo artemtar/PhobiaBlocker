@@ -1,0 +1,10 @@
+{
+  "name": "PhobiaBlocker",
+  "devDependencies": {
+    "standard": "*"
+  },
+  "scripts": {
+    "test": "standard && node my-tests.js",
+    "std": "standard"
+  }
+}

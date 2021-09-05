@@ -7,16 +7,16 @@ $(() => {
         } else { $('#blurRange').val(2); }
     });
 
-    let input = document.querySelector('.addedWordArea'),
+    let newTargetWord = document.querySelector('.addedWordArea'),
         button = document.querySelector('.addWordBtn'),
-        tagify = new Tagify(input, {
+        tagify = new Tagify(newTargetWord, {
             pattern: /^.{0,30}$/,
             maxTags: 20,
         });
 
     let updateTargetWords = () => {
         let newTargetWords = tagify.value.map(wordElement => wordElement['value']);
-        chrome.storage.sync.set({ target: newTargetWords });
+        chrome.storage.sync.set({ targetWords: newTargetWords });
         chrome.tabs.query({}, (tabs) => {
             let message = { type: "updateTargetWords" };
             for (let i = 0; i < tabs.length; ++i) {
@@ -34,13 +34,8 @@ $(() => {
         tagify.addEmptyTag()
     }
 
-    chrome.storage.sync.get('target', (storage) => {
-        if (storage) {
-            target = storage['target'];
-            tagify.addTags(target);
-        } else {
-            console.error('Empty target');
-        }
+    chrome.storage.sync.get('targetWords', (storage) => {
+        tagify.addTags(storage['targetWords']);
     });
 
     $('#unblurBtn').click(() => {
