@@ -1,6 +1,9 @@
 const tokenizer = new natural.WordTokenizer()
 let targetWords = []
 let lastElementContext
+var imageList = []
+let counter = 0
+// var score = 0;
 
 /**
  * Checks if target words are set, if target words are not set -> sets default
@@ -25,74 +28,67 @@ let setTargetWords = () => {
     })
 }
 
-var imageList = []
-// var score = 0;
-var inAnalizes = 0
-
 /**
- * Search text for any target words
+ * Search text for any target words, using nlp normalization to compare words which are a
  * @param {string} text Text that will be checked for target words
  * @returns {number} Amount of words in the text that match target words
  */
 let analizeText = (text) => {
+
     let cleanWords = tokenizer.tokenize(text)
         .map(word => word.toLowerCase())
         .filter(word => word.length > 2)
-        // .filter(word => !stopWords.includes(word));
-    let uniqueWords = [...new Set(cleanWords)]
-    let createDictToAnalize = (target, words) => {
-        toAnalize = []
-        target.forEach(function(t) {
-            words.forEach(function(word) {
+    let cleanWordsSet = [...new Set(cleanWords)]
+    // .filter(word => !stopWords.includes(word))
+    
+
+    // nlp function is very expensive, therefore analize only words
+    // that have two first letters in common with target words
+    let compareTargetsToTextWords = (targets, wordsToAnalize) => {
+        let probableMatchingTargetWords = []
+        targets.forEach(function(t) {
+            wordsToAnalize.forEach(function(word) {
                 if (word[0] == t[0] && word[1] == t[1]) {
-                    toAnalize.push(word)
+                    probableMatchingTargetWords.push(word)
                 }
             })
         })
-        return toAnalize
+        return probableMatchingTargetWords
     }
 
-    // console.time('doSomething')
-    // console.timeEnd('doSomething')
+    let targetWordsNormalized =[...new Set(nlp(targetWords)
+        .normalize()
+        .out('array'))]
 
-    targetWordsNormalized = nlp(targetWords)
+    let wordsToCheckNormalized = nlp(compareTargetsToTextWords(targetWordsNormalized, cleanWordsSet))
         .normalize()
         .out('array')
 
-    wordsToCheck = nlp(createDictToAnalize(targetWordsNormalized, uniqueWords))
-        .normalize()
-        // .nouns()
-        .out('array')
-
-    const intersection = wordsToCheck
+    const match = wordsToCheckNormalized
         .filter(element => targetWords.includes(element))
         .filter(n => n)
-    return intersection.length
+    return match.length
 }
 
-function updateImgList(nodeToCheck) {
+/**
+ * Accepts DOME node and checks if it has image in it. All images are kept in imageList for blur and unblur functions,
+ * While newImageList hold only newly added images, this list is used to check new dynamicly incomming elements.
+ * @param {Node} nodeToCheck Text that will be checked for target words
+ * @returns {list} Amount of words in the text that match target words
+ */
+let updateImgList = (nodeToCheck) => {
     let images = nodeToCheck.find('img')
     let backgroud = nodeToCheck.find('background-image')
 
-    // var img_collect_massiv = []; //array for element page 
-    // for (var childItem in nodeToCheck.childNodes)
-    //     if (nodeToCheck.childNodes[childItem].style['background-image'] != null)
-    //         img_collect_massiv.push(nodeToCheck.childNodes[childItem]);
-
-
-    // if (img_collect_massiv.length > 0) {}
-
-
     images = $.merge(images, backgroud)
-    let tempImgList = []
+    let newImgList = []
     for (let image of images) {
-        let imageSource = $(image).attr('src')
         if (!imageList.includes(image)) {
             imageList.push(image)
-            tempImgList.push(image)
+            newImgList.push(image)
         }
     }
-    return tempImgList
+    return newImgList
 }
 
 let analizeLandingPage = async () => {
@@ -104,7 +100,7 @@ let analizeLandingPage = async () => {
         blurAll()
         return
     }
-    var countTargetWords = await analizeText(text, targetWords)
+    let countTargetWords = await analizeText(text, targetWords)
     if (countTargetWords == 0) {
         // console.log(imageList);
         imageList.forEach((element) => {
@@ -113,73 +109,39 @@ let analizeLandingPage = async () => {
     }
 }
 
+let checkNewAddedImges = (imageList, text) => {
+    var countTargetWordsMutation = analizeText( text )
+    if (countTargetWordsMutation == 0) {
+        imageList.forEach(function(element) {
+            $(element).addClass('noblur')
+        })
+    }
+}
+
+let startObserver = () => {
+    var observer = new MutationObserver((mutations) => {
+        var newTextMutation = []
+        var newImgList = []
+        mutations.forEach(async (mutation) => {
+            newImgList = newImgList.concat(updateImgList($(mutation.target)))
+            console.log(mutation)
+            newTextMutation.push($(mutation.target).text())
+        })
+        checkNewAddedImges(imageList, newTextMutation.join(' '))
+    })
+    observer.observe(document, { childList: true, subtree: true })
+}
+
 let main = async() => {
     await setTargetWords()
     updateImgList($(document))
-
-    // function promiseAnalizer(t, tar) {
-    //     inAnalizes += 1;
-    //     return new Promise(function(resolve) {
-    //         resolve(analizeText(t, tar));
-    //     });
-    // }
-
-    // async function checkTextForTarget(text) {
-    //     let result = await promiseAnalizer(text, targetWords);
-    //     inAnalizes -= 1;
-    //     return result * 10;
-    // }
-
-
-
-    // check landing page for target words
-    // (async () => {
-    //     // get only text, no html tags
-    //     let text = $("body").text();
-    //     let title = $("title").text();
-    //     // console.log(text);
-    //     let checkTitle = await checkTextForTarget(title, targetWords);
-    //     if (checkTitle != 0) {
-    //         blurAll();
-    //         return;
-    //     }
-    //     var countTargetWords = await checkTextForTarget(text);
-    //     if (countTargetWords == 0) {
-    //         // console.log(imageList);
-    //         imageList.forEach((element) => {
-    //             $(element).addClass("noblur");
-    //         });
-    //     }
-    // })();
-
-
-    analizeLandingPage()
-
-    // if the page has infinit scroll -> check every new elemnt
-    var observer = new MutationObserver(async function(mutations) {
-        var newTextMutation = []
-        var newImgList = []
-        mutations.forEach(function(mutation) {
-            newImgList = newImgList.concat(updateImgList($(mutation.target)))
-            newTextMutation.push($(mutation.target).text())
-        })
-        if (newImgList) {
-            var countTargetWordsMutation = await analizeText(
-                newTextMutation.join(' ')
-            )
-            if (countTargetWordsMutation == 0) {
-                newImgList.forEach(function(element) {
-                    $(element).addClass('noblur')
-                })
-            }
-        }
-    })
-    observer.observe(document, { childList: true, subtree: true })
-
+    // analizeLandingPage()
+    startObserver()
     document.addEventListener('contextmenu',
         (event) => {lastElementContext = event.target},
         true)
 }
+main()
 
 let blurAll = () => {
     imageList.forEach(function(element) {
@@ -215,12 +177,10 @@ let updateTargetWords = () => {
     })
 }
 
-main()
-
 chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
     switch (message.type) {
     case 'getTarget':
-        sendResponse(target)
+        sendResponse(targetWords)
         break
     case 'blurAll':
         updateBlur()

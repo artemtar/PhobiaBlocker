@@ -1,5 +1,5 @@
 :root {
-    --blurValueAmount: 12px;
+    --blurValueAmount: 15px;
     --filterStrength: blur(var(--blurValueAmount));
 }
 

@@ -1,12 +1,4 @@
 To-DO:
 run on images that are bigger than 10x10
-analyze title(Done)
-new element is analyzed, not whole body
-store targets localy(Done)
 interface for targets
-able to control ammount of blur(Done)
-concurency for analysis(Done)
 intersection counts only one word per dict
-workers for parral
-add strengh of blur(Done)
-detect blure and blure btn diff settings

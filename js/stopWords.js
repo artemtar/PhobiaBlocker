@@ -1,4 +1,4 @@
-stopWords = [
+const stopWords = [
     'all',
     'and',
     'any',
