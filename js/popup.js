@@ -4,7 +4,7 @@ $(() => {
     chrome.storage.sync.get('blurValueAmount', (storage) => {
         if (storage['blurValueAmount']) {
             $('#blurRange').val(storage['blurValueAmount'])
-        } else { $('#blurRange').val(2) }
+        } else { $('#blurRange').val(3) }
     })
 
     let newTargetWord = document.querySelector('.addedWordArea'),

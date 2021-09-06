@@ -1,23 +1,20 @@
 const tokenizer = new natural.WordTokenizer()
 let targetWords = []
 let lastElementContext
-var imageList = []
-let counter = 0
-// var score = 0;
+let imageList = []
+const defaultTargetWords = ['clown', 'mice', 'spider'] // targets are words defined by user to block
 
 /**
  * Checks if target words are set, if target words are not set -> sets default
  * If target words are present in storage -> use those words
  */
 let setTargetWords = () => {
-    let defaultTargetWords = ['clown', 'mice', 'spider']
     return new Promise((resolve, reject) => {
         chrome.storage.sync.get('targetWords', (storage) => {
             if (chrome.runtime.lastError) {
                 return reject(chrome.runtime.lastError)
             }
             if (!storage['targetWords']) {
-                console.log('settings')
                 chrome.storage.sync.set({ 'targetWords': defaultTargetWords })
                 targetWords = defaultTargetWords
             } else {
@@ -29,7 +26,7 @@ let setTargetWords = () => {
 }
 
 /**
- * Search text for any target words, using nlp normalization to compare words which are a
+ * Search text for any target words, using NLP normalization to compare words
  * @param {string} text Text that will be checked for target words
  * @returns {number} Amount of words in the text that match target words
  */
@@ -41,14 +38,13 @@ let analizeText = (text) => {
     let cleanWordsSet = [...new Set(cleanWords)]
     // .filter(word => !stopWords.includes(word))
     
-
-    // nlp function is very expensive, therefore analize only words
+    // NLP function is very expensive, therefore analyze only words
     // that have two first letters in common with target words
     let compareTargetsToTextWords = (targets, wordsToAnalize) => {
         let probableMatchingTargetWords = []
-        targets.forEach(function(t) {
-            wordsToAnalize.forEach(function(word) {
-                if (word[0] == t[0] && word[1] == t[1]) {
+        targets.forEach((target) => {
+            wordsToAnalize.forEach((word) => {
+                if (word[0] == target[0] && word[1] == target[1]) {
                     probableMatchingTargetWords.push(word)
                 }
             })
@@ -67,11 +63,13 @@ let analizeText = (text) => {
     const match = wordsToCheckNormalized
         .filter(element => targetWords.includes(element))
         .filter(n => n)
+    console.log('match')
+    console.log(match.length)
     return match.length
 }
 
 /**
- * Accepts DOME node and checks if it has image in it. All images are kept in imageList for blur and unblur functions,
+ * Accepts DOME node and checks if it has image in it. All images are kept in imageList for blur all and unblur all functions,
  * While newImageList hold only newly added images, this list is used to check new dynamicly incomming elements.
  * @param {Node} nodeToCheck Text that will be checked for target words
  * @returns {list} Amount of words in the text that match target words
@@ -91,33 +89,26 @@ let updateImgList = (nodeToCheck) => {
     return newImgList
 }
 
-let analizeLandingPage = async () => {
-    // get only text, no html tags
-    let text = $('body').text()
-    let title = $('title').text()
-    let checkTitle = await analizeText(title, targetWords)
-    if (checkTitle != 0) {
-        blurAll()
-        return
-    }
-    let countTargetWords = await analizeText(text, targetWords)
-    if (countTargetWords == 0) {
-        // console.log(imageList);
-        imageList.forEach((element) => {
-            $(element).addClass('noblur')
-        })
-    }
-}
-
-let checkNewAddedImges = (imageList, text) => {
+/**
+ * Check if newly added images to the web page could hold any target words
+ * @param {list} imageList List of new images dynamicly added to the page
+ * @returns {string} The text that had been added with images
+ */
+let checkNewAddedImages = (imageList, text) => {
     var countTargetWordsMutation = analizeText( text )
-    if (countTargetWordsMutation == 0) {
-        imageList.forEach(function(element) {
+    imageList.forEach((element) => {
+        if (countTargetWordsMutation == 0)
             $(element).addClass('noblur')
-        })
-    }
+        else
+            $(element).addClass('blur')
+    })
 }
 
+/**
+ * Check if newly added images to the webpage could hold any target words
+ * @param {list} imageList List of new images dynamicly added to the page
+ * @returns {string} The text that had been added with images
+ */
 let startObserver = () => {
     var observer = new MutationObserver((mutations) => {
         var newTextMutation = []
@@ -127,15 +118,13 @@ let startObserver = () => {
             console.log(mutation)
             newTextMutation.push($(mutation.target).text())
         })
-        checkNewAddedImges(imageList, newTextMutation.join(' '))
+        checkNewAddedImages(imageList, newTextMutation.join(' '))
     })
     observer.observe(document, { childList: true, subtree: true })
 }
 
 let main = async() => {
     await setTargetWords()
-    updateImgList($(document))
-    // analizeLandingPage()
     startObserver()
     document.addEventListener('contextmenu',
         (event) => {lastElementContext = event.target},
@@ -144,9 +133,9 @@ let main = async() => {
 main()
 
 let blurAll = () => {
-    imageList.forEach(function(element) {
-        $(element).removeClass('noblur')
-        $(element).addClass('blur')
+    imageList.forEach((img) => {
+        $(img).removeClass('noblur')
+        $(img).addClass('blur')
     })
 }
 
@@ -165,19 +154,22 @@ let updateBlur = () => {
 }
 
 let updateTargetWords = () => {
-    chrome.storage.sync.get('target', (storage) => {
-        if (storage) {
-            target = storage['target']
-            console.log(
-                'new taerget'
-            )
-            console.log(target)
-        } else {
-        }
-    })
+    setTargetWords()
+    let title = $('title').text()
+    let checkTitle = analizeText(title, targetWords)
+    if (checkTitle != 0) {
+        blurAll()
+        return
+    }
+    let body = $('body').text()
+    let checkBody = analizeText(body, targetWords)
+    if (checkBody != 0) {
+        blurAll()
+        return
+    }
 }
 
-chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     switch (message.type) {
     case 'getTarget':
         sendResponse(targetWords)
@@ -203,6 +195,7 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
         }
         break
     case 'updateTargetWords':
+        updateTargetWords()
         break
     default:
         console.log('Unrecognised message: ', message)
