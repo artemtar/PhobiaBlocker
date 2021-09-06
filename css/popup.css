@@ -210,3 +210,7 @@ p {
 .addedWordArea .tagify__input {
   display: none;
 }
+
+#div-supported-words {
+  display: none;
+}
