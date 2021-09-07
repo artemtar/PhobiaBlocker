@@ -2,11 +2,13 @@ const defaultTarget = ['clown', 'mice', 'spider']
 
 chrome.contextMenus.create({
     title: 'Unblur',
-    contexts: ['image'],
+    contexts: ['all'],
     onclick: (info, tab) => {
         chrome.tabs.sendMessage(tab.id, { type: 'unblur' })
     }
 })
+
+
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     switch (message.type) {

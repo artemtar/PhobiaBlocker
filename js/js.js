@@ -98,8 +98,11 @@ let checkNewAddedImages = (imageList, text) => {
     var countTargetWordsMutation = analizeText( text )
     imageList.forEach((element) => {
         if (countTargetWordsMutation == 0)
-            $(element).addClass('noblur')
+            setInterval(async () => {
+                // wait if any element holding target word will be loaded
+                $(element).addClass('noblur')}, 2000)
         else
+        if (! $(element).hasClass('permamentUnblur'))
             $(element).addClass('blur')
     })
 }
@@ -115,8 +118,16 @@ let startObserver = () => {
         var newImgList = []
         mutations.forEach(async (mutation) => {
             newImgList = newImgList.concat(updateImgList($(mutation.target)))
-            console.log(mutation)
+            console.log('mutations',mutation.target)
             newTextMutation.push($(mutation.target).text())
+            // console.log("------------------text")
+            // console.log($(mutation.target).text())
+            // console.log("------------------end")
+            // console.log($(mutation.target).clone()    //clone the element
+            //                             .children() //select all the children
+            //                             .remove()   //remove all the children
+            //                             .end()  //again go back to selected element
+            //                             .text())
         })
         checkNewAddedImages(imageList, newTextMutation.join(' '))
     })
@@ -138,26 +149,6 @@ let blurAll = () => {
     imageList.forEach((img) => {
         $(img).removeClass('noblur')
         $(img).addClass('blur')
-        // let p = $(img).parent()
-        // $(img).remove()
-        // let z = $('<div class="unblurButtonContainer"></div>')
-        // $(img).appendTo(z)
-        // $(z).appendTo(p)
-
-        // $('<button/>')
-        //     .val('Unblur')
-        //     .addClass('unblurBtn')
-        //     .css({'width': $(img).width(), 'height': $(img).height()})
-        //     .appendTo($(z))
-        //     .click((event) => {
-        //         event.preventDefault()
-        //         event.stopPropagation()
-        //         console.log(img)
-        //         $(img).parent().remove('.unblurBtn')
-        //         $(img).unwrap()
-        //     })
-        // $('<button class="unblurBtn">Unblur</button>').appendTo($(img).parent())
-
     })
 }
 
@@ -201,6 +192,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         blurAll()
         break
     case 'unblurAll':
+        console.log('unblur', imageList)
         imageList.forEach((image) => {
             $(image).removeClass('blur')
             $(image).addClass('noblur')
@@ -210,10 +202,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         updateBlur()
         break
     case 'unblur':
-        console.log('ublur')
         if (lastElementContext) {
-            $(lastElementContext).removeClass('blur')
-            $(lastElementContext).addClass('noblur')
+            let img = $(lastElementContext).find('.blur')
+            if(img){
+                img.removeClass('blur')
+                img.addClass('noblur permamentUnblur')
+            }
         }
         break
     case 'updateTargetWords':
