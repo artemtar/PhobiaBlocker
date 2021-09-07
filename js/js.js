@@ -132,10 +132,32 @@ let main = async() => {
 }
 main()
 
+
+
 let blurAll = () => {
     imageList.forEach((img) => {
         $(img).removeClass('noblur')
         $(img).addClass('blur')
+        // let p = $(img).parent()
+        // $(img).remove()
+        // let z = $('<div class="unblurButtonContainer"></div>')
+        // $(img).appendTo(z)
+        // $(z).appendTo(p)
+
+        // $('<button/>')
+        //     .val('Unblur')
+        //     .addClass('unblurBtn')
+        //     .css({'width': $(img).width(), 'height': $(img).height()})
+        //     .appendTo($(z))
+        //     .click((event) => {
+        //         event.preventDefault()
+        //         event.stopPropagation()
+        //         console.log(img)
+        //         $(img).parent().remove('.unblurBtn')
+        //         $(img).unwrap()
+        //     })
+        // $('<button class="unblurBtn">Unblur</button>').appendTo($(img).parent())
+
     })
 }
 
@@ -195,7 +217,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         break
     case 'updateTargetWords':
-        updateTargetWords()
+        // updateTargetWords()
         break
     default:
         console.log('Unrecognised message: ', message)

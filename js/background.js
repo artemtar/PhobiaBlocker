@@ -1,8 +1,9 @@
+const defaultTarget = ['clown', 'mice', 'spider']
+
 chrome.contextMenus.create({
     title: 'Unblur',
     contexts: ['image'],
     onclick: (info, tab) => {
-        console.log('unblur')
         chrome.tabs.sendMessage(tab.id, { type: 'unblur' })
     }
 })
@@ -20,7 +21,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 let setInitialTargetWords = () => {
     chrome.storage.sync.get('target', (storage) => {
         if (!storage['target']) {
-            defaultTarget = ['rodent', 'mice', 'rat', 'beaver', 'squirrel']
             chrome.storage.sync.set({ 'target': defaultTarget })
         }
     })
