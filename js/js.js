@@ -77,9 +77,13 @@ let analizeText = (text) => {
 let updateImgList = (nodeToCheck) => {
     let images = nodeToCheck.find('img')
     let backgroud = nodeToCheck.find('background-image')
-
-    images = $.merge(images, backgroud)
     let newImgList = []
+    images = $.merge(images, backgroud)
+
+    console.log('node', nodeToCheck)
+
+    console.log('images', images)
+
     for (let image of images) {
         if (!imageList.includes(image)) {
             imageList.push(image)
@@ -95,16 +99,26 @@ let updateImgList = (nodeToCheck) => {
  * @returns {string} The text that had been added with images
  */
 let checkNewAddedImages = (imageList, text) => {
-    var countTargetWordsMutation = analizeText( text )
+    let countTargetWordsMutation = analizeText(regexCleanUp(text))
     imageList.forEach((element) => {
         if (countTargetWordsMutation == 0)
+            // wait for more alements to load alongside the image
+            // nessesary for dynamic loads since we do not know what will be fetch.
             setInterval(async () => {
-                // wait if any element holding target word will be loaded
                 $(element).addClass('noblur')}, 2000)
         else
         if (! $(element).hasClass('permamentUnblur'))
             $(element).addClass('blur')
     })
+}
+
+let regexCleanUp = (text) => {
+    let r_embededScripts = /<script.*?>([\s\S]*?)<\/script>/gis
+    let r_embededStyle = /<style.*?>([\s\S]*?)<\/style>/gis
+    let r_embededTags = /(<([^>]+)>)/ig
+    let r_greadySearchForPossibleJSbrakets = /\{([\s\S]*)\}/gis
+    return text.replace(r_embededScripts, '').replace(r_embededStyle, '')
+        .replace(r_embededTags, '').replace(r_greadySearchForPossibleJSbrakets, '')
 }
 
 /**
@@ -113,45 +127,27 @@ let checkNewAddedImages = (imageList, text) => {
  * @returns {string} The text that had been added with images
  */
 let startObserver = () => {
-    var observer = new MutationObserver((mutations) => {
-        var newTextMutation = []
-        var newImgList = []
+    let observer = new MutationObserver((mutations) => {
+        console.log('hello=---------------')
+        let newTextMutation = []
+        let newImgList = []
         mutations.forEach(async (mutation) => {
+            console.log('mutations------------', mutation)
             newImgList = newImgList.concat(updateImgList($(mutation.target)))
-            console.log('mutations',mutation.target)
-            newTextMutation.push($(mutation.target).text())
-            // console.log("------------------text")
-            // console.log($(mutation.target).text())
-            // console.log("------------------end")
-            // console.log($(mutation.target).clone()    //clone the element
-            //                             .children() //select all the children
-            //                             .remove()   //remove all the children
-            //                             .end()  //again go back to selected element
-            //                             .text())
+            // console.log('mutations---------------------', $(mutation.target).text())
+            // console.log('clean-----------------------', regexCleanUp($(mutation.target).text()))
+            if(!($(mutation.target).is('body') || $(mutation.target).is('script') || $(mutation.target).is('header') || $(mutation.target).is('style')) || $(mutation.target)){
+                newTextMutation.push($(mutation.target).text())
+            }
         })
-        checkNewAddedImages(imageList, newTextMutation.join(' '))
+        checkNewAddedImages(newImgList, newTextMutation.join(' '))
     })
     observer.observe(document, { childList: true, subtree: true })
 }
 
-let main = async() => {
-    await setTargetWords()
-    startObserver()
-    document.addEventListener('contextmenu',
-        (event) => {lastElementContext = event.target},
-        true)
-}
-main()
-
-
-
-let blurAll = () => {
-    imageList.forEach((img) => {
-        $(img).removeClass('noblur')
-        $(img).addClass('blur')
-    })
-}
-
+/**
+ * Recives updated blur amount from popup.js and sets it to the page
+ */
 let updateBlur = () => {
     chrome.storage.sync.get('blurValueAmount', (storage) => {
         let blurValueAmount = storage['blurValueAmount']
@@ -166,21 +162,30 @@ let updateBlur = () => {
     })
 }
 
-let updateTargetWords = () => {
-    setTargetWords()
-    let title = $('title').text()
-    let checkTitle = analizeText(title, targetWords)
-    if (checkTitle != 0) {
-        blurAll()
-        return
-    }
-    let body = $('body').text()
-    let checkBody = analizeText(body, targetWords)
-    if (checkBody != 0) {
-        blurAll()
-        return
-    }
+let main = async() => {
+    await setTargetWords()
+    $( document ).ready(() => {
+        let newImgList = updateImgList($(document))
+        checkNewAddedImages(newImgList, $(document).text())
+    })
+    startObserver()
 }
+main()
+
+let blurAll = () => {
+    imageList.forEach((img) => {
+        $(img).removeClass('noblur')
+        $(img).addClass('blur')
+    })
+}
+let unBlurAll = () => {
+    imageList.forEach((image) => {
+        $(image).removeClass('blur')
+        $(image).addClass('noblur')
+    })
+}
+
+document.addEventListener('contextmenu', (event) => {lastElementContext = event.target}, true)
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     switch (message.type) {
@@ -188,19 +193,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse(targetWords)
         break
     case 'blurAll':
-        updateBlur()
+        console.log('blur', imageList)
         blurAll()
         break
     case 'unblurAll':
         console.log('unblur', imageList)
-        imageList.forEach((image) => {
-            $(image).removeClass('blur')
-            $(image).addClass('noblur')
-        })
+        unBlurAll()
         break
     case 'setBlurAmount':
         updateBlur()
         break
+    // unblur on mouse right click
     case 'unblur':
         if (lastElementContext) {
             let img = $(lastElementContext).find('.blur')
@@ -209,9 +212,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 img.addClass('noblur permamentUnblur')
             }
         }
-        break
-    case 'updateTargetWords':
-        // updateTargetWords()
         break
     default:
         console.log('Unrecognised message: ', message)

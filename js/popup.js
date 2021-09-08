@@ -1,6 +1,5 @@
-//TODO
-//Tags not loading on first run
 $(() => {
+
     chrome.storage.sync.get('blurValueAmount', (storage) => {
         if (storage['blurValueAmount']) {
             $('#blurRange').val(storage['blurValueAmount'])
@@ -17,12 +16,12 @@ $(() => {
     let updateTargetWords = () => {
         let newTargetWords = tagify.value.map(wordElement => wordElement['value'])
         chrome.storage.sync.set({ targetWords: newTargetWords })
-        chrome.tabs.query({}, (tabs) => {
-            let message = { type: 'updateTargetWords' }
-            for (let i = 0; i < tabs.length; ++i) {
-                chrome.tabs.sendMessage(tabs[i].id, message)
-            }
-        })
+        // chrome.tabs.query({}, (tabs) => {
+        //     let message = { type: 'updateTargetWords' }
+        //     for (let i = 0; i < tabs.length; ++i) {
+        //         chrome.tabs.sendMessage(tabs[i].id, message)
+        //     }
+        // })
     }
 
     tagify.on('edit', updateTargetWords)
@@ -61,5 +60,13 @@ $(() => {
                 chrome.tabs.sendMessage(tabs[i].id, message)
             }
         })
+    })
+
+    // on first start this words will be used as example
+    const defaultTarget = ['clown', 'mice', 'spider']
+    chrome.storage.sync.get('targetWords', (storage) => {
+        if (!storage['targetWords']) {
+            chrome.storage.sync.set({ 'targetWords': defaultTarget })
+        }
     })
 })
