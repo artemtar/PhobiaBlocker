@@ -21,7 +21,13 @@ $(() => {
         .on('remove', updateTargetWords)
         .on('add', updateTargetWords)
 
+<<<<<<< HEAD
     $('#addTagBtn').click(() => {
+=======
+    button.addEventListener('click', onAddButtonClick)
+
+    function onAddButtonClick () {
+>>>>>>> 65ae3df... Made Supported Words words list collapsible through a button
         tagify.addEmptyTag()
     })
 
