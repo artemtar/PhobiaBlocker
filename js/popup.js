@@ -30,6 +30,7 @@ $(() => {
         .on('add', updateTargetWords)
 
     button.addEventListener('click', onAddButtonClick)
+
     function onAddButtonClick () {
         tagify.addEmptyTag()
     }
@@ -51,7 +52,7 @@ $(() => {
                 chrome.tabs.sendMessage(tabs[0].id, { type: 'blurAll' })
             })
     })
-    
+
     $(document).on('input', '#blurRange', () => {
         let blurValueAmount = $('#blurRange').val()
         chrome.storage.sync.set({ 'blurValueAmount': blurValueAmount })
@@ -61,5 +62,19 @@ $(() => {
                 chrome.tabs.sendMessage(tabs[i].id, message)
             }
         })
+    })
+
+    $('#btn-supported-words').click(function () { //*jQuery addEventListener with function definition
+        if (this.innerHTML == '\u25BA') {
+            $('#div-supported-words').css({
+                'display': 'block'
+            })
+            this.innerHTML = '&#x25bc;'
+        } else if (this.innerHTML == '\u25BC') {
+            $('#div-supported-words').css({
+                'display': 'none'
+            })
+            this.innerHTML = '&#x25ba;'
+        }
     })
 })
