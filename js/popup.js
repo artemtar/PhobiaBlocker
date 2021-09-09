@@ -69,7 +69,8 @@ $(() => {
         if (!storage['targetWords']) {
             chrome.storage.sync.set({ 'targetWords': defaultTarget })
             
-    $('#btn-supported-words').click(function () { //*jQuery addEventListener with function definition
+
+    $('#btn-supported-words').click(function () {
         if (this.innerHTML == '\u25BA') {
             $('#div-supported-words').css({
                 'display': 'block'
