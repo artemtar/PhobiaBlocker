@@ -31,13 +31,12 @@ let setTargetWords = () => {
  * @returns {number} Amount of words in the text that match target words
  */
 let analizeText = (text) => {
-
     let cleanWords = tokenizer.tokenize(text)
         .map(word => word.toLowerCase())
         .filter(word => word.length > 2)
     let cleanWordsSet = [...new Set(cleanWords)]
     // .filter(word => !stopWords.includes(word))
-    
+
     // NLP function is very expensive, therefore analyze only words
     // that have two first letters in common with target words
     let compareTargetsToTextWords = (targets, wordsToAnalize) => {
@@ -52,19 +51,27 @@ let analizeText = (text) => {
         return probableMatchingTargetWords
     }
 
+    const normalizeParams = {
+        whitespace: true,
+        unicode: true,
+        contractions: true,
+        acronyms:true,
+        possessives: true,
+        plurals: true,
+        verbs: true,
+    }
+
     let targetWordsNormalized =[...new Set(nlp(targetWords)
-        .normalize()
+        .normalize(normalizeParams)
         .out('array'))]
 
     let wordsToCheckNormalized = nlp(compareTargetsToTextWords(targetWordsNormalized, cleanWordsSet))
-        .normalize()
+        .normalize(normalizeParams)
         .out('array')
 
     const match = wordsToCheckNormalized
         .filter(element => targetWords.includes(element))
         .filter(n => n)
-    console.log('match')
-    console.log(match.length)
     return match.length
 }
 
@@ -73,22 +80,16 @@ let analizeText = (text) => {
  * While newImageList hold only newly added images, this list is used to check new dynamicly incomming elements.
  * @param {Node} nodeToCheck Text that will be checked for target words
  * @returns {list} Amount of words in the text that match target words
- */
+*/
 let updateImgList = (nodeToCheck) => {
-    let images = nodeToCheck.find('img')
-    let backgroud = nodeToCheck.find('background-image')
+    let images = nodeToCheck.find('img, background-image')
+    // let backgroud = nodeToCheck.find('background-image')
     let newImgList = []
-    images = $.merge(images, backgroud)
-
-    console.log('node', nodeToCheck)
-
-    console.log('images', images)
-
+    // images = $.merge(images, backgroud)
     for (let image of images) {
-        if (!imageList.includes(image)) {
+        if (!imageList.includes(image))
             imageList.push(image)
-            newImgList.push(image)
-        }
+        newImgList.push(image)
     }
     return newImgList
 }
@@ -100,15 +101,16 @@ let updateImgList = (nodeToCheck) => {
  */
 let checkNewAddedImages = (imageList, text) => {
     let countTargetWordsMutation = analizeText(regexCleanUp(text))
-    imageList.forEach((element) => {
+    imageList.forEach((image) => {
         if (countTargetWordsMutation == 0)
             // wait for more alements to load alongside the image
             // nessesary for dynamic loads since we do not know what will be fetch.
             setInterval(async () => {
-                $(element).addClass('noblur')}, 2000)
+                if (!$(image).hasClass('blur'))
+                    $(image).addClass('noblur')}, 2000)
         else
-        if (! $(element).hasClass('permamentUnblur'))
-            $(element).addClass('blur')
+        if (! $(image).hasClass('permamentUnblur'))
+            $(image).addClass('blur')
     })
 }
 
@@ -128,14 +130,10 @@ let regexCleanUp = (text) => {
  */
 let startObserver = () => {
     let observer = new MutationObserver((mutations) => {
-        console.log('hello=---------------')
         let newTextMutation = []
         let newImgList = []
         mutations.forEach(async (mutation) => {
-            console.log('mutations------------', mutation)
             newImgList = newImgList.concat(updateImgList($(mutation.target)))
-            // console.log('mutations---------------------', $(mutation.target).text())
-            // console.log('clean-----------------------', regexCleanUp($(mutation.target).text()))
             if(!($(mutation.target).is('body') || $(mutation.target).is('script') || $(mutation.target).is('header') || $(mutation.target).is('style')) || $(mutation.target)){
                 newTextMutation.push($(mutation.target).text())
             }
@@ -146,7 +144,7 @@ let startObserver = () => {
 }
 
 /**
- * Recives updated blur amount from popup.js and sets it to the page
+ * Recives updated blur amount value from popup.js and sets it to the page
  */
 let updateBlur = () => {
     chrome.storage.sync.get('blurValueAmount', (storage) => {
@@ -193,11 +191,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse(targetWords)
         break
     case 'blurAll':
-        console.log('blur', imageList)
+        console.log(imageList)
         blurAll()
         break
     case 'unblurAll':
-        console.log('unblur', imageList)
         unBlurAll()
         break
     case 'setBlurAmount':
