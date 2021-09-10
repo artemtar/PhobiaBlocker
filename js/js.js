@@ -15,11 +15,7 @@ let analizeText = (text) => {
     let cleanWordsSet = [...new Set(cleanWords)]
     // .filter(word => !stopWords.includes(word))
 
-<<<<<<< HEAD
-    // NLP function is very expensive, therefore analyze only words
-=======
     // NLP noramlization function is very expensive, therefore analyze only words
->>>>>>> 8380abbab5d569f6a591863dd30776fa1b06b1bc
     // that have two first letters in common with target words
     let compareTargetsToTextWords = (targets, wordsToAnalize) => {
         let probableMatchingTargetWords = []
@@ -65,13 +61,7 @@ let analizeText = (text) => {
 */
 let updateImgList = (nodeToCheck) => {
     let images = nodeToCheck.find('img, background-image')
-<<<<<<< HEAD
-    // let backgroud = nodeToCheck.find('background-image')
     let newImgList = []
-    // images = $.merge(images, backgroud)
-=======
-    let newImgList = []
->>>>>>> 8380abbab5d569f6a591863dd30776fa1b06b1bc
     for (let image of images) {
         if (!imageList.includes(image))
             imageList.push(image)
@@ -120,11 +110,7 @@ let startObserver = () => {
         let newImgList = []
         mutations.forEach(async (mutation) => {
             newImgList = newImgList.concat(updateImgList($(mutation.target)))
-<<<<<<< HEAD
-            if(!($(mutation.target).is('body') || $(mutation.target).is('script') || $(mutation.target).is('header') || $(mutation.target).is('style')) || $(mutation.target)){
-=======
             if(!($(mutation.target).is('body') || $(mutation.target).is('script') || $(mutation.target).is('header') || $(mutation.target).is('style')) || !mutation.target){
->>>>>>> 8380abbab5d569f6a591863dd30776fa1b06b1bc
                 newTextMutation.push($(mutation.target).text())
             }
         })
