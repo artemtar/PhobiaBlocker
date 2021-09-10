@@ -2,28 +2,6 @@ const tokenizer = new natural.WordTokenizer()
 let targetWords = []
 let lastElementContext
 let imageList = []
-const defaultTargetWords = ['clown', 'mice', 'spider'] // targets are words defined by user to block
-
-/**
- * Checks if target words are set, if target words are not set -> sets default
- * If target words are present in storage -> use those words
- */
-let setTargetWords = () => {
-    return new Promise((resolve, reject) => {
-        chrome.storage.sync.get('targetWords', (storage) => {
-            if (chrome.runtime.lastError) {
-                return reject(chrome.runtime.lastError)
-            }
-            if (!storage['targetWords']) {
-                chrome.storage.sync.set({ 'targetWords': defaultTargetWords })
-                targetWords = defaultTargetWords
-            } else {
-                targetWords = storage['targetWords']
-            }
-            resolve()
-        })
-    })
-}
 
 /**
  * Search text for any target words, using NLP normalization to compare words
@@ -37,7 +15,11 @@ let analizeText = (text) => {
     let cleanWordsSet = [...new Set(cleanWords)]
     // .filter(word => !stopWords.includes(word))
 
+<<<<<<< HEAD
     // NLP function is very expensive, therefore analyze only words
+=======
+    // NLP noramlization function is very expensive, therefore analyze only words
+>>>>>>> 8380abbab5d569f6a591863dd30776fa1b06b1bc
     // that have two first letters in common with target words
     let compareTargetsToTextWords = (targets, wordsToAnalize) => {
         let probableMatchingTargetWords = []
@@ -83,9 +65,13 @@ let analizeText = (text) => {
 */
 let updateImgList = (nodeToCheck) => {
     let images = nodeToCheck.find('img, background-image')
+<<<<<<< HEAD
     // let backgroud = nodeToCheck.find('background-image')
     let newImgList = []
     // images = $.merge(images, backgroud)
+=======
+    let newImgList = []
+>>>>>>> 8380abbab5d569f6a591863dd30776fa1b06b1bc
     for (let image of images) {
         if (!imageList.includes(image))
             imageList.push(image)
@@ -103,8 +89,8 @@ let checkNewAddedImages = (imageList, text) => {
     let countTargetWordsMutation = analizeText(regexCleanUp(text))
     imageList.forEach((image) => {
         if (countTargetWordsMutation == 0)
-            // wait for more alements to load alongside the image
-            // nessesary for dynamic loads since we do not know what will be fetch.
+            // wait for more elements to load alongside the image
+            // necessary for dynamic loads since we do not know what will be fetched.
             setInterval(async () => {
                 if (!$(image).hasClass('blur'))
                     $(image).addClass('noblur')}, 2000)
@@ -134,7 +120,11 @@ let startObserver = () => {
         let newImgList = []
         mutations.forEach(async (mutation) => {
             newImgList = newImgList.concat(updateImgList($(mutation.target)))
+<<<<<<< HEAD
             if(!($(mutation.target).is('body') || $(mutation.target).is('script') || $(mutation.target).is('header') || $(mutation.target).is('style')) || $(mutation.target)){
+=======
+            if(!($(mutation.target).is('body') || $(mutation.target).is('script') || $(mutation.target).is('header') || $(mutation.target).is('style')) || !mutation.target){
+>>>>>>> 8380abbab5d569f6a591863dd30776fa1b06b1bc
                 newTextMutation.push($(mutation.target).text())
             }
         })
@@ -157,6 +147,27 @@ let updateBlur = () => {
         } else {
             document.documentElement.style.setProperty('--blurValueAmount', 15 + 'px')
         }
+    })
+}
+
+/**
+ * Checks if target words are set, if target words are present in storage -> use those words
+ * Target words are words defined by user in the extention
+ */
+let setTargetWords = () => {
+    return new Promise((resolve, reject) => {
+        chrome.storage.sync.get('targetWords', (storage) => {
+            if (chrome.runtime.lastError) {
+                return reject(chrome.runtime.lastError)
+            }
+            if (!storage['targetWords']) {
+                chrome.storage.sync.set({ 'targetWords': [] })
+                targetWords = []
+            } else {
+                targetWords = storage['targetWords']
+            }
+            return resolve()
+        })
     })
 }
 
