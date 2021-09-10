@@ -214,3 +214,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         console.log('Unrecognised message: ', message)
     }
 })
+
+//hotkeys to Blur All (CTRL + ALT + B), and Unblur All (CTRL + ALT + U):
+$(document).keydown(function (e) {
+    if (e.ctrlKey && e.altKey && e.which === 66) {
+        blurAll()
+        e.preventDefault()
+    }
+    else if (e.ctrlKey && e.altKey && e.which === 85) {
+        unBlurAll()
+        e.preventDefault()
+    }
+})
