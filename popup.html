@@ -12,6 +12,7 @@
         @import url('https://fonts.googleapis.com/css?family=Roboto&display=swap');
     </style>
 </head>
+
 <body>
     <div class='header text-center' width='100%'>
         <span class='text-center'>PhobiaBlocker</span>
@@ -27,7 +28,7 @@
     <div class="outer-div">
         <div class='inner-div'>
             <label>
-                <h3>Set amout of blur</h3>
+                <h3>Set Blur Amount:</h3>
             </label>
             <input type="range" id="blurRange" min="0" max="7" width="100%">
         </div>
@@ -35,18 +36,21 @@
     <div class='outer-div'>
         <div class="inner-div">
             <h3>Supported Words:</h3>
-            <tags class="tagify addedWordArea rightside" aria-haspopup="true" aria-expanded="false" role="tagslist">
-                </tag><span contenteditable="" data-placeholder="​" aria-placeholder="" class="tagify__input"
-                    role="textbox" aria-multiline="false"></span>
-                <button type="button" class='addWordBtn'>+</button>
+            <button type="button" name="supportedWords" class="btn-toggle" id="btn-supported-words">&#x25ba;</button>
+            <div id="div-supported-words">
+                <tags class="tagify addedWordArea rightside" aria-haspopup="true" aria-expanded="false" role="tagslist">
+                    </tag><span contenteditable="" data-placeholder="​" aria-placeholder="" class="tagify__input"
+                        role="textbox" aria-multiline="false"></span>
+                    <button type="button" class='addWordBtn'>+</button>
+            </div>
         </div>
     </div>
     <div class='outer-div' style="padding-bottom:8px">
         <div class="inner-div">
-            <h3>Always Blured</h3><input type="checkbox" id="checkbox">
+            <h3>Set Blur as Default</h3><input type="checkbox" id="checkbox">
         </div>
     </div>
-            <script src="js/popup.js"></script>
+    <script src="js/popup.js"></script>
 </body>
 
 </html>

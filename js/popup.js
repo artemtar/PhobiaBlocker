@@ -29,6 +29,7 @@ $(() => {
         .on('add', updateTargetWords)
 
     button.addEventListener('click', onAddButtonClick)
+
     function onAddButtonClick () {
         tagify.addEmptyTag()
     }
@@ -50,7 +51,7 @@ $(() => {
                 chrome.tabs.sendMessage(tabs[0].id, { type: 'blurAll' })
             })
     })
-    
+
     $(document).on('input', '#blurRange', () => {
         let blurValueAmount = $('#blurRange').val()
         chrome.storage.sync.set({ 'blurValueAmount': blurValueAmount })
@@ -67,6 +68,19 @@ $(() => {
     chrome.storage.sync.get('targetWords', (storage) => {
         if (!storage['targetWords']) {
             chrome.storage.sync.set({ 'targetWords': defaultTarget })
+            
+
+    $('#btn-supported-words').click(function () {
+        if (this.innerHTML == '\u25BA') {
+            $('#div-supported-words').css({
+                'display': 'block'
+            })
+            this.innerHTML = '&#x25bc;'
+        } else if (this.innerHTML == '\u25BC') {
+            $('#div-supported-words').css({
+                'display': 'none'
+            })
+            this.innerHTML = '&#x25ba;'
         }
     })
 })
