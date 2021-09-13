@@ -9,6 +9,7 @@ let imageList = []
  * @returns {number} Amount of words in the text that match target words
  */
 let analizeText = (text) => {
+    console.log('-----------', text)
     let cleanWords = tokenizer.tokenize(text)
         .map(word => word.toLowerCase())
         .filter(word => word.length > 2)
@@ -188,7 +189,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse(targetWords)
         break
     case 'blurAll':
-        console.log(imageList)
         blurAll()
         break
     case 'unblurAll':
@@ -212,7 +212,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 })
 
-//hotkeys to Blur All (CTRL + ALT + B), and Unblur All (CTRL + ALT + U):
+/**
+ * hotkeys to Blur All (CTRL + ALT + B), and Unblur All (CTRL + ALT + U):
+ **/
 $(document).keydown(function (e) {
     if (e.ctrlKey && e.altKey && e.which === 66) {
         blurAll()

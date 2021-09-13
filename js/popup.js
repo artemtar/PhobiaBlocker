@@ -54,7 +54,6 @@ $(() => {
         })
     })
 
-    //toggle hide/show Supported Words words list:
     $('#btn-supported-words').click(function () {
         if (this.innerHTML == '\u25BA') {
             $('#div-supported-words').css({
@@ -69,7 +68,9 @@ $(() => {
         }
     })
 
-    //on first start this words will be used as example
+    /**
+     * on first start this words will be used as example
+    **/
     const defaultTarget = ['clown', 'mice', 'spider']
     chrome.storage.sync.get('targetWords', (storage) => {
         if (!storage['targetWords'])
