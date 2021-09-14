@@ -54,20 +54,6 @@ $(() => {
         })
     })
 
-    $('#btn-supported-words').click(function () {
-        if (this.innerHTML == '\u25BA') {
-            $('#div-supported-words').css({
-                'display': 'block'
-            })
-            this.innerHTML = '&#x25bc;'
-        } else if (this.innerHTML == '\u25BC') {
-            $('#div-supported-words').css({
-                'display': 'none'
-            })
-            this.innerHTML = '&#x25ba;'
-        }
-    })
-
     /**
      * on first start this words will be used as example
     **/
