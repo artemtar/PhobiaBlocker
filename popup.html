@@ -32,24 +32,7 @@
             </label>
         </div>
         <hr>
-        <div class="main-area-container">
-            <h3>Set Blur Amount</h3>
-            <input type="range" id="blurRange" min="0" max="7" width="100%">
-        </div>
-        <hr>
-        <div class="supported-words-container main-area-container">
-            <div class="suported-words-collapser">
-                <h3>Supported Words</h3>
-                <span name="supportedWords" id="btn-supported-words" data-bs-toggle="collapse" data-bs-target="#supported-words-area" aria-expanded="false" aria-controls="div-supported-words"></span>
-            </div>
-            <div id="supported-words-area" class="collapse">
-                <tags class="addedWordArea customLook" aria-haspopup="true" role="tagslist">
-                    </tag><span class="tagify__input" role="textbox" aria-multiline="false"></span>
-                    <button type="button" id='addTagBtn'>+</button>
-            </div>
-        </div>
-        <hr>
-        <div class="blur-btn-group"  style="padding-bottom:16px" >
+                <div class="blur-btn-group"  style="padding-bottom:16px" >
             <div class="blur-btn-container">
                 <div class="blur-btn-container-element">
                     <input type="button" id="blurBtn" value="Blur ALL">
@@ -61,6 +44,24 @@
                 </div>
             </div>
         </div>
+        <hr>
+        <div class="main-area-container">
+            <h3>Set Blur Amount</h3>
+            <input type="range" id="blurRange" min="0" max="7" width="100%">
+        </div>
+        <hr>
+        <div class="supported-words-container main-area-container">
+            <div class="suported-words-collapser">
+                <h3>Supported Words</h3>
+                <span name="supportedWords" id="btn-supported-words" data-bs-toggle="collapse" data-bs-target="#supported-words-area" aria-expanded="false" aria-controls="div-supported-words"></span>
+            </div>
+            <div id="supported-words-area" class="collapse">
+                <tags class="addedWordArea customLook" aria-haspopup="true" role="tagslist"></tag>
+                    <span class="tagify__input" role="textbox" aria-multiline="false" style="margin-top: 10px;"></span>
+                    <span id='addTagBtn'></span>
+            </div>
+        </div>
+        <hr>
         <script src="js/popup.js"></script>
     </div>
 </body>

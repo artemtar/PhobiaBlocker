@@ -47,17 +47,14 @@ hr {
   align-self: center;
 }
 
-h1 {
-  color: #00447c;
-}
-
-h3 {
+h1 h3 {
   color: #00447c;
 }
 
 .supported-words-container {
   display: flex;
   flex-direction: column;
+  margin-bottom: 16px;
 }
 
 .suported-words-collapser {
@@ -116,51 +113,8 @@ h3 {
   background-color: #3c91ba;
 }
 
-.checkbox input[type="checkbox"]:focus + label::before {
-  outline: rgb(59, 153, 252) auto 5px;
-}
-
-.checkbox input[type="checkbox"] + label::after {
-  content: none;
-}
-
-.checkbox input[type="checkbox"]:checked + label::after {
-  content: "";
-}
-
-.checkbox label {
-  position: relative;
-}
-
-.checkbox label::before,
-.checkbox label::after {
-  position: absolute;
-}
-
-.checkbox label::before {
-  top: 3px;
-}
-
-.checkbox label::after {
-  left: 4px;
-  /* top: 7px; */
-}
-
 label {
   display: block;
-}
-
-aside {
-  padding: 0.5em;
-  box-sizing: border-box;
-  width: 50%;
-}
-user agent stylesheet aside {
-  display: block;
-}
-
-p {
-  line-height: 1.4;
 }
 
 .tagify {
@@ -192,14 +146,8 @@ p {
   border-radius: 25px;
 }
 
-.addedWordArea + button {
-  background: #d3e2e2;
-  border: 0;
-  border-radius: 50%;
-  width: 1.8em;
-  height: 1.8em;
-  cursor: pointer;
-  outline: none;
+#addTagBtn {
+  margin-bottom: 14px;
 }
 
 .addedWordArea + button:hover {
@@ -209,7 +157,6 @@ p {
 .addedWordArea .tagify__input {
   display: none;
 }
-
 
 /* range */
 input[type="range"] {
@@ -226,7 +173,6 @@ input[type="range"]::-webkit-slider-runnable-track {
   cursor: pointer;
   background: #00447c;
   border-radius: 5px;
-  /* border: 0.2px solid #010101; */
 }
 input[type="range"]::-webkit-slider-thumb {
   border: 0.3px solid #000000;
