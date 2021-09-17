@@ -3,18 +3,22 @@ let targetWords = []
 let lastElementContext
 let imageList = []
 
+function isImg(el) { return el.tagName == 'IMG' }
+
+
 /**
  * Search text for any target words, using NLP normalization to compare words
  * @param {string} text Text that will be checked for target words
  * @returns {number} Amount of words in the text that match target words
  */
 let analizeText = (text) => {
-    console.log('-----------', text)
+    let r_wordInAnyLanguage = /^(\b(\p{L})*\b)$/gmiu
     let cleanWords = tokenizer.tokenize(text)
         .map(word => word.toLowerCase())
         .filter(word => word.length > 2)
+        .filter(word => r_wordInAnyLanguage.test(word))
+        // .filter(word => !stopWords.includes(word))
     let cleanWordsSet = [...new Set(cleanWords)]
-    // .filter(word => !stopWords.includes(word))
 
     // NLP noramlization function is very expensive, therefore analyze only words
     // that have two first letters in common with target words
@@ -49,7 +53,7 @@ let analizeText = (text) => {
         .out('array')
 
     const match = wordsToCheckNormalized
-        .filter(element => targetWords.includes(element))
+        .filter(element => targetWordsNormalized.includes(element))
         .filter(n => n)
     return match.length
 }
@@ -61,7 +65,16 @@ let analizeText = (text) => {
  * @returns {list} Amount of words in the text that match target words
 */
 let updateImgList = (nodeToCheck) => {
-    let images = nodeToCheck.find('img, background-image')
+    let images = nodeToCheck.find('img, IMG')
+    console.log('is image', nodeToCheck.tagName)
+    console.log(nodeToCheck)
+
+    // if (nodeToCheck.css('background-image') != 'none' && !nodeToCheck.css('background-image')){
+    //     console.log('found b', nodeToCheck)
+    //     console.log("styule", typeof nodeToCheck.css('background-image'), nodeToCheck.css('background-image'), !nodeToCheck.css('background-image'))
+    //     console.log('images', images)
+    //     images = $.merge(nodeToCheck, images)
+    // }
     let newImgList = []
     for (let image of images) {
         if (!imageList.includes(image))
@@ -77,7 +90,7 @@ let updateImgList = (nodeToCheck) => {
  * @returns {string} The text that had been added with images
  */
 let checkNewAddedImages = (imageList, text) => {
-    let countTargetWordsMutation = analizeText(regexCleanUp(text))
+    let countTargetWordsMutation = analizeText(regexTextCleanUp(text))
     imageList.forEach((image) => {
         if (countTargetWordsMutation == 0)
             // wait for more elements to load alongside the image
@@ -91,13 +104,17 @@ let checkNewAddedImages = (imageList, text) => {
     })
 }
 
-let regexCleanUp = (text) => {
+let regexTextCleanUp = (text) => {
     let r_embededScripts = /<script.*?>([\s\S]*?)<\/script>/gis
     let r_embededStyle = /<style.*?>([\s\S]*?)<\/style>/gis
     let r_embededTags = /(<([^>]+)>)/ig
-    let r_greadySearchForPossibleJSbrakets = /\{([\s\S]*)\}/gis
-    return text.replace(r_embededScripts, '').replace(r_embededStyle, '')
-        .replace(r_embededTags, '').replace(r_greadySearchForPossibleJSbrakets, '')
+    let r_greadySearchForPossibleJSFunction = /\(.*?\)[\s|=>| => ]?{[\s\S]*}/gis
+    let r_variables = /.*?\s?=.*?[;|,]?/gis
+    return text.replace(r_embededScripts, '')
+        .replace(r_embededStyle, '')
+        .replace(r_embededTags, '')
+        // .replace(r_greadySearchForPossibleJSFunction, '')
+        // .replace(r_variables, '')
 }
 
 /**
@@ -112,7 +129,8 @@ let startObserver = () => {
         mutations.forEach(async (mutation) => {
             newImgList = newImgList.concat(updateImgList($(mutation.target)))
             if(!($(mutation.target).is('body') || $(mutation.target).is('script') || $(mutation.target).is('header') || $(mutation.target).is('style')) || !mutation.target){
-                newTextMutation.push($(mutation.target).text())
+                let l = $(mutation.target).text()
+                newTextMutation.push(l)
             }
         })
         checkNewAddedImages(newImgList, newTextMutation.join(' '))
@@ -189,6 +207,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse(targetWords)
         break
     case 'blurAll':
+        console.log(imageList)
         blurAll()
         break
     case 'unblurAll':
@@ -200,10 +219,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // unblur on mouse right click
     case 'unblur':
         if (lastElementContext) {
-            let img = $(lastElementContext).find('.blur')
-            if(img){
-                img.removeClass('blur')
-                img.addClass('noblur permamentUnblur')
+            let blured = $(lastElementContext).find('.blur')
+            console.log('--- bluredd', blured)
+            if(!blured.hasClass('blur')){
+                console.log('mot bluredd')
+                blured = $(lastElementContext).siblings('.blur')
+            }
+            if (blured){
+                console.log('blured', blured)
+                blured.removeClass('blur')
+                blured.addClass('noblur permamentUnblur')
             }
         }
         break
@@ -215,13 +240,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 /**
  * hotkeys to Blur All (CTRL + ALT + B), and Unblur All (CTRL + ALT + U):
  **/
-$(document).keydown(function (e) {
-    if (e.ctrlKey && e.altKey && e.which === 66) {
+$(document).keydown((event) => {
+    if (event.ctrlKey && event.altKey && event.which === 66) {
         blurAll()
-        e.preventDefault()
+        event.preventDefault()
     }
-    else if (e.ctrlKey && e.altKey && e.which === 85) {
+    else if (event.ctrlKey && event.altKey && event.which === 85) {
         unBlurAll()
-        e.preventDefault()
+        event.preventDefault()
     }
 })

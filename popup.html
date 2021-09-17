@@ -1,56 +1,67 @@
 <!DOCTYPE html>
 <html>
-
 <head>
     <title>FearBlocker</title>
+    <link rel="stylesheet" href="css/tagify.css">
     <script src="js/jquery-3.4.1.min.js"></script>
     <script src="js/tagify.js"></script>
-    <link href="https://cdn.jsdelivr.net/npm/@yaireo/tagify/dist/tagify.css" rel="stylesheet" type="text/css" />
+    <link rel="stylesheet" href="css/bootstrap.css">
+    <script src="js/bootstrap.js"></script>
     <link rel="stylesheet" href="css/popup.css">
-    <link rel="stylesheet" href="css/range.css">
-    <style>
-        @import url('https://fonts.googleapis.com/css?family=Roboto&display=swap');
-    </style>
+    <link rel="stylesheet" href="css/tagifyCustom.css">
+    <link rel="stylesheet" href="css/slider.css">
 </head>
 
 <body>
-    <div class='header text-center' width='100%'>
-        <span class='text-center'>PhobiaBlocker</span>
+    <div class='header' width='100%'>
+        PhobiaBlocker
     </div>
-    <div class="checkbox">
-    </div>
-    <div class="outer-div" style="padding-top:8px">
-        <div class="btn-group inner-div">
-            <input type="button" id="unblurBtn" value="Unblur ALL">
-            <input type="button" id="blurBtn" value="Blur ALL">
-        </div>
-    </div>
-    <div class="outer-div">
-        <div class='inner-div'>
-            <label>
-                <h3>Set Blur Amount:</h3>
+    <div class="main-area">
+        <div class="main-area-container settings-contianer" style="margin-top: 8px;">
+            <h3>Enabled</h3>
+            <label class="switch">
+                <input type="checkbox">
+                <span class="slider round"></span>
             </label>
+        </div>
+        <div class="main-area-container settings-contianer" style="margin-top: 8px;">
+            <h3>Blur is always on</h3>
+            <label class="switch">
+                <input type="checkbox">
+                <span class="slider round"></span>
+            </label>
+        </div>
+        <hr>
+        <div class="main-area-container">
+            <h3>Set Blur Amount</h3>
             <input type="range" id="blurRange" min="0" max="7" width="100%">
         </div>
-    </div>
-    <div class='outer-div'>
-        <div class="inner-div">
-            <h3>Supported Words:</h3>
-            <button type="button" name="supportedWords" class="btn-toggle" id="btn-supported-words">&#x25ba;</button>
-            <div id="div-supported-words">
-                <tags class="tagify addedWordArea rightside" aria-haspopup="true" aria-expanded="false" role="tagslist">
-                    </tag><span contenteditable="" data-placeholder="​" aria-placeholder="" class="tagify__input"
-                        role="textbox" aria-multiline="false"></span>
+        <hr>
+        <div class="supported-words-container main-area-container">
+            <div class="suported-words-collapser">
+                <h3>Supported Words</h3>
+                <span name="supportedWords" id="btn-supported-words" data-bs-toggle="collapse" data-bs-target="#supported-words-area" aria-expanded="false" aria-controls="div-supported-words"></span>
+            </div>
+            <div id="supported-words-area" class="collapse">
+                <tags class="addedWordArea customLook" aria-haspopup="true" role="tagslist">
+                    </tag><span class="tagify__input" role="textbox" aria-multiline="false"></span>
                     <button type="button" id='addTagBtn'>+</button>
             </div>
         </div>
-    </div>
-    <div class='outer-div' style="padding-bottom:8px">
-        <div class="inner-div">
-            <h3>Set Blur as Default</h3><input type="checkbox" id="checkbox">
+        <hr>
+        <div class="blur-btn-group"  style="padding-bottom:16px" >
+            <div class="blur-btn-container">
+                <div class="blur-btn-container-element">
+                    <input type="button" id="blurBtn" value="Blur ALL">
+                    <span class="blur-shortcut"><i>ctrl + alt + b</i></span>
+                </div>
+                <div class="blur-btn-container-element">
+                    <input type="button" id="unblurBtn" value="Unblur ALL">
+                    <span class="blur-shortcut"><i>ctrl + alt + u</i></span>
+                </div>
+            </div>
         </div>
+        <script src="js/popup.js"></script>
     </div>
-    <script src="js/popup.js"></script>
 </body>
-
 </html>
