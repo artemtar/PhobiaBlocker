@@ -21,6 +21,9 @@
             "css/style.css"
         ]
     }],
+    "web_accessible_resources": [
+    "css/style.css"
+    ],
     "background": {
         "scripts": [
             "js/jquery-3.4.1.min.js",

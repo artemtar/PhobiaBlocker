@@ -3,9 +3,6 @@ let targetWords = []
 let lastElementContext
 let imageList = []
 
-function isImg(el) { return el.tagName == 'IMG' }
-
-
 /**
  * Search text for any target words, using NLP normalization to compare words
  * @param {string} text Text that will be checked for target words
@@ -66,9 +63,6 @@ let analizeText = (text) => {
 */
 let updateImgList = (nodeToCheck) => {
     let images = nodeToCheck.find('img, IMG')
-    console.log('is image', nodeToCheck.tagName)
-    console.log(nodeToCheck)
-
     // if (nodeToCheck.css('background-image') != 'none' && !nodeToCheck.css('background-image')){
     //     console.log('found b', nodeToCheck)
     //     console.log("styule", typeof nodeToCheck.css('background-image'), nodeToCheck.css('background-image'), !nodeToCheck.css('background-image'))
@@ -127,8 +121,9 @@ let startObserver = () => {
         let newTextMutation = []
         let newImgList = []
         mutations.forEach(async (mutation) => {
+            console.log('mutation', mutation.target, $(mutation.target).is('head'), $(mutation.target).title, $(mutation.target).find('title'))
             newImgList = newImgList.concat(updateImgList($(mutation.target)))
-            if(!($(mutation.target).is('body') || $(mutation.target).is('script') || $(mutation.target).is('header') || $(mutation.target).is('style')) || !mutation.target){
+            if(!($(mutation.target).is('body') || $(mutation.target).is('script') || $(mutation.target).is('head') || $(mutation.target).is('style')) || !mutation.target){
                 let l = $(mutation.target).text()
                 newTextMutation.push(l)
             }
@@ -176,13 +171,54 @@ let setTargetWords = () => {
     })
 }
 
+// function loadCSS(file) {
+//   var link = document.createElement("link");
+//   link.href = chrome.extension.getURL('./css/style.css');
+//   link.id = file;
+//   link.type = "text/css";
+//   link.rel = "stylesheet";
+//   document.getElementsByTagName("head")[0].appendChild(link);
+// }
+
+// function unloadCSS(file) {
+//   var cssNode = document.getElementById('./css/style.css');
+//   console.log(cssNode)
+//   cssNode && cssNode.parentNode.removeChild(cssNode);
+// }
+
+// $('img').css("filter", "");
+
+// (function(){
+ 
+//     var loc = document.location.href;
+//     if( /* ---- Perform your test here ---- */ /www\.google/.test(loc)){
+ 
+//         document.addEventListener('DOMSubtreeModified', injectCSS, false);
+ 
+//         function injectCSS(){
+//             if(document.head){
+//                 document.removeEventListener('DOMSubtreeModified', injectCSS, false);
+ 
+//                 var style = document.createElement("style");
+//                 style.innerHTML = "background: red";
+//                 // document.head.appendChild(style);
+//                 // loadCSS()
+//             }
+//         }
+//     }
+ 
+// })()
+
 let main = async() => {
     await setTargetWords()
-    $( document ).ready(() => {
-        let newImgList = updateImgList($(document))
-        checkNewAddedImages(newImgList, $(document).text())
-    })
-    startObserver()
+    // $( document ).ready(() => {
+    //     let newImgList = updateImgList($(document))
+    //     checkNewAddedImages(newImgList, $(document).text())
+    // })
+    // startObserver()
+    let controller = new Controller(new ImageNodeList)
+    controller.observerInit()
+
 }
 main()
 
@@ -250,3 +286,238 @@ $(document).keydown((event) => {
         event.preventDefault()
     }
 })
+
+
+class ImageNode {
+    constructor(_imageNode) {
+        this.imageNode = _imageNode
+        this.runningTextProcessing = 0
+        this.unveilInterval
+        this.isBlured = false
+        this._startUnvielInterval()
+    }
+
+    same(nodeToCheck) {
+        console.log("---node to check")
+        console.log(nodeToCheck)
+        console.log('otherone', this.imageNode == nodeToCheck,this.imageNode)
+        console.log(this.imageNode)
+        return this.imageNode == nodeToCheck
+    }
+
+    blur() {
+        this.imageNode.removeClass('noblur')
+        this.imageNode.addClass('blur')
+    }
+
+    unblur() {
+        this.imageNode.addClass('noblur')
+        this.imageNode.removeClass('blur')
+    }
+
+    _startUnvielInterval(){
+        // wait for more elements to load alongside the image
+        // necessary for dynamic loads since we do not know what will be fetched.
+        this.unveilInterval = setInterval(async () => {
+            if (!this.isBlured && this.runningTextProcessing < 1) this.unblur()
+            else if(!this.isBlured) this._startUnvielInterval()
+            else if(!$(this.imageNode).hasClass('permamentUnblur')) this.blur()
+        }, 1000)
+    }
+
+    newTextProcessingStarted(){
+        this.runningTextProcessing += 1
+        this._updateUnveilInterval()
+    }
+
+    textProcessingFinished(){
+        this.runningTextProcessing -= 1
+        if(!this.isBlured)
+            this._updateUnveilInterval()
+    }
+
+    _updateUnveilInterval(){
+        if (!this.runningTextProcessing < 1) {
+            clearInterval(this.unveilInterval)
+            this._startUnvielInterval()
+        }
+    }
+
+    updateBlurStatus(analysisResult){
+        if(!this.isBlured) this.isBlured = analysisResult
+    }
+
+}
+
+class TextAnalizer {
+    constructor(){
+        this.text = []
+    }
+
+    addText(_text){
+        this.text.push(_text)
+    }
+
+    async startAnalysis (dependentImageNodes){
+        dependentImageNodes.forEach((imageNode) => {
+            imageNode.newTextProcessingStarted()
+        })
+
+        let r_wordInAnyLanguage = /^(\b(\p{L})*\b)$/gmiu
+        let cleanWords = tokenizer.tokenize(this._regexTextCleanUp(this.text.join(' ')))
+            .map(word => word.toLowerCase())
+            .filter(word => word.length > 2)
+            .filter(word => r_wordInAnyLanguage.test(word))
+            // .filter(word => !stopWords.includes(word))
+        let cleanWordsSet = [...new Set(cleanWords)]
+
+        // NLP noramlization function is very expensive, therefore analyze only words
+        // that have two first letters in common with target words
+        let compareTargetsToTextWords = (targets, wordsToAnalize) => {
+            let probableMatchingTargetWords = []
+            targets.forEach((target) => {
+                wordsToAnalize.forEach((word) => {
+                    if (word[0] == target[0] && word[1] == target[1]) {
+                        probableMatchingTargetWords.push(word)
+                    }
+                })
+            })
+            return probableMatchingTargetWords
+        }
+
+        const normalizeParams = {
+            whitespace: true,
+            unicode: true,
+            contractions: true,
+            acronyms:true,
+            possessives: true,
+            plurals: true,
+            verbs: true,
+        }
+
+        let targetWordsNormalized =[...new Set(nlp(targetWords)
+            .normalize(normalizeParams)
+            .out('array'))]
+
+        let wordsToCheckNormalized = nlp(compareTargetsToTextWords(targetWordsNormalized, cleanWordsSet))
+            .normalize(normalizeParams)
+            .out('array')
+
+        const match = wordsToCheckNormalized
+            .filter(element => targetWordsNormalized.includes(element))
+            .filter(n => n)
+        
+        let analysisResult = match.length > 0
+        
+        dependentImageNodes.forEach((imageNode) => {
+            imageNode.updateBlurStatus(analysisResult)
+            imageNode.textProcessingFinished()
+        })
+    }
+
+    _regexTextCleanUp(text){
+        let r_embededScripts = /<script.*?>([\s\S]*?)<\/script>/gis
+        let r_embededStyle = /<style.*?>([\s\S]*?)<\/style>/gis
+        let r_embededTags = /(<([^>]+)>)/ig
+        let r_greadySearchForPossibleJSFunction = /\(.*?\)[\s|=>| => ]?{[\s\S]*}/gis
+        let r_variables = /.*?\s?=.*?[;|,]?/gis
+        return text.replace(r_embededScripts, '')
+            .replace(r_embededStyle, '')
+            .replace(r_embededTags, '')
+            // .replace(r_greadySearchForPossibleJSFunction, '')
+            // .replace(r_variables, '')
+    }
+}
+
+class ImageNodeList {
+    constructor() {
+        this.imageNodeList = []
+    }
+
+    getImageNodeForAnalysis(updateNode){
+        let nodeToReturn = this.getImageNode(updateNode)
+        if (!nodeToReturn){
+            console.log('helloo?????????')
+            let nodeToReturn = new ImageNode(updateNode)
+            this.imageNodeList.push(nodeToReturn)
+        }
+        console.log("get", this.imageNodeList)
+        console(updateNode)
+        console.log(nodeToReturn)
+        return nodeToReturn
+    }
+
+    // check for image Link?
+    getImageNode(nodeToGet){
+        this.imageNodeList.forEach((imageNode) => {
+            if(imageNode.same(nodeToGet))
+                return imageNode
+        })
+    }
+
+    // isInNodeImageList(node){
+    //     this.imageNodeList.forEach((imageNode) => {
+    //         if (imageNode.same(node))
+    //             return true
+    //     })
+    //     return false
+    // }
+
+
+}
+
+class Controller {
+    constructor(_imageNodeList){
+        this.imageNodeList = _imageNodeList
+    }
+
+    updateImageList(nodeToCheck){
+        let imageNodes = $(nodeToCheck).find('img')
+        console.log('-----------------check')
+        console.log(typeof imageNodes)
+        console.log(imageNodes.length)
+        console.log('check')
+        console.log(imageNodes)
+        let imagesToAnalyze = []
+        imageNodes.each((idx) => {
+            console.log('---after check')
+            console.log(imageNodes[idx])
+            imagesToAnalyze.push(this.imageNodeList.getImageNodeForAnalysis(imageNodes[idx]))
+        })
+        return imagesToAnalyze
+    }
+
+    blurAll(){
+        this.imageNodeList.forEach((controlledImage) => {
+            controlledImage.unblur()
+        })
+    }
+
+    unBlurAll(){
+        this.imageNodeList.forEach((controlledImage) => {
+            controlledImage.blur()
+        })
+    }
+
+    observerInit(){
+        this.observer = new MutationObserver((mutations) => {
+            let textAnalizer = new TextAnalizer()
+            let imagesToAnalyze = []
+            mutations.forEach((mutation) => {
+                console.log('mutation', mutation.type)
+                imagesToAnalyze = imagesToAnalyze.concat(this.updateImageList(mutation.target))
+                // check for tittle
+                // if($(mutation.target).is('head'))
+                    // newTextMutation.push($(mutation.target).text())
+                if(!($(mutation.target).is('body') || $(mutation.target).is('script') || $(mutation.target).is('head') || $(mutation.target).is('style')) || !mutation.target){
+                    let l = $(mutation.target).text()
+                    textAnalizer.addText(l)
+                }
+            })
+            console.log('start analyssis--------')
+            console.log(imagesToAnalyze)
+            textAnalizer.startAnalysis(imagesToAnalyze)
+        })
+        this.observer.observe(document, { childList: true, subtree: true })
+    }
+}
