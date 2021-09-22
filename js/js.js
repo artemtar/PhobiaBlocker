@@ -134,23 +134,6 @@ let startObserver = () => {
 }
 
 /**
- * Recives updated blur amount value from popup.js and sets it to the page
- */
-let updateBlur = () => {
-    chrome.storage.sync.get('blurValueAmount', (storage) => {
-        let blurValueAmount = storage['blurValueAmount']
-        if (blurValueAmount) {
-            document.documentElement.style.setProperty(
-                '--blurValueAmount',
-                5 * blurValueAmount + 'px'
-            )
-        } else {
-            document.documentElement.style.setProperty('--blurValueAmount', 15 + 'px')
-        }
-    })
-}
-
-/**
  * Checks if target words are set, if target words are present in storage -> use those words
  * Target words are words defined by user in the extention
  */
@@ -224,95 +207,39 @@ let unBlurAll = () => {
     })
 }
 
-document.addEventListener('contextmenu', (event) => {lastElementContext = event.target}, true)
-
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    switch (message.type) {
-    case 'getTarget':
-        sendResponse(targetWords)
-        break
-    case 'blurAll':
-        controller.blurAll()
-        blurAll()
-        break
-    case 'unblurAll':
-        // controller.unBlurAll()
-        console.log(imageList)
-        unBlurAll()
-        break
-    case 'setBlurAmount':
-        updateBlur()
-        break
-    // unblur on mouse right click
-    case 'unblur':
-        if (lastElementContext) {
-            let blured = $(lastElementContext).find('.blur')
-            console.log('--- bluredd', blured)
-            if(!blured.hasClass('blur')){
-                console.log('mot bluredd')
-                blured = $(lastElementContext).siblings('.blur')
-            }
-            if (blured){
-                console.log('blured', blured)
-                blured.removeClass('blur')
-                blured.addClass('noblur permamentUnblur')
-            }
-        }
-        break
-    default:
-        console.log('Unrecognised message: ', message)
-    }
-})
-
-/**
- * hotkeys to Blur All (CTRL + ALT + B), and Unblur All (CTRL + ALT + U):
- **/
-$(document).keydown((event) => {
-    if (event.ctrlKey && event.altKey && event.which === 66) {
-        blurAll()
-        event.preventDefault()
-    }
-    else if (event.ctrlKey && event.altKey && event.which === 85) {
-        unBlurAll()
-        event.preventDefault()
-    }
-})
-
-
 class ImageNode {
-    constructor(_imageNode) {
-        this.imageNode = _imageNode
+    constructor(imageNode) {
+        this._imageNode = imageNode
         this.runningTextProcessing = 0
         this.isBlured = false
         this._startUnvielInterval()
     }
 
-    same(nodeToCheck) {
-        return $(nodeToCheck).attr('src') == $(this.imageNode).attr('src') &&
-            true
+    getImageNode(){
+        return this._imageNode
     }
 
     blur() {
-        if (!$(this.imageNode).hasClass('permamentUnblur')){
-            $(this.imageNode).removeClass('noblur')
-            $(this.imageNode).addClass('blur')
+        if (!$(this._imageNode).hasClass('permamentUnblur')){
+            $(this._imageNode).removeClass('noblur')
+            $(this._imageNode).addClass('blur')
         }
     }
 
     unblur() {
-        $(this.imageNode).addClass('noblur')
-        $(this.imageNode).removeClass('blur')
-        console.log('unblur')
+        $(this._imageNode).addClass('noblur')
+        $(this._imageNode).removeClass('blur')
     }
 
-    _startUnvielInterval(){
+    async _startUnvielInterval(){
         // wait for more elements to load alongside the image
         // necessary for dynamic loads since we do not know what will be fetched.
         this.unveilTimer = setTimeout(async () => {
-            if (this.isBlur) {this.blur(); clearTimeout(this.unveilTimer); console.log('detected')}
+            // if (this.isBlur) {this.blur(); clearTimeout(this.unveilTimer); console.log('detected')}
+            if(!this.isBlured && this.runningTexProcessing > 0) {clearTimeout(this.unveilTimer); this._startUnvielInterval()}
             else if (!this.isBlured && this.runningTextProcessing < 1) this.unblur()
-            // else if(!this.isBlured && this.runningTextProcessing > 0) this._startUnvielInterval()
-            console.log('int finised', this.runningTextProcessing)
+            else {console.log("whay are you herejll", this.isBlured, this.runningTextProcessing); this.blur()}
+            // console.log('int finised', this.runningTextProcessing)
         }, 2000)
     }
 
@@ -343,7 +270,7 @@ class TextAnalizer {
     }
 
     addText(_text){
-        this.text.push(_text)
+        this.text.push(this._regexTextCleanUp(_text))
     }
 
     async startAnalysis (dependentImageNodes){
@@ -351,13 +278,15 @@ class TextAnalizer {
             imageNode.newTextProcessingStarted()
         })
 
-        let r_wordInAnyLanguage = /^(\b(\p{L})*\b)$/gmiu
-        let cleanWords = tokenizer.tokenize(this._regexTextCleanUp(this.text.join(' ')))
+        let r_wordInAnyLanguage = /^(\b(\p{L}|-)*\b)|$/gmiu // no numbers in the word, common for class names
+        console.log('text', this.text)
+        let cleanWords = tokenizer.tokenize(this.text.join(' '))
             .map(word => word.toLowerCase())
             .filter(word => word.length > 2)
             .filter(word => r_wordInAnyLanguage.test(word))
             // .filter(word => !stopWords.includes(word))
         let cleanWordsSet = [...new Set(cleanWords)]
+        console.log('clean words set', cleanWordsSet)
 
         // NLP noramlization function is very expensive, therefore analyze only words
         // that have two first letters in common with target words
@@ -396,6 +325,16 @@ class TextAnalizer {
             .filter(n => n)
         
         let analysisResult = match.length > 0
+
+        console.log(targetWordsNormalized)
+        console.log(match)
+        console.log(wordsToCheckNormalized)
+        console.log('targets')
+
+        if(analysisResult){
+            console.log('detected')
+            console.log(dependentImageNodes)
+        }
         
         dependentImageNodes.forEach((imageNode) => {
             imageNode.updateBlurStatus(analysisResult)
@@ -419,27 +358,27 @@ class TextAnalizer {
 
 class ImageNodeList {
     constructor() {
-        this.imageNodeList = []
+        this._imageNodeList = []
     }
 
-    getImageNodeForAnalysis(nodeToCheck){
+    updateImageNodeList(nodeToCheck){
         let nodeToReturn = this.getImageNode(nodeToCheck)
         if (!nodeToReturn){
             nodeToReturn = new ImageNode(nodeToCheck)
-            this.imageNodeList.push(nodeToReturn)
+            this._imageNodeList.push(nodeToReturn)
         }
         return nodeToReturn
     }
 
     getImageNode(nodeToGet){
-        this.imageNodeList.forEach(node => {
-            if (node.imageNode.isSameNode(nodeToGet))
+        this._imageNodeList.forEach(node => {
+            if (node.getImageNode().isSameNode(nodeToGet))
                 return node
         })
     }
 
     blurAllImages(){
-        this.imageNodeList.forEach((imageNode) => {
+        this._imageNodeList.forEach((imageNode) => {
             imageNode.blur()
         })
         // this.imageNodeList.forEach(n => {
@@ -448,36 +387,45 @@ class ImageNodeList {
     }
 
     unBlurAllImages(){
-        this.imageNodeList.forEach((imageNode) => {
+        this._imageNodeList.forEach((imageNode) => {
             imageNode.unblur()
         })
     }
-
-
-
-    // isInNodeImageList(node){
-    //     this.imageNodeList.forEach((imageNode) => {
-    //         if (imageNode.same(node))
-    //             return true
-    //     })
-    //     return false
-    // }
-
-
 }
 
 class Controller {
-    constructor(_imageNodeList){
-        this.imageNodeList = _imageNodeList
+    constructor(imageNodeList){
+        this._imageNodeList = imageNodeList
     }
 
     updateImageList(nodeToCheck){
         let imageNodes = $(nodeToCheck).find('img')
         let imagesToAnalyze = []
+        // if(nodeToCheck.style.backgroundImage && nodeToCheck.style.backgroundImage.indexOf('url(') > -1){
+        //     let l = new ImageNode(nodeToCheck)
+        //     this._imageNodeList.push(l)
+        //     imagesToAnalyze.push(l)
+        // }
         imageNodes.each((_, imageNode) => {
-            imagesToAnalyze.push(this.imageNodeList.getImageNodeForAnalysis(imageNode))
+            let imageNodeForAnalysis = this._imageNodeList.updateImageNodeList(imageNode)
+            if(imageNodeForAnalysis)
+                imagesToAnalyze.push(imageNodeForAnalysis)
         })
         return imagesToAnalyze
+    }
+
+    onFirstLoad(){
+        // let textAnalizer = new TextAnalizer()
+        // let imagesToAnalyze = (this.updateImageList(document))
+        // textAnalizer.addText($('body').text())
+        // textAnalizer.addText($('title').text())
+        // console.log($('title'), 'title')
+        // textAnalizer.startAnalysis(imagesToAnalyze)
+        let regexp = /url/gi;
+        let test = $(window).find('*').filter(function() {
+            if($(this).css('background').match(regexp)) $(this).css('filter', 'blur(10px)')
+            return $(this).css('background').match(regexp)
+        })
     }
 
     observerInit(){
@@ -486,12 +434,23 @@ class Controller {
             let imagesToAnalyze = []
             mutations.forEach((mutation) => {
                 imagesToAnalyze = imagesToAnalyze.concat(this.updateImageList(mutation.target))
+                console.log('hey iam image', mutation.target.style.backgroundImage)
+                // let regexp = /url/gi;
+                // let test = $(mutation.target).find('*').filter(function() {
+                //     if($(this).css('background').match(regexp)) $(this).css('filter', 'blur(10px)')
+                //     return $(this).css('background').match(regexp)
+                // })
+                // if(mutation.target.style.backgroundImage && mutation.target.style.backgroundImage.indexOf('url(') > -1){
+                //     imagesToAnalyze(this.updateImageList(mutation.target))
+                // }
                 console.log('mutation')
                 // check for tittle
                 // if($(mutation.target).is('head'))
                 // newTextMutation.push($(mutation.target).text())
-                if(!($(mutation.target).is('body') || $(mutation.target).is('script') || $(mutation.target).is('head') || $(mutation.target).is('style')) || !mutation.target){
+                // if(!($(mutation.target).is('body') || $(mutation.target).is('script') || $(mutation.target).is('head') || $(mutation.target).is('style')) || !mutation.target){
+                if(!($(mutation.target).is('script') || $(mutation.target).is('head') || $(mutation.target).is('style')) || !mutation.target){
                     let l = $(mutation.target).text()
+                    console.log("to add", l)
                     textAnalizer.addText(l)
                 }
             })
@@ -501,25 +460,95 @@ class Controller {
     }
 
     blurAll(){
-        this.imageNodeList.blurAllImages()
-        console.log(this.imageNodeList)
+        this._imageNodeList.blurAllImages()
+        console.log(this._imageNodeList)
     }
 
     unBlurAll(){
-        this.imageNodeList.unBlurAllImages()
+        this._imageNodeList.unBlurAllImages()
     }
 }
 
 var controller = new Controller(new ImageNodeList)
-console.log('iam reloaded')
 let main = async() => {
-    // await setTargetWords()
-    $( document ).ready(() => {
-        // let newImgList = updateImgList($(document))
-        // checkNewAddedImages(newImgList, $(document).text())
-        controller.observerInit()
-    })
+    await setTargetWords()
+    // window.addEventListener('DOMContentLoaded', function () { controller.onFirstLoad });
+    // $(document).ready(() => {
+    //     controller.onFirstLoad()
+    // })
+    controller.observerInit()
     // startObserver()
 
 }
 main()
+
+document.addEventListener('contextmenu', (event) => {lastElementContext = event.target}, true)
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    switch (message.type) {
+    case 'getTarget':
+        sendResponse(targetWords)
+        break
+    case 'blurAll':
+        controller.blurAll()
+        // blurAll()
+        break
+    case 'unblurAll':
+        controller.unBlurAll()
+        // unBlurAll()
+        break
+    case 'setBlurAmount':
+        updateBlur()
+        break
+    // unblur on mouse right click
+    case 'unblur':
+        if (lastElementContext) {
+            let blured = $(lastElementContext).find('.blur')
+            if(!blured.hasClass('blur')){
+                console.log('mot bluredd')
+                blured = $(lastElementContext).siblings('.blur')
+            }
+            if (blured){
+                console.log('blured', blured)
+                blured.removeClass('blur')
+                blured.addClass('noblur permamentUnblur')
+            }
+        }
+        break
+    default:
+        console.log('Unrecognised message: ', message)
+    }
+})
+
+/**
+ * hotkeys to Blur All (CTRL + ALT + B), and Unblur All (CTRL + ALT + U):
+ **/
+$(document).keydown((event) => {
+    if (event.ctrlKey && event.altKey && event.which === 66) {
+        // blurAll()
+        controller.blurAll()
+        event.preventDefault()
+    }
+    else if (event.ctrlKey && event.altKey && event.which === 85) {
+        // unBlurAll()
+        controller.unBlurAll()
+        event.preventDefault()
+    }
+})
+
+/**
+ * Recives updated blur amount value from popup.js and sets it to the page
+ */
+let updateBlur = () => {
+    chrome.storage.sync.get('blurValueAmount', (storage) => {
+        let blurValueAmount = storage['blurValueAmount']
+        if (blurValueAmount) {
+            document.documentElement.style.setProperty(
+                '--blurValueAmount',
+                5 * blurValueAmount + 'px'
+            )
+        } else {
+            document.documentElement.style.setProperty('--blurValueAmount', 15 + 'px')
+        }
+    })
+}
