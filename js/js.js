@@ -138,20 +138,21 @@ let startObserver = () => {
  * Target words are words defined by user in the extention
  */
 let setTargetWords = () => {
-    return new Promise((resolve, reject) => {
-        chrome.storage.sync.get('targetWords', (storage) => {
-            if (chrome.runtime.lastError) {
-                return reject(chrome.runtime.lastError)
-            }
-            if (!storage['targetWords']) {
-                chrome.storage.sync.set({ 'targetWords': [] })
-                targetWords = []
-            } else {
-                targetWords = storage['targetWords']
-            }
-            return resolve()
-        })
-    })
+    targetWords = ['cat']
+    // return new Promise((resolve, reject) => {
+    //     chrome.storage.sync.get('targetWords', (storage) => {
+    //         if (chrome.runtime.lastError) {
+    //             return reject(chrome.runtime.lastError)
+    //         }
+    //         if (!storage['targetWords']) {
+    //             chrome.storage.sync.set({ 'targetWords': [] })
+    //             targetWords = []
+    //         } else {
+    //             targetWords = storage['targetWords']
+    //         }
+    //         return resolve()
+    //     })
+    // })
 }
 
 // function loadCSS(file) {
@@ -199,12 +200,14 @@ let blurAll = () => {
         $(img).removeClass('noblur')
         $(img).addClass('blur')
     })
+    console.log(imageList)
 }
 let unBlurAll = () => {
     imageList.forEach((image) => {
         $(image).removeClass('blur')
         $(image).addClass('noblur')
     })
+    console.log(imageList)
 }
 
 class ImageNode {
@@ -213,6 +216,7 @@ class ImageNode {
         this.runningTextProcessing = 0
         this.isBlured = false
         this._startUnvielInterval()
+        this.blur()
     }
 
     getImageNode(){
@@ -236,8 +240,8 @@ class ImageNode {
         // necessary for dynamic loads since we do not know what will be fetched.
         this.unveilTimer = setTimeout(async () => {
             // if (this.isBlur) {this.blur(); clearTimeout(this.unveilTimer); console.log('detected')}
-            if(!this.isBlured && this.runningTexProcessing > 0) {clearTimeout(this.unveilTimer); this._startUnvielInterval()}
-            else if (!this.isBlured && this.runningTextProcessing < 1) this.unblur()
+            if(!this.isBlured && this.runningTexProcessing > 0) {clearTimeout(this.unveilTimer); this._startUnvielInterval(); console.log('STILL')}
+            else if (!this.isBlured && this.runningTextProcessing < 1) {this.unblur(); console.log('artem')}
             else {console.log("whay are you herejll", this.isBlured, this.runningTextProcessing); this.blur()}
             // console.log('int finised', this.runningTextProcessing)
         }, 2000)
@@ -262,6 +266,10 @@ class ImageNode {
         if(!this.isBlured) this.isBlured = analysisResult
     }
 
+    same(otherNode){
+        return this._imageNode == otherNode
+    }
+
 }
 
 class TextAnalizer {
@@ -274,6 +282,7 @@ class TextAnalizer {
     }
 
     async startAnalysis (dependentImageNodes){
+        if(!dependentImageNodes) return
         dependentImageNodes.forEach((imageNode) => {
             imageNode.newTextProcessingStarted()
         })
@@ -362,19 +371,22 @@ class ImageNodeList {
     }
 
     updateImageNodeList(nodeToCheck){
+
         let nodeToReturn = this.getImageNode(nodeToCheck)
         if (!nodeToReturn){
             nodeToReturn = new ImageNode(nodeToCheck)
             this._imageNodeList.push(nodeToReturn)
+            if(this._imageNodeList.length == 35)
+                console.log('elo')
         }
         return nodeToReturn
     }
 
     getImageNode(nodeToGet){
-        this._imageNodeList.forEach(node => {
-            if (node.getImageNode().isSameNode(nodeToGet))
-                return node
-        })
+        for(let idx in this._imageNodeList){
+            if (this._imageNodeList[idx].same(nodeToGet))
+                return this._imageNodeList[idx]
+        }
     }
 
     blurAllImages(){
@@ -406,6 +418,7 @@ class Controller {
         //     this._imageNodeList.push(l)
         //     imagesToAnalyze.push(l)
         // }
+
         imageNodes.each((_, imageNode) => {
             let imageNodeForAnalysis = this._imageNodeList.updateImageNodeList(imageNode)
             if(imageNodeForAnalysis)
@@ -415,17 +428,17 @@ class Controller {
     }
 
     onFirstLoad(){
-        // let textAnalizer = new TextAnalizer()
-        // let imagesToAnalyze = (this.updateImageList(document))
-        // textAnalizer.addText($('body').text())
-        // textAnalizer.addText($('title').text())
-        // console.log($('title'), 'title')
-        // textAnalizer.startAnalysis(imagesToAnalyze)
-        let regexp = /url/gi;
-        let test = $(window).find('*').filter(function() {
-            if($(this).css('background').match(regexp)) $(this).css('filter', 'blur(10px)')
-            return $(this).css('background').match(regexp)
-        })
+        let textAnalizer = new TextAnalizer()
+        let imagesToAnalyze = (this.updateImageList(document))
+        textAnalizer.addText($('body').text())
+        textAnalizer.addText($('title').text())
+        console.log($('title'), 'title')
+        textAnalizer.startAnalysis(imagesToAnalyze)
+    //     let regexp = /url/gi
+    //     let test = $(document).find('*').filter(() => {
+    //         if($(this).css('background').match(regexp)) $(this).css('filter', 'blur(10px)')
+    //         return $(this).css('background').match(regexp)
+    //     })
     }
 
     observerInit(){
@@ -434,16 +447,12 @@ class Controller {
             let imagesToAnalyze = []
             mutations.forEach((mutation) => {
                 imagesToAnalyze = imagesToAnalyze.concat(this.updateImageList(mutation.target))
-                console.log('hey iam image', mutation.target.style.backgroundImage)
-                // let regexp = /url/gi;
+                console.log('mutation')
+                // let regexp = /url/gi
                 // let test = $(mutation.target).find('*').filter(function() {
                 //     if($(this).css('background').match(regexp)) $(this).css('filter', 'blur(10px)')
                 //     return $(this).css('background').match(regexp)
                 // })
-                // if(mutation.target.style.backgroundImage && mutation.target.style.backgroundImage.indexOf('url(') > -1){
-                //     imagesToAnalyze(this.updateImageList(mutation.target))
-                // }
-                console.log('mutation')
                 // check for tittle
                 // if($(mutation.target).is('head'))
                 // newTextMutation.push($(mutation.target).text())
@@ -468,15 +477,14 @@ class Controller {
         this._imageNodeList.unBlurAllImages()
     }
 }
-
 var controller = new Controller(new ImageNodeList)
-let main = async() => {
-    await setTargetWords()
+let main = () => {
+    setTargetWords()
+    controller.onFirstLoad()
     // window.addEventListener('DOMContentLoaded', function () { controller.onFirstLoad });
-    // $(document).ready(() => {
-    //     controller.onFirstLoad()
+    // $(window).ready(() => {
+    // controller.observerInit()
     // })
-    controller.observerInit()
     // startObserver()
 
 }
@@ -491,11 +499,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break
     case 'blurAll':
         controller.blurAll()
-        // blurAll()
+        blurAll()
         break
     case 'unblurAll':
         controller.unBlurAll()
-        // unBlurAll()
+        unBlurAll()
         break
     case 'setBlurAmount':
         updateBlur()
@@ -503,6 +511,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // unblur on mouse right click
     case 'unblur':
         if (lastElementContext) {
+            // check how to do other way
             let blured = $(lastElementContext).find('.blur')
             if(!blured.hasClass('blur')){
                 console.log('mot bluredd')
@@ -525,7 +534,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
  **/
 $(document).keydown((event) => {
     if (event.ctrlKey && event.altKey && event.which === 66) {
-        // blurAll()
+        blurAll()
+        console.log(imageList)
         controller.blurAll()
         event.preventDefault()
     }
