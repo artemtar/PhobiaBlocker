@@ -2,6 +2,8 @@ const tokenizer = new natural.WordTokenizer()
 let targetWords = []
 let lastElementContext
 let imageList = []
+let phobiaBlockerEnabled = false
+let blurIsAlwaysOn = false
 
 /**
  * Search text for any target words, using NLP normalization to compare words
@@ -137,22 +139,31 @@ let startObserver = () => {
  * Checks if target words are set, if target words are present in storage -> use those words
  * Target words are words defined by user in the extention
  */
-let setTargetWords = () => {
-    targetWords = ['cat']
-    // return new Promise((resolve, reject) => {
-    //     chrome.storage.sync.get('targetWords', (storage) => {
-    //         if (chrome.runtime.lastError) {
-    //             return reject(chrome.runtime.lastError)
-    //         }
-    //         if (!storage['targetWords']) {
-    //             chrome.storage.sync.set({ 'targetWords': [] })
-    //             targetWords = []
-    //         } else {
-    //             targetWords = storage['targetWords']
-    //         }
-    //         return resolve()
-    //     })
-    // })
+let setSettings = () => {
+    return new Promise((resolve, reject) => {
+        chrome.storage.sync.get([
+            'targetWords',
+            'phobiaBlockerEnabled',
+            'blurIsAlwaysOn'
+        ], (storage) => {
+            if (chrome.runtime.lastError) {
+                return reject(chrome.runtime.lastError)
+            }
+            if (!storage['targetWords']) {
+                chrome.storage.sync.set({ 'targetWords': [] })
+                targetWords = []
+            } else {
+                targetWords = storage['targetWords']
+            }
+            if(storage.phobiaBlockerEnabled){
+                phobiaBlockerEnabled = storage.phobiaBlockerEnabled
+                $('#enabled-switch').attr('checked', phobiaBlockerEnabled) 
+            }
+            if(storage.blurIsAlwaysOn)
+                blurIsAlwaysOn = storage.blurIsAlwaysOn
+            return resolve()
+        })
+    })
 }
 
 // function loadCSS(file) {
@@ -478,12 +489,13 @@ class Controller {
     }
 }
 var controller = new Controller(new ImageNodeList)
-let main = () => {
-    setTargetWords()
+
+let main = async () => {
+    await setSettings()
     controller.onFirstLoad()
     // window.addEventListener('DOMContentLoaded', function () { controller.onFirstLoad });
     // $(window).ready(() => {
-    // controller.observerInit()
+    controller.observerInit()
     // })
     // startObserver()
 
@@ -523,6 +535,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 blured.addClass('noblur permamentUnblur')
             }
         }
+        break
+    case 'phobiaBlockerEnabled':
+        setSettings()
+        break
+    case 'blurIsAlwaysOn':
+        setSettings()
         break
     default:
         console.log('Unrecognised message: ', message)
