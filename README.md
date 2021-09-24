@@ -1,3 +1,3 @@
-Phobia Blocker is a Chrome Extention that blocks any picture if there is a possability that this picture contains image of a phobia defined by the user.
-The analisys happens continously while the page is beeing loaded meaning that even if website has infinete scroll, all new elements will be analized.
-The user should input a list of words that defines any phobia user has. Idealy the list should be short and precise. Extentions utilizes natural language processing (NLP) for the words search therefore all simular words will be grouped into same caregory.
+<p>Phobia Blocker is a Chrome Extention that blocks any picture if there is a possability that this picture contains image of a phobia defined by the user.</p>
+<p>The analisys happens continously while the page is beeing loaded meaning that even if website has infinete scroll, all new elements will be analized.</p>
+<p>The user should input a list of words that defines any phobia user has. Idealy the list should be short and precise. Extentions utilizes natural language processing (NLP) for the words search therefore all simular words will be grouped into same caregory.</p>

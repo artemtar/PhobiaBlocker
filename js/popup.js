@@ -63,14 +63,14 @@ $(() => {
     $('#blurIsAlwaysOn-switch').click('changed', () => {
         chrome.tabs.query({ active: true, currentWindow: true },
             (tabs) => {
-                chrome.tabs.sendMessage(tabs[0].id, { type: 'blurIsAlwaysOn' })
+                chrome.tabs.sendMessage(tabs[0].id, { type: 'blurIsAlwaysOn', value: $('#blurIsAlwaysOn-switch').prop('checked')})
             })
         chrome.storage.sync.set({ 'blurIsAlwaysOn': $('#blurIsAlwaysOn-switch').prop('checked')})
     })
     
     chrome.storage.sync.get('blurValueAmount', (storage) => {
-        if (storage['blurValueAmount']) {
-            $('#blurRange').val(storage['blurValueAmount'])
+        if (storage.blurValueAmount) {
+            $('#blurRange').val(storage.blurValueAmount)
         } else { $('#blurRange').val(3) }
     })
 

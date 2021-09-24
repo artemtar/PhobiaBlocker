@@ -9,8 +9,14 @@ class ImageNode {
         this._imageNode = imageNode
         this.runningTextProcessing = 0
         this.isBlured = false
-        this._startUnvielInterval()
-        this.blur()
+        this._init()
+    }
+
+    _init(){
+        if(!blurIsAlwaysOn){
+            this._startUnvielInterval()
+            this.blur()
+        } else this.blur()
     }
 
     getImageNode(){
@@ -208,6 +214,7 @@ class TextAnalizer {
 class Controller {
     constructor(imageNodeList){
         this._imageNodeList = imageNodeList
+        this._isStoped = false
     }
 
     updateImageList(nodeToCheck){
@@ -271,6 +278,12 @@ class Controller {
     stop(){
         this.observer.disconnect()
         this.unBlurAll()
+        this._isStoped = true
+    }
+
+    resetImageNodeList(){
+        this._imageNodeList = new ImageNodeList()
+        this.updateImageList(document)
     }
 
     blurAll(){
@@ -280,6 +293,10 @@ class Controller {
 
     unBlurAll(){
         this._imageNodeList.unBlurAllImages()
+    }
+
+    isStoped(){
+        return this._isStoped
     }
 }
 
@@ -297,11 +314,11 @@ let setSettings = () => {
             if (chrome.runtime.lastError) {
                 return reject(chrome.runtime.lastError)
             }
-            if (!storage['targetWords']) {
+            if (!storage.targetWords) {
                 chrome.storage.sync.set({ 'targetWords': [] })
                 targetWords = []
             } else {
-                targetWords = storage['targetWords']
+                targetWords = storage.targetWords
             }
             if(storage.phobiaBlockerEnabled != undefined){
                 phobiaBlockerEnabled = storage.phobiaBlockerEnabled
@@ -319,9 +336,17 @@ var controller = new Controller(new ImageNodeList)
 let main = async () => {
     await setSettings()
     console.log('settings', 'enabled', phobiaBlockerEnabled)
+    if(blurIsAlwaysOn) return
     if(phobiaBlockerEnabled){
         controller.onFirstLoad()
         controller.observerInit()
+    }
+    else if(!phobiaBlockerEnabled) {
+        document.documentElement.style.setProperty('--blurValueAmount', '0px')
+    }
+    else {
+        // controller.resetImageNodeList()
+        // controller.blurAll()
     }
 }
 main()
@@ -344,9 +369,6 @@ $(document).keydown((event) => {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     switch (message.type) {
-    case 'getTarget':
-        sendResponse(targetWords)
-        break
     case 'blurAll':
         controller.blurAll()
         break
@@ -382,13 +404,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         break
     case 'phobiaBlockerEnabled':
-        console.log('enabled', phobiaBlockerEnabled)
         phobiaBlockerEnabled = message.value
         if(!phobiaBlockerEnabled)
             controller.stop()
+        else if(!blurIsAlwaysOn){
+            controller.resetImageNodeList()
+            controller.onFirstLoad()
+            controller.observerInit()
+        }
         break
     case 'blurIsAlwaysOn':
-        setSettings()
+        blurIsAlwaysOn = message.value
+        if(blurIsAlwaysOn){
+            controller.resetImageNodeList()
+            controller.blurAll()
+        }
+        else if(!phobiaBlockerEnabled){
+            controller.unBlurAll()
+        }
+        // else if(!phobiaBlockerEnabled && !blurIsAlwaysOn){
+        //     controller.unBlurAll()
+        // }
         break
     default:
         console.log('Unrecognised message: ', message)
