@@ -55,7 +55,7 @@ $(() => {
     $('#enabled-switch').click('changed', () => {
         chrome.tabs.query({ active: true, currentWindow: true },
             (tabs) => {
-                chrome.tabs.sendMessage(tabs[0].id, { type: 'phobiaBlockerEnabled' })
+                chrome.tabs.sendMessage(tabs[0].id, { type: 'phobiaBlockerEnabled', value: $('#enabled-switch').prop('checked')})
             })
         chrome.storage.sync.set({ 'phobiaBlockerEnabled': $('#enabled-switch').prop('checked')})
     })
