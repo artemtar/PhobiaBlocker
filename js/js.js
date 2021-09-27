@@ -220,12 +220,6 @@ class Controller {
     updateImageList(nodeToCheck){
         let imageNodes = $(nodeToCheck).find('img')
         let imagesToAnalyze = []
-        // if(nodeToCheck.style.backgroundImage && nodeToCheck.style.backgroundImage.indexOf('url(') > -1){
-        //     let l = new ImageNode(nodeToCheck)
-        //     this._imageNodeList.push(l)
-        //     imagesToAnalyze.push(l)
-        // }
-
         imageNodes.each((_, imageNode) => {
             let imageNodeForAnalysis = this._imageNodeList.updateImageNodeList(imageNode)
             if(imageNodeForAnalysis)
@@ -255,11 +249,15 @@ class Controller {
             mutations.forEach((mutation) => {
                 imagesToAnalyze = imagesToAnalyze.concat(this.updateImageList(mutation.target))
                 console.log('mutation')
-                // let regexp = /url/gi
-                // let test = $(mutation.target).find('*').filter(function() {
-                //     if($(this).css('background').match(regexp)) $(this).css('filter', 'blur(10px)')
-                //     return $(this).css('background').match(regexp)
-                // })
+                let regexp = /url/gi
+                let test = $(mutation.target).find('*').filter(function() {
+                    if($(this).css('background').match(regexp)) {
+                        // $(this).css('filter', 'blur(10px)')
+                        
+                        $(this).addClass('blur')
+                    }
+                    return $(this).css('background').match(regexp)
+                })
                 // check for tittle
                 // if($(mutation.target).is('head'))
                 // newTextMutation.push($(mutation.target).text())
