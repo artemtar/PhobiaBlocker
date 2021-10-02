@@ -4,8 +4,12 @@ let lastElementContext
 let phobiaBlockerEnabled = true 
 let blurIsAlwaysOn = false
 
+
 class ImageNode {
     constructor(imageNode) {
+        if (this.constructor == ImageNode) {
+            throw new Error('Abstract classes ImageNode.');
+        }
         this._imageNode = imageNode
         this.runningTextProcessing = 0
         this.isBlured = false
@@ -24,15 +28,11 @@ class ImageNode {
     }
 
     blur() {
-        if (!$(this._imageNode).hasClass('permamentUnblur')){
-            $(this._imageNode).removeClass('noblur')
-            $(this._imageNode).addClass('blur')
-        }
+        throw new Error('Method must be implemented.')
     }
 
     unblur() {
-        $(this._imageNode).addClass('noblur')
-        $(this._imageNode).removeClass('blur')
+        throw new Error('Method must be implemented.')
     }
 
     async _startUnvielInterval(){
@@ -72,6 +72,47 @@ class ImageNode {
 
 }
 
+/**
+ * @extends {ImageNode}
+ */
+class TagImageNode extends ImageNode {
+    constructor(imageNode){
+        super(imageNode)
+    }
+
+    blur() {
+        if (!$(this._imageNode).hasClass('permamentUnblur')){
+            $(this._imageNode).removeClass('noblur')
+            $(this._imageNode).addClass('blur')
+        }
+    }
+
+    unblur() {
+        $(this._imageNode).addClass('noblur')
+        $(this._imageNode).removeClass('blur')
+    }
+}
+
+class BgImageNode extends ImageNode {
+    constructor(imageNode){
+        super(imageNode)
+    }
+
+    blur() {
+        if (!$(this._imageNode).hasClass('permamentUnblur')){
+            $(this._imageNode).removeClass('noblur')
+            $(this._imageNode).addClass('blur')
+            $(this._imageNode).css('filter', 'blur(10px)')
+        }
+    }
+
+    unblur() {
+        $(this._imageNode).addClass('noblur')
+        $(this._imageNode).removeClass('blur')
+        $(this._imageNode).css('filter', 'blur(0px)')
+    }
+}
+
 
 class ImageNodeList {
     constructor() {
@@ -84,14 +125,14 @@ class ImageNodeList {
      * @param {Node} nodeToCheck Node that will be used to update the list
      * @returns {list[Node]} Amount of words in the text that match target words
     */
-    updateImageNodeList(nodeToCheck){
-        let nodeToReturn = this.getImageNode(nodeToCheck)
-        if (!nodeToReturn){
-            nodeToReturn = new ImageNode(nodeToCheck)
-            this._imageNodeList.push(nodeToReturn)
-        }
-        return nodeToReturn
-    }
+    // updateImageNodeList(nodeToCheck){
+    //     let nodeToReturn = this.getImageNode(nodeToCheck)
+    //     if (!nodeToReturn){
+    //         nodeToReturn = new ImageNode(nodeToCheck)
+    //         this._imageNodeList.push(nodeToReturn)
+    //     }
+    //     return nodeToReturn
+    // }
 
     /**
      * Accepts DOM node and checks if it already exists in controlled imageNodeList.
@@ -115,6 +156,10 @@ class ImageNodeList {
         this._imageNodeList.forEach((imageNode) => {
             imageNode.unblur()
         })
+    }
+
+    push(imageNode){
+        this._imageNodeList.push(imageNode)
     }
 }
 
@@ -218,12 +263,26 @@ class Controller {
     }
 
     updateImageList(nodeToCheck){
-        let imageNodes = $(nodeToCheck).find('img')
+        let tagImageNodes = $(nodeToCheck).find('img')
         let imagesToAnalyze = []
-        imageNodes.each((_, imageNode) => {
-            let imageNodeForAnalysis = this._imageNodeList.updateImageNodeList(imageNode)
-            if(imageNodeForAnalysis)
-                imagesToAnalyze.push(imageNodeForAnalysis)
+
+        let r_bgUrl = /url/gi
+        let bgImageNodes = $(nodeToCheck).find('*').filter(function() {
+            return $(this).css('background').match(r_bgUrl)
+        })
+        let checkAndUpdate = (classType, _, imageNode) => {
+            let imageToAnalize = this._imageNodeList.getImageNode(imageNode)
+            if (!imageToAnalize){
+                imageToAnalize = new classType(imageNode)
+                this._imageNodeList.push(imageToAnalize)
+            }
+            imagesToAnalyze.push(imageToAnalize)
+        }
+        bgImageNodes.each((_, bgImage) => {
+            checkAndUpdate(BgImageNode, _, bgImage)
+        })
+        tagImageNodes.each((_, tagImageNode) => {
+            checkAndUpdate(TagImageNode, _, tagImageNode)
         })
         return imagesToAnalyze
     }
@@ -249,15 +308,7 @@ class Controller {
             mutations.forEach((mutation) => {
                 imagesToAnalyze = imagesToAnalyze.concat(this.updateImageList(mutation.target))
                 console.log('mutation')
-                let regexp = /url/gi
-                let test = $(mutation.target).find('*').filter(function() {
-                    if($(this).css('background').match(regexp)) {
-                        // $(this).css('filter', 'blur(10px)')
-                        
-                        $(this).addClass('blur')
-                    }
-                    return $(this).css('background').match(regexp)
-                })
+
                 // check for tittle
                 // if($(mutation.target).is('head'))
                 // newTextMutation.push($(mutation.target).text())
