@@ -287,13 +287,15 @@ class Controller {
         return imagesToAnalyze
     }
 
-    onFirstLoad(){
+    onLoad(){
+        this.resetImageNodeList()
         let textAnalizer = new TextAnalizer()
         let imagesToAnalyze = (this.updateImageList(document))
         textAnalizer.addText($('body').text())
         textAnalizer.addText($('title').text())
         console.log($('title'), 'title')
         textAnalizer.startAnalysis(imagesToAnalyze)
+        this._observerInit()
     //     let regexp = /url/gi
     //     let test = $(document).find('*').filter(() => {
     //         if($(this).css('background').match(regexp)) $(this).css('filter', 'blur(10px)')
@@ -301,7 +303,7 @@ class Controller {
     //     })
     }
 
-    observerInit(){
+    _observerInit(){
         this.observer = new MutationObserver((mutations) => {
             let textAnalizer = new TextAnalizer()
             let imagesToAnalyze = []
@@ -379,23 +381,16 @@ let setSettings = () => {
     })
 }
 
-var controller = new Controller(new ImageNodeList)
-
-// main function that starts PhobiaBlocker
+var controller = new Controller()
 let main = async () => {
     await setSettings()
     console.log('settings', 'enabled', phobiaBlockerEnabled)
     if(blurIsAlwaysOn) return
     if(phobiaBlockerEnabled){
-        controller.onFirstLoad()
-        controller.observerInit()
+        controller.onLoad()
     }
     else if(!phobiaBlockerEnabled) {
         document.documentElement.style.setProperty('--blurValueAmount', '0px')
-    }
-    else {
-        // controller.resetImageNodeList()
-        // controller.blurAll()
     }
 }
 main()
@@ -457,19 +452,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if(!phobiaBlockerEnabled)
             controller.stop()
         else if(!blurIsAlwaysOn){
-            controller.resetImageNodeList()
-            controller.onFirstLoad()
-            controller.observerInit()
+            controller.onLoad()
         }
         break
     case 'blurIsAlwaysOn':
         blurIsAlwaysOn = message.value
         if(blurIsAlwaysOn){
-            controller.resetImageNodeList()
+            controller.stop()
             controller.blurAll()
         }
-        else if(!phobiaBlockerEnabled){
-            controller.unBlurAll()
+        else {
+            controller.onLoad()
         }
         // else if(!phobiaBlockerEnabled && !blurIsAlwaysOn){
         //     controller.unBlurAll()
