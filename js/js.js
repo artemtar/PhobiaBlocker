@@ -257,8 +257,8 @@ class TextAnalizer {
 }
 
 class Controller {
-    constructor(imageNodeList){
-        this._imageNodeList = imageNodeList
+    constructor(){
+        this._imageNodeList = new ImageNodeList()
         this._isStoped = false
     }
 
@@ -288,7 +288,6 @@ class Controller {
     }
 
     onLoad(){
-        this.resetImageNodeList()
         let textAnalizer = new TextAnalizer()
         let imagesToAnalyze = (this.updateImageList(document))
         textAnalizer.addText($('body').text())
@@ -296,11 +295,6 @@ class Controller {
         console.log($('title'), 'title')
         textAnalizer.startAnalysis(imagesToAnalyze)
         this._observerInit()
-    //     let regexp = /url/gi
-    //     let test = $(document).find('*').filter(() => {
-    //         if($(this).css('background').match(regexp)) $(this).css('filter', 'blur(10px)')
-    //         return $(this).css('background').match(regexp)
-    //     })
     }
 
     _observerInit(){
@@ -310,7 +304,6 @@ class Controller {
             mutations.forEach((mutation) => {
                 imagesToAnalyze = imagesToAnalyze.concat(this.updateImageList(mutation.target))
                 console.log('mutation')
-
                 // check for tittle
                 // if($(mutation.target).is('head'))
                 // newTextMutation.push($(mutation.target).text())
@@ -384,16 +377,20 @@ let setSettings = () => {
 var controller = new Controller()
 let main = async () => {
     await setSettings()
-    console.log('settings', 'enabled', phobiaBlockerEnabled)
+    // targetWords = ['cat']
+    console.log('settings', 'enabled', phobiaBlockerEnabled, blurIsAlwaysOn)
     if(blurIsAlwaysOn) return
     if(phobiaBlockerEnabled){
         controller.onLoad()
     }
     else if(!phobiaBlockerEnabled) {
-        document.documentElement.style.setProperty('--blurValueAmount', '0px')
+        console.log('artem ena')
+        document.documentElement.style.setProperty('--blurValueAmount', 0 + 'px')
     }
 }
-main()
+// main()
+$(document).ready(main)
+// document.addEventListener('DOMContentLoaded', main)
 
 document.addEventListener('contextmenu', (event) => {lastElementContext = event.target}, true)
 
