@@ -5,6 +5,49 @@ let phobiaBlockerEnabled = true
 let blurIsAlwaysOn = false
 
 
+// mobilenet.load({
+//     version: 2,
+//     modelUrl: './mobilenet'
+// })
+
+// const loadModel = async path => {
+//   const mn = new mobilenet.MobileNet(1, 1);
+//   mn.path = 'file://./mobilenet/mobilenet_v2_1.0_224_frozen.pb'
+//   await mn.load()
+//   return mn
+// }
+
+async function loadm(){
+  let handler =  tf.io.IOHandler
+const path = "model.json"
+let paths = `file://${path}`
+const pathx = "./mobilenet/model.json"
+mobilenet.load({
+    version: 2,
+    modelUrl: paths
+})
+}
+
+    var fetchPromise = function(url,p1,p2,) {
+        return new Promise(function(resolve, reject) {
+            const path = "model.json"
+let paths = `file://${path}`
+            console.log('mypath',chrome.runtime.getURL('js/model.json'))
+            fetch(chrome.runtime.getURL('js/model.json'))
+                    .then(response => {
+                        console.log('model', response)
+                        resolve(response);
+                    }).catch(err =>{
+                        console.log('myerr',err)
+                        reject();
+                    });
+        });
+    };
+
+let aaa = fetchPromise('model.json')
+console.log('model', aaa)
+
+
 class ImageNode {
     constructor(imageNode) {
         if (this.constructor == ImageNode) {
