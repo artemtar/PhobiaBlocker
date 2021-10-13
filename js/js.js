@@ -30,8 +30,6 @@ mobilenet.load({
 
     var fetchPromise = function(url,p1,p2,) {
         return new Promise(function(resolve, reject) {
-            const path = "model.json"
-let paths = `file://${path}`
             console.log('mypath',chrome.runtime.getURL('js/model.json'))
             fetch(chrome.runtime.getURL('js/model.json'))
                     .then(response => {
