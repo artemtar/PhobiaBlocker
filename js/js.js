@@ -17,33 +17,31 @@ let blurIsAlwaysOn = false
 //   return mn
 // }
 
-async function loadm(){
-  let handler =  tf.io.IOHandler
-const path = "model.json"
-let paths = `file://${path}`
-const pathx = "./mobilenet/model.json"
-mobilenet.load({
-    version: 2,
-    modelUrl: paths
-})
-}
+// async function loadm(){
+//   let handler =  tf.io.IOHandler
+// const path = "model.json"
+// let paths = `file://${path}`
+// const pathx = "./mobilenet/model.json"
+// mobilenet.load({
+//     version: 2,
+//     modelUrl: paths
+// })
+// }
 
-    var fetchPromise = function(url,p1,p2,) {
-        return new Promise(function(resolve, reject) {
-            console.log('mypath',chrome.runtime.getURL('js/model.json'))
-            fetch(chrome.runtime.getURL('js/model.json'))
-                    .then(response => {
-                        console.log('model', response)
-                        resolve(response);
-                    }).catch(err =>{
-                        console.log('myerr',err)
-                        reject();
-                    });
-        });
-    };
+let fetchPromise = async function(url,p1,p2,) {
+    return new Promise(function(resolve, reject) {
+        console.log('mypath',chrome.runtime.getURL('js/model.json'))
+        fetch(chrome.runtime.getURL('js/model.json'))
+            .then(response => {
+                console.log('model', response)
+                resolve(response)
+            }).catch(err =>{
+                console.log('myerr',err)
+                reject()
+            })
+    })
+};
 
-let aaa = fetchPromise('model.json')
-console.log('model', aaa)
 
 
 class ImageNode {
@@ -418,6 +416,14 @@ let setSettings = () => {
 var controller = new Controller()
 let main = async () => {
     await setSettings()
+    let aaa = await fetchPromise('model.json')
+    console.log('model', aaa)
+    // mobilenet.load(aaa.body)
+    // mobilenet.load({modelUrl: 'file://js/model.json'})
+    const model = await tf.loadLayersModel('localstorage://my-model-1')
+
+
+
     // targetWords = ['cat']
     console.log('settings', 'enabled', phobiaBlockerEnabled, blurIsAlwaysOn)
     if(blurIsAlwaysOn) return
