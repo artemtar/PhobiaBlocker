@@ -40,9 +40,7 @@ let fetchPromise = async function(url,p1,p2,) {
                 reject()
             })
     })
-};
-
-
+}
 
 class ImageNode {
     constructor(imageNode) {
