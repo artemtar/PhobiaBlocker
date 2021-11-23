@@ -76,11 +76,9 @@ class ImageNode {
         // wait for more elements to load alongside the image
         // necessary for dynamic loads since we do not know what will be fetched.
         this.unveilTimer = setTimeout(async () => {
-            // if (this.isBlur) {this.blur(); clearTimeout(this.unveilTimer); console.log('detected')}
             if(!this.isBlured && this.runningTexProcessing > 0) {clearTimeout(this.unveilTimer); this._startUnvielInterval(); console.log('STILL')}
             else if (!this.isBlured && this.runningTextProcessing <= 0) {this.unblur(); console.log('artem')}
             else {console.log("whay are you here", this.isBlured, this.runningTextProcessing); this.blur()}
-            // console.log('int finised', this.runningTextProcessing)
         }, 2000)
     }
 
