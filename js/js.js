@@ -16,7 +16,6 @@ let blurIsAlwaysOn = false
 //   await mn.load()
 //   return mn
 // }
-
 // async function loadm(){
 //   let handler =  tf.io.IOHandler
 // const path = "model.json"
@@ -27,7 +26,6 @@ let blurIsAlwaysOn = false
 //     modelUrl: paths
 // })
 // }
-
 let fetchPromise = async function(url,p1,p2,) {
     return new Promise(function(resolve, reject) {
         console.log('mypath',chrome.runtime.getURL('js/model.json'))
