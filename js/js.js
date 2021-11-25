@@ -4,7 +4,6 @@ let lastElementContext
 let phobiaBlockerEnabled = true 
 let blurIsAlwaysOn = false
 
-
 // mobilenet.load({
 //     version: 2,
 //     modelUrl: './mobilenet'
@@ -26,6 +25,7 @@ let blurIsAlwaysOn = false
 //     modelUrl: paths
 // })
 // }
+
 let fetchPromise = async function(url,p1,p2,) {
     return new Promise(function(resolve, reject) {
         console.log('mypath',chrome.runtime.getURL('js/model.json'))
