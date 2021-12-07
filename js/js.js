@@ -8,7 +8,6 @@ let blurIsAlwaysOn = false
 //     version: 2,
 //     modelUrl: './mobilenet'
 // })
-
 // const loadModel = async path => {
 //   const mn = new mobilenet.MobileNet(1, 1);
 //   mn.path = 'file://./mobilenet/mobilenet_v2_1.0_224_frozen.pb'
