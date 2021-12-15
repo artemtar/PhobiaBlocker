@@ -75,7 +75,7 @@ class ImageNode {
         this.unveilTimer = setTimeout(async () => {
             if(!this.isBlured && this.runningTexProcessing > 0) {clearTimeout(this.unveilTimer); this._startUnvielInterval(); console.log('STILL')}
             else if (!this.isBlured && this.runningTextProcessing <= 0) {this.unblur(); console.log('artem')}
-            else {console.log("whay are you here", this.isBlured, this.runningTextProcessing); this.blur()}
+            else {console.log("check", this.isBlured, this.runningTextProcessing); this.blur()}
         }, 2000)
     }
 
