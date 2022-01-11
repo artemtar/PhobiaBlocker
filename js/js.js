@@ -4,28 +4,6 @@ let lastElementContext
 let phobiaBlockerEnabled = true 
 let blurIsAlwaysOn = false
 
-
-// mobilenet.load({
-//     version: 2,
-//     modelUrl: './mobilenet'
-// })
-// const loadModel = async path => {
-//   const mn = new mobilenet.MobileNet(1, 1);
-//   mn.path = 'file://./mobilenet/mobilenet_v2_1.0_224_frozen.pb'
-//   await mn.load()
-//   return mn
-// }
-// async function loadm(){
-//   let handler =  tf.io.IOHandler
-// const path = "model.json"
-// let paths = `file://${path}`
-// const pathx = "./mobilenet/model.json"
-// mobilenet.load({
-//     version: 2,
-//     modelUrl: paths
-// })
-// }
-
 let fetchPromise = async function(url,p1,p2,) {
     return new Promise(function(resolve, reject) {
         console.log('mypath',chrome.runtime.getURL('js/model.json'))
