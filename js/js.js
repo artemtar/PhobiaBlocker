@@ -174,6 +174,7 @@ class ImageNodeList {
     }
 }
 
+
 class TextAnalizer {
     constructor(){
         this._text = []
