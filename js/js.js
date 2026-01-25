@@ -52,8 +52,8 @@ class ImageNode {
         // wait for more elements to load alongside the image
         // necessary for dynamic loads since we do not know what will be fetched.
         this.unveilTimer = setTimeout(async () => {
-            if(!this.isBlured && this.runningTexProcessing > 0) {clearTimeout(this.unveilTimer); this._startUnvielInterval(); console.log('STILL')}
-            else if (!this.isBlured && this.runningTextProcessing <= 0) {this.unblur(); console.log('artem')}
+            if(!this.isBlured && this.runningTextProcessing > 0) {clearTimeout(this.unveilTimer); this._startUnvielInterval(); console.log('STILL')}
+            else if (!this.isBlured && this.runningTextProcessing <= 0) {this.unblur()}
             else {console.log("check", this.isBlured, this.runningTextProcessing); this.blur()}
         }, 2000)
     }
@@ -67,8 +67,8 @@ class ImageNode {
     }
 
     _updateUnveilTimer(){
-        if (!this.runningTextProcessing < 1 && !this.isBlured){
-            clearInterval(this.unveilTimer)
+        if (this.runningTextProcessing < 1 && !this.isBlured){
+            clearTimeout(this.unveilTimer)
             this._startUnvielInterval()
         }
     }
@@ -452,7 +452,6 @@ let main = async () => {
         controller.onLoad()
     }
     else if(!phobiaBlockerEnabled) {
-        console.log('artem ena')
         document.documentElement.style.setProperty('--blurValueAmount', 0 + 'px')
     }
 }
