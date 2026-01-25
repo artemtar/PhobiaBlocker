@@ -1,8 +1,8 @@
 {
-    "manifest_version": 2,
+    "manifest_version": 3,
     "name": "PhobiaBlocker",
     "version": "0.1",
-    "browser_action": {
+    "action": {
         "default_icon": "./icons/main.png",
         "default_popup": "popup.html"
     },
@@ -21,21 +21,20 @@
             "css/style.css"
         ]
     }],
-    "web_accessible_resources": [
-    "css/style.css"
-    ],
+    "web_accessible_resources": [{
+        "resources": ["css/style.css"],
+        "matches": ["<all_urls>"]
+    }],
     "background": {
-        "scripts": [
-            "js/jquery-3.4.1.min.js",
-            "js/background.js"
-        ],
-        "persistent": true
+        "service_worker": "js/background.js"
     },
     "permissions": [
-        "https://*/*",
-        "http://*/*",
         "tabs",
         "contextMenus",
         "storage"
+    ],
+    "host_permissions": [
+        "https://*/*",
+        "http://*/*"
     ]
 }

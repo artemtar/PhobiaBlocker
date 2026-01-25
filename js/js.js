@@ -357,6 +357,52 @@ class Controller {
 }
 
 /**
+ * Expands target words to include variations (plurals, verb forms) to work with first-two-letter optimization
+ * For example: "mouse" -> ["mouse", "mice"], "run" -> ["run", "running", "ran"]
+ */
+let expandTargetWords = (words) => {
+    let expandedWords = []
+    words.forEach((word) => {
+        // Add original word
+        expandedWords.push(word.toLowerCase())
+
+        // Use NLP to generate variations
+        let nlpWord = nlp(word)
+
+        // Add plural form (for nouns)
+        let plural = nlpWord.nouns().toPlural().text()
+        if (plural && plural !== word) {
+            expandedWords.push(plural.toLowerCase())
+        }
+
+        // Add singular form (in case user entered plural)
+        let singular = nlpWord.nouns().toSingular().text()
+        if (singular && singular !== word) {
+            expandedWords.push(singular.toLowerCase())
+        }
+
+        // Add verb forms (past, present participle, etc.)
+        let pastTense = nlpWord.verbs().toPastTense().text()
+        if (pastTense && pastTense !== word) {
+            expandedWords.push(pastTense.toLowerCase())
+        }
+
+        let presentTense = nlpWord.verbs().toPresentTense().text()
+        if (presentTense && presentTense !== word) {
+            expandedWords.push(presentTense.toLowerCase())
+        }
+
+        let gerund = nlpWord.verbs().toGerund().text()
+        if (gerund && gerund !== word) {
+            expandedWords.push(gerund.toLowerCase())
+        }
+    })
+
+    // Remove duplicates and empty strings
+    return [...new Set(expandedWords)].filter(w => w && w.length > 0)
+}
+
+/**
  * Checks if target words are set, if target words are present in storage -> use those words
  * Target words are words defined by user in the extention
  */
@@ -374,7 +420,10 @@ let setSettings = () => {
                 chrome.storage.sync.set({ 'targetWords': [] })
                 targetWords = []
             } else {
-                targetWords = storage.targetWords
+                // Expand target words to include variations (plurals, verb forms, etc.)
+                targetWords = expandTargetWords(storage.targetWords)
+                console.log('Original target words:', storage.targetWords)
+                console.log('Expanded target words:', targetWords)
             }
             if(storage.phobiaBlockerEnabled != undefined){
                 phobiaBlockerEnabled = storage.phobiaBlockerEnabled
