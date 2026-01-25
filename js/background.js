@@ -1,9 +1,18 @@
+// Create context menu on extension install/update
+chrome.runtime.onInstalled.addListener(() => {
+    chrome.contextMenus.create({
+        id: 'phobia-blocker-unblur',
+        title: 'Unblur',
+        contexts: ['all']
+    })
+})
 
-chrome.contextMenus.create({
-    title: 'Unblur',
-    contexts: ['all'],
-    onclick: (info, tab) => {
-        chrome.tabs.sendMessage(tab.id, { type: 'unblur' })
+// Handle context menu clicks
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+    if (info.menuItemId === 'phobia-blocker-unblur') {
+        chrome.tabs.sendMessage(tab.id, { type: 'unblur' }).catch(err => {
+            console.error('Failed to send unblur message:', err)
+        })
     }
 })
 

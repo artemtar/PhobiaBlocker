@@ -389,13 +389,12 @@ let setSettings = () => {
 var controller = new Controller()
 let main = async () => {
     await setSettings()
-    let aaa = await fetchPromise('model.json')
-    console.log('model', aaa)
+    // Commented out experimental TensorFlow model loading (not implemented)
+    // let aaa = await fetchPromise('model.json')
+    // console.log('model', aaa)
     // mobilenet.load(aaa.body)
     // mobilenet.load({modelUrl: 'file://js/model.json'})
-    const model = await tf.loadLayersModel('localstorage://my-model-1')
-
-
+    // const model = await tf.loadLayersModel('localstorage://my-model-1')
 
     // targetWords = ['cat']
     console.log('settings', 'enabled', phobiaBlockerEnabled, blurIsAlwaysOn)
