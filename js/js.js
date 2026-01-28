@@ -272,6 +272,10 @@ class Controller {
     constructor(){
         this._imageNodeList = new ImageNodeList()
         this._isStoped = false
+        this._mutationBatch = []
+        this._batchTimer = null
+        this._batchProcessInterval = 500 // Process batch every 500ms
+        this._maxBatchSize = 10 // Or when we collect 10 mutations
     }
 
     updateImageList(nodeToCheck){
@@ -309,30 +313,78 @@ class Controller {
         this._observerInit()
     }
 
+    _shouldIgnoreMutation(target){
+        // Ignore mutations in form fields to prevent typing freezes
+        if (!target) return true
+        let $target = $(target)
+
+        // Check if target itself is a form element
+        if ($target.is('input, textarea') || $target.attr('contenteditable') === 'true') {
+            return true
+        }
+
+        // Check if target is inside a form element
+        if ($target.closest('input, textarea, [contenteditable="true"]').length > 0) {
+            return true
+        }
+
+        // Ignore script, head, style tags
+        if ($target.is('script') || $target.is('head') || $target.is('style')) {
+            return true
+        }
+
+        return false
+    }
+
+    _processMutationBatch(){
+        if (this._mutationBatch.length === 0) return
+
+        console.log('Processing mutation batch:', this._mutationBatch.length, 'mutations')
+        let textAnalizer = new TextAnalizer()
+        let imagesToAnalyze = []
+
+        this._mutationBatch.forEach((mutation) => {
+            imagesToAnalyze = imagesToAnalyze.concat(this.updateImageList(mutation.target))
+
+            if (!this._shouldIgnoreMutation(mutation.target)) {
+                let l = $(mutation.target).text()
+                console.log('to add', l)
+                textAnalizer.addText(l)
+            }
+        })
+
+        textAnalizer.startAnalysis(imagesToAnalyze)
+        this._mutationBatch = []
+    }
+
     _observerInit(){
         this.observer = new MutationObserver((mutations) => {
-            let textAnalizer = new TextAnalizer()
-            let imagesToAnalyze = []
+            // Filter and add mutations to batch
             mutations.forEach((mutation) => {
-                imagesToAnalyze = imagesToAnalyze.concat(this.updateImageList(mutation.target))
-                console.log('mutation')
-                // check for tittle
-                // if($(mutation.target).is('head'))
-                // newTextMutation.push($(mutation.target).text())
-                // if(!($(mutation.target).is('body') || $(mutation.target).is('script') || $(mutation.target).is('head') || $(mutation.target).is('style')) || !mutation.target){
-                if(!($(mutation.target).is('script') || $(mutation.target).is('head') || $(mutation.target).is('style')) || !mutation.target){
-                    let l = $(mutation.target).text()
-                    console.log('to add', l)
-                    textAnalizer.addText(l)
-                }
+                // Still add mutation even if we ignore text, as we need to check for images
+                this._mutationBatch.push(mutation)
             })
-            textAnalizer.startAnalysis(imagesToAnalyze)
+
+            // Process immediately if batch is large (for infinite scroll)
+            if (this._mutationBatch.length >= this._maxBatchSize) {
+                clearTimeout(this._batchTimer)
+                this._processMutationBatch()
+                return
+            }
+
+            // Otherwise, debounce with timer
+            clearTimeout(this._batchTimer)
+            this._batchTimer = setTimeout(() => {
+                this._processMutationBatch()
+            }, this._batchProcessInterval)
         })
         this.observer.observe(document, { childList: true, subtree: true })
     }
 
     stop(){
         this.observer.disconnect()
+        clearTimeout(this._batchTimer)
+        this._mutationBatch = []
         this.unBlurAll()
         this._isStoped = true
     }
