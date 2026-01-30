@@ -2,13 +2,11 @@
 <html>
 <head>
     <title>FearBlocker</title>
-    <link rel="stylesheet" href="css/tagify.css">
     <script src="js/jquery-3.7.1.min.js"></script>
-    <script src="js/tagify.js"></script>
     <link rel="stylesheet" href="css/bootstrap.css">
     <script src="js/bootstrap.js"></script>
     <link rel="stylesheet" href="css/popup.css">
-    <link rel="stylesheet" href="css/tagifyCustom.css">
+    <link rel="stylesheet" href="css/tags.css">
     <link rel="stylesheet" href="css/slider.css">
 </head>
 
@@ -55,9 +53,15 @@
                 <span name="supportedWords" id="btn-supported-words" data-bs-toggle="collapse" data-bs-target="#supported-words-area" aria-expanded="false" aria-controls="div-supported-words"></span>
             </div>
             <div id="supported-words-area" class="collapse">
-                <tags class="addedWordArea customLook" aria-haspopup="true" role="tagslist"></tag>
-                    <span class="tagify__input" role="textbox" aria-multiline="false" style="margin-top: 10px;"></span>
-                    <span id='addTagBtn'></span>
+                <div id="tags-container" class="tags-container"></div>
+                <div class="add-word-input-container">
+                    <input type="text" id="word-input" class="word-input" placeholder="Add a word..." maxlength="30">
+                    <button id="addTagBtn" class="add-word-btn">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                            <path d="M8 3V13M3 8H13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        </svg>
+                    </button>
+                </div>
             </div>
         </div>
         <script src="js/popup.js"></script>
