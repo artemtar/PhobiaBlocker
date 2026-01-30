@@ -26,6 +26,7 @@ class ImageNode {
         this._imageNode = imageNode
         this.runningTextProcessing = 0
         this.isBlured = false
+        this.hasBeenAnalyzed = false // Track if this image has been analyzed at least once
         this._init()
     }
 
@@ -33,7 +34,9 @@ class ImageNode {
         if(!blurIsAlwaysOn){
             this._startUnvielInterval()
             this.blur()
-        } else this.blur()
+        } else {
+            this.blur()
+        }
     }
 
     getImageNode(){
@@ -52,9 +55,16 @@ class ImageNode {
         // wait for more elements to load alongside the image
         // necessary for dynamic loads since we do not know what will be fetched.
         this.unveilTimer = setTimeout(async () => {
-            if(!this.isBlured && this.runningTextProcessing > 0) {clearTimeout(this.unveilTimer); this._startUnvielInterval(); console.log('STILL')}
-            else if (!this.isBlured && this.runningTextProcessing <= 0) {this.unblur()}
-            else {console.log("check", this.isBlured, this.runningTextProcessing); this.blur()}
+            if(!this.isBlured && this.runningTextProcessing > 0) {
+                clearTimeout(this.unveilTimer)
+                this._startUnvielInterval()
+            }
+            else if (!this.isBlured && this.runningTextProcessing <= 0) {
+                this.unblur()
+            }
+            else {
+                this.blur()
+            }
         }, 2000)
     }
 
@@ -64,6 +74,7 @@ class ImageNode {
 
     textProcessingFinished(){
         this.runningTextProcessing -= 1
+        this._updateUnveilTimer()
     }
 
     _updateUnveilTimer(){
@@ -75,10 +86,19 @@ class ImageNode {
 
     updateBlurStatus(analysisResult){
         if(!this.isBlured) this.isBlured = analysisResult
+        this.hasBeenAnalyzed = true
     }
 
     same(otherNode){
         return this._imageNode == otherNode
+    }
+
+    cleanup(){
+        // Clear the unveil timer to prevent orphaned timers
+        if (this.unveilTimer) {
+            clearTimeout(this.unveilTimer)
+            this.unveilTimer = null
+        }
     }
 
 }
@@ -172,6 +192,10 @@ class ImageNodeList {
     push(imageNode){
         this._imageNodeList.push(imageNode)
     }
+
+    getAllImages(){
+        return this._imageNodeList
+    }
 }
 
 
@@ -189,69 +213,71 @@ class TextAnalizer {
      * @param {list[ImageNode]} dependentImageNodes Images that will be blured/unblured with this text
      */
     async startAnalysis (dependentImageNodes){
-        if(!dependentImageNodes) return
-        dependentImageNodes.forEach((imageNode) => {
-            imageNode.newTextProcessingStarted()
-        })
-
-        let r_wordInAnyLanguage = /^(\b(\p{L}|-)*\b)|$/gmiu // no numbers in the word, common for class names
-        console.log('text', this._text)
-        let cleanWords = tokenizer.tokenize(this._text.join(' '))
-            .map(word => word.toLowerCase())
-            .filter(word => word.length > 2)
-            .filter(word => r_wordInAnyLanguage.test(word))
-            // .filter(word => !stopWords.includes(word))
-        let cleanWordsSet = [...new Set(cleanWords)]
-        console.log('clean words set', cleanWordsSet)
-
-        // NLP noramlization function is very expensive, therefore analyze only words
-        // that have two first letters in common with target words
-        let compareTargetsToTextWords = (targets, wordsToAnalize) => {
-            let probableMatchingTargetWords = []
-            targets.forEach((target) => {
-                wordsToAnalize.forEach((word) => {
-                    if (word[0] == target[0] && word[1] == target[1]) {
-                        probableMatchingTargetWords.push(word)
-                    }
-                })
+        try {
+            if(!dependentImageNodes || dependentImageNodes.length === 0) return
+            dependentImageNodes.forEach((imageNode) => {
+                imageNode.newTextProcessingStarted()
             })
-            return probableMatchingTargetWords
+
+            let r_wordInAnyLanguage = /^(\b(\p{L}|-)*\b)|$/gmiu // no numbers in the word, common for class names
+            let cleanWords = tokenizer.tokenize(this._text.join(' '))
+                .map(word => word.toLowerCase())
+                .filter(word => word.length > 2)
+                .filter(word => r_wordInAnyLanguage.test(word))
+                // .filter(word => !stopWords.includes(word))
+            let cleanWordsSet = [...new Set(cleanWords)]
+
+            // NLP noramlization function is very expensive, therefore analyze only words
+            // that have two first letters in common with target words
+            let compareTargetsToTextWords = (targets, wordsToAnalize) => {
+                let probableMatchingTargetWords = []
+                targets.forEach((target) => {
+                    wordsToAnalize.forEach((word) => {
+                        if (word[0] == target[0] && word[1] == target[1]) {
+                            probableMatchingTargetWords.push(word)
+                        }
+                    })
+                })
+                return probableMatchingTargetWords
+            }
+
+            const normalizeParams = {
+                whitespace: true,
+                unicode: true,
+                contractions: true,
+                acronyms:true,
+                possessives: true,
+                plurals: true,
+                verbs: true,
+            }
+
+            let targetWordsNormalized =[...new Set(nlp(targetWords)
+                .normalize(normalizeParams)
+                .out('array'))]
+
+            let wordsToCheckNormalized = nlp(compareTargetsToTextWords(targetWordsNormalized, cleanWordsSet))
+                .normalize(normalizeParams)
+                .out('array')
+
+            const match = wordsToCheckNormalized
+                .filter(element => targetWordsNormalized.includes(element))
+                .filter(n => n)
+
+            let analysisResult = match.length > 0
+
+            dependentImageNodes.forEach((imageNode) => {
+                // check
+                $(imageNode._imageNode).attr('blurResult', match)
+                imageNode.updateBlurStatus(analysisResult)
+                imageNode.textProcessingFinished()
+            })
+        } catch (error) {
+            console.error('Error in startAnalysis:', error)
+            // If analysis fails, mark images as finished processing so they can unveil
+            dependentImageNodes.forEach((imageNode) => {
+                imageNode.textProcessingFinished()
+            })
         }
-
-        const normalizeParams = {
-            whitespace: true,
-            unicode: true,
-            contractions: true,
-            acronyms:true,
-            possessives: true,
-            plurals: true,
-            verbs: true,
-        }
-
-        let targetWordsNormalized =[...new Set(nlp(targetWords)
-            .normalize(normalizeParams)
-            .out('array'))]
-
-        let wordsToCheckNormalized = nlp(compareTargetsToTextWords(targetWordsNormalized, cleanWordsSet))
-            .normalize(normalizeParams)
-            .out('array')
-
-        const match = wordsToCheckNormalized
-            .filter(element => targetWordsNormalized.includes(element))
-            .filter(n => n)
-        
-        let analysisResult = match.length > 0
-
-        console.log('target', targetWordsNormalized)
-        console.log('match', match)
-        console.log('words to check', wordsToCheckNormalized)
-
-        dependentImageNodes.forEach((imageNode) => {
-            // check
-            $(imageNode._imageNode).attr('blurResult', match)
-            imageNode.updateBlurStatus(analysisResult)
-            imageNode.textProcessingFinished()
-        })
     }
 
     _regexTextCleanUp(text){
@@ -280,7 +306,8 @@ class Controller {
 
     updateImageList(nodeToCheck){
         let tagImageNodes = $(nodeToCheck).find('img')
-        let imagesToAnalyze = []
+        let newImages = []
+        let existingImages = []
 
         let r_bgUrl = /url/gi
         let bgImageNodes = $(nodeToCheck).find('*').filter(function() {
@@ -291,8 +318,10 @@ class Controller {
             if (!imageToAnalize){
                 imageToAnalize = new classType(imageNode)
                 this._imageNodeList.push(imageToAnalize)
+                newImages.push(imageToAnalize)
+            } else {
+                existingImages.push(imageToAnalize)
             }
-            imagesToAnalyze.push(imageToAnalize)
         }
         bgImageNodes.each((_, bgImage) => {
             checkAndUpdate(BgImageNode, _, bgImage)
@@ -300,16 +329,26 @@ class Controller {
         tagImageNodes.each((_, tagImageNode) => {
             checkAndUpdate(TagImageNode, _, tagImageNode)
         })
-        return imagesToAnalyze
+        return { newImages, existingImages }
     }
 
     onLoad(){
         let textAnalizer = new TextAnalizer()
-        let imagesToAnalyze = (this.updateImageList(document))
+        let { newImages, existingImages } = this.updateImageList(document)
+        // On initial load, all images are new, so only analyze newImages
         textAnalizer.addText($('body').text())
         textAnalizer.addText($('title').text())
-        console.log($('title'), 'title')
-        textAnalizer.startAnalysis(imagesToAnalyze)
+        textAnalizer.startAnalysis(newImages).catch(err => {
+            console.error('Error in onLoad text analysis:', err)
+        })
+        this._observerInit()
+    }
+
+    onLoadBlurAll(){
+        // Populate image list and blur everything without text analysis
+        // Used when blurIsAlwaysOn mode is enabled
+        this.updateImageList(document)
+        this.blurAll()
         this._observerInit()
     }
 
@@ -339,25 +378,50 @@ class Controller {
     _processMutationBatch(){
         if (this._mutationBatch.length === 0) return
 
-        console.log('Processing mutation batch:', this._mutationBatch.length, 'mutations')
+        // If blurIsAlwaysOn mode, just find and blur new images without text analysis
+        if (blurIsAlwaysOn) {
+            this._mutationBatch.forEach((mutation) => {
+                this.updateImageList(mutation.target)
+                // New images are already blurred by their _init() method when blurIsAlwaysOn is true
+                // No need to do anything else
+            })
+            this._mutationBatch = []
+            return
+        }
+
+        // Normal mode: do text analysis
         let textAnalizer = new TextAnalizer()
-        let imagesToAnalyze = []
+        let allNewImages = []
+        let allExistingImages = []
+        let unanalyzedExistingImages = []
 
         this._mutationBatch.forEach((mutation) => {
-            imagesToAnalyze = imagesToAnalyze.concat(this.updateImageList(mutation.target))
+            let { newImages, existingImages } = this.updateImageList(mutation.target)
+            allNewImages = allNewImages.concat(newImages)
+            allExistingImages = allExistingImages.concat(existingImages)
 
             if (!this._shouldIgnoreMutation(mutation.target)) {
-                let l = $(mutation.target).text()
-                console.log('to add', l)
-                textAnalizer.addText(l)
+                textAnalizer.addText($(mutation.target).text())
             }
         })
 
-        textAnalizer.startAnalysis(imagesToAnalyze)
+        // Check which existing images haven't been analyzed yet
+        unanalyzedExistingImages = allExistingImages.filter(img => !img.hasBeenAnalyzed)
+
+        // Analyze NEW images AND existing images that haven't been analyzed yet
+        let imagesToAnalyze = allNewImages.concat(unanalyzedExistingImages)
+        textAnalizer.startAnalysis(imagesToAnalyze).catch(err => {
+            console.error('Error in mutation batch text analysis:', err)
+        })
         this._mutationBatch = []
     }
 
     _observerInit(){
+        // Disconnect existing observer if it exists to prevent multiple observers
+        if (this.observer) {
+            this.observer.disconnect()
+        }
+
         this.observer = new MutationObserver((mutations) => {
             // Filter and add mutations to batch
             mutations.forEach((mutation) => {
@@ -385,6 +449,8 @@ class Controller {
         this.observer.disconnect()
         clearTimeout(this._batchTimer)
         this._mutationBatch = []
+        // Clean up all image node timers
+        this._imageNodeList.getAllImages().forEach(img => img.cleanup())
         this.unBlurAll()
         this._isStoped = true
     }
@@ -499,8 +565,12 @@ let main = async () => {
 
     // targetWords = ['cat']
     console.log('settings', 'enabled', phobiaBlockerEnabled, blurIsAlwaysOn)
-    if(blurIsAlwaysOn) return
-    if(phobiaBlockerEnabled){
+
+    if(blurIsAlwaysOn){
+        // When "blur is always on", populate images and blur everything
+        controller.onLoadBlurAll()
+    }
+    else if(phobiaBlockerEnabled){
         controller.onLoad()
     }
     else if(!phobiaBlockerEnabled) {
@@ -565,24 +635,55 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break
     case 'phobiaBlockerEnabled':
         phobiaBlockerEnabled = message.value
-        if(!phobiaBlockerEnabled)
+        if(!phobiaBlockerEnabled){
             controller.stop()
-        else if(!blurIsAlwaysOn){
-            controller.onLoad()
+        }
+        else {
+            // Extension is being enabled
+            if(blurIsAlwaysOn){
+                controller.onLoadBlurAll()
+            } else {
+                controller.onLoad()
+            }
         }
         break
     case 'blurIsAlwaysOn':
         blurIsAlwaysOn = message.value
         if(blurIsAlwaysOn){
-            controller.stop()
+            // Switching TO "blur is always on" mode
+            if (controller.observer) {
+                controller.observer.disconnect()
+            }
+            clearTimeout(controller._batchTimer)
+            controller._mutationBatch = []
+            controller._isStoped = true
+            // Clean up old image node timers
+            controller._imageNodeList.getAllImages().forEach(img => img.cleanup())
+            // Clear all blur/noblur classes from DOM
+            $('.blur').removeClass('blur').removeClass('noblur').removeClass('permamentUnblur')
+            // Reset the list and repopulate with all images
+            controller._imageNodeList = new ImageNodeList()
+            controller.updateImageList(document)
+            // Now blur all images
             controller.blurAll()
+            // Restart observer to catch new images
+            controller._observerInit()
         }
         else {
+            // Switching FROM "blur is always on" to normal mode
+            if (controller.observer) {
+                controller.observer.disconnect()
+            }
+            clearTimeout(controller._batchTimer)
+            controller._mutationBatch = []
+            // Clean up old image node timers
+            controller._imageNodeList.getAllImages().forEach(img => img.cleanup())
+            // Clear all blur/noblur classes from DOM before resetting
+            $('.blur').removeClass('blur').removeClass('noblur').removeClass('permamentUnblur')
+            controller._imageNodeList = new ImageNodeList()
+            controller._isStoped = false
             controller.onLoad()
         }
-        // else if(!phobiaBlockerEnabled && !blurIsAlwaysOn){
-        //     controller.unBlurAll()
-        // }
         break
     default:
         console.log('Unrecognised message: ', message)
