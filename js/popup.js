@@ -74,22 +74,26 @@ $(() => {
     $('#unblurBtn').click(() => {
         chrome.tabs.query({ active: true, currentWindow: true },
             (tabs) => {
-                chrome.tabs.sendMessage(tabs[0].id, { type: 'unblurAll' }, () => {
-                    if (chrome.runtime.lastError) {
-                        // Silently ignore - content script not available on this page
-                    }
-                })
+                if (tabs && tabs[0]) {
+                    chrome.tabs.sendMessage(tabs[0].id, { type: 'unblurAll' }, () => {
+                        if (chrome.runtime.lastError) {
+                            // Silently ignore - content script not available on this page
+                        }
+                    })
+                }
             })
     })
 
     $('#blurBtn').click(() => {
         chrome.tabs.query({ active: true, currentWindow: true },
             (tabs) => {
-                chrome.tabs.sendMessage(tabs[0].id, { type: 'blurAll' }, () => {
-                    if (chrome.runtime.lastError) {
-                        // Silently ignore - content script not available on this page
-                    }
-                })
+                if (tabs && tabs[0]) {
+                    chrome.tabs.sendMessage(tabs[0].id, { type: 'blurAll' }, () => {
+                        if (chrome.runtime.lastError) {
+                            // Silently ignore - content script not available on this page
+                        }
+                    })
+                }
             })
     })
 
@@ -182,4 +186,8 @@ $(() => {
         if (storage.blurIsAlwaysOn)
             $('#blurIsAlwaysOn-switch').prop('checked', storage.blurIsAlwaysOn)
     })
+
+    // Set keyboard shortcuts (same for all platforms)
+    $('#blur-shortcut i').text('Alt + Shift + B')
+    $('#unblur-shortcut i').text('Alt + Shift + U')
 })

@@ -16,6 +16,27 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     }
 })
 
+// Handle keyboard shortcuts
+chrome.commands.onCommand.addListener((command) => {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs && tabs[0]) {
+            if (command === 'blur-all') {
+                chrome.tabs.sendMessage(tabs[0].id, { type: 'blurAll' }, () => {
+                    if (chrome.runtime.lastError) {
+                        // Silently ignore - content script not available on this page
+                    }
+                })
+            } else if (command === 'unblur-all') {
+                chrome.tabs.sendMessage(tabs[0].id, { type: 'unblurAll' }, () => {
+                    if (chrome.runtime.lastError) {
+                        // Silently ignore - content script not available on this page
+                    }
+                })
+            }
+        }
+    })
+})
+
 // chrome.tabs.insertCSS({file:"./css/style.css"})
 
 // function injectedFunction() {

@@ -502,8 +502,6 @@ let setSettings = () => {
             } else {
                 // Expand target words to include variations (plurals, verb forms, etc.)
                 targetWords = expandTargetWords(storage.targetWords)
-                console.log('Original target words:', storage.targetWords)
-                console.log('Expanded target words:', targetWords)
             }
             if(storage.phobiaBlockerEnabled != undefined){
                 phobiaBlockerEnabled = storage.phobiaBlockerEnabled
@@ -526,7 +524,6 @@ let main = async () => {
     // const model = await tf.loadLayersModel('localstorage://my-model-1')
 
     // targetWords = ['cat']
-    console.log('settings', 'enabled', phobiaBlockerEnabled, blurIsAlwaysOn)
 
     if(blurIsAlwaysOn){
         // When "blur is always on", populate images and blur everything
