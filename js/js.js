@@ -31,12 +31,8 @@ class ImageNode {
     }
 
     _init(){
-        if(!blurIsAlwaysOn){
-            this._startUnvielInterval()
-            this.blur()
-        } else {
-            this.blur()
-        }
+        // Always blur initially - will unblur later if text analysis determines it's safe
+        this.blur()
     }
 
     getImageNode(){
@@ -51,36 +47,18 @@ class ImageNode {
         throw new Error('Method must be implemented.')
     }
 
-    async _startUnvielInterval(){
-        // wait for more elements to load alongside the image
-        // necessary for dynamic loads since we do not know what will be fetched.
-        this.unveilTimer = setTimeout(async () => {
-            if(!this.isBlured && this.runningTextProcessing > 0) {
-                clearTimeout(this.unveilTimer)
-                this._startUnvielInterval()
-            }
-            else if (!this.isBlured && this.runningTextProcessing <= 0) {
-                this.unblur()
-            }
-            else {
-                this.blur()
-            }
-        }, 2000)
-    }
-
     newTextProcessingStarted(){
         this.runningTextProcessing += 1
     }
 
     textProcessingFinished(){
         this.runningTextProcessing -= 1
-        this._updateUnveilTimer()
-    }
 
-    _updateUnveilTimer(){
-        if (this.runningTextProcessing < 1 && !this.isBlured){
-            clearTimeout(this.unveilTimer)
-            this._startUnvielInterval()
+        // If all text processing is complete and image should not be blurred, unblur it
+        if (this.runningTextProcessing <= 0 && !this.isBlured && !blurIsAlwaysOn) {
+            // Unblur immediately - the mutation observer batch delay already handles
+            // waiting for dynamic content to stabilize
+            this.unblur()
         }
     }
 
@@ -94,11 +72,7 @@ class ImageNode {
     }
 
     cleanup(){
-        // Clear the unveil timer to prevent orphaned timers
-        if (this.unveilTimer) {
-            clearTimeout(this.unveilTimer)
-            this.unveilTimer = null
-        }
+        // Reserved for future cleanup needs (e.g., event listeners, observers)
     }
 
 }
