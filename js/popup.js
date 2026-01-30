@@ -13,14 +13,22 @@ $(() => {
     $('#unblurBtn').click(() => {
         chrome.tabs.query({ active: true, currentWindow: true },
             (tabs) => {
-                chrome.tabs.sendMessage(tabs[0].id, { type: 'unblurAll' })
+                chrome.tabs.sendMessage(tabs[0].id, { type: 'unblurAll' }, () => {
+                    if (chrome.runtime.lastError) {
+                        // Silently ignore - content script not available on this page
+                    }
+                })
             })
     })
 
     $('#blurBtn').click(() => {
         chrome.tabs.query({ active: true, currentWindow: true },
             (tabs) => {
-                chrome.tabs.sendMessage(tabs[0].id, { type: 'blurAll' })
+                chrome.tabs.sendMessage(tabs[0].id, { type: 'blurAll' }, () => {
+                    if (chrome.runtime.lastError) {
+                        // Silently ignore - content script not available on this page
+                    }
+                })
             })
     })
 
@@ -47,7 +55,11 @@ $(() => {
         chrome.tabs.query({}, (tabs) => {
             let message = { type: 'setBlurAmount' }
             for (let i = 0; i < tabs.length; ++i) {
-                chrome.tabs.sendMessage(tabs[i].id, message)
+                chrome.tabs.sendMessage(tabs[i].id, message, () => {
+                    if (chrome.runtime.lastError) {
+                        // Silently ignore - content script not available on this page
+                    }
+                })
             }
         })
     })
@@ -55,7 +67,11 @@ $(() => {
     $('#enabled-switch').click('changed', () => {
         chrome.tabs.query({ active: true, currentWindow: true },
             (tabs) => {
-                chrome.tabs.sendMessage(tabs[0].id, { type: 'phobiaBlockerEnabled', value: $('#enabled-switch').prop('checked')})
+                chrome.tabs.sendMessage(tabs[0].id, { type: 'phobiaBlockerEnabled', value: $('#enabled-switch').prop('checked')}, () => {
+                    if (chrome.runtime.lastError) {
+                        // Silently ignore - content script not available on this page
+                    }
+                })
             })
         chrome.storage.sync.set({ 'phobiaBlockerEnabled': $('#enabled-switch').prop('checked')})
     })
@@ -63,7 +79,11 @@ $(() => {
     $('#blurIsAlwaysOn-switch').click('changed', () => {
         chrome.tabs.query({ active: true, currentWindow: true },
             (tabs) => {
-                chrome.tabs.sendMessage(tabs[0].id, { type: 'blurIsAlwaysOn', value: $('#blurIsAlwaysOn-switch').prop('checked')})
+                chrome.tabs.sendMessage(tabs[0].id, { type: 'blurIsAlwaysOn', value: $('#blurIsAlwaysOn-switch').prop('checked')}, () => {
+                    if (chrome.runtime.lastError) {
+                        // Silently ignore - content script not available on this page
+                    }
+                })
             })
         chrome.storage.sync.set({ 'blurIsAlwaysOn': $('#blurIsAlwaysOn-switch').prop('checked')})
     })

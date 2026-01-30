@@ -1,5 +1,5 @@
 .customLook{
-  --tag-bg                  : #00447c;
+  --tag-bg                  : #1976d2;
   --tag-hover               : #2196F3;
   --tag-text-color          : #FFF;
   --tags-border-color       : silver;
@@ -16,10 +16,25 @@
 
 .customLook .tagify__tag{
   margin-top: 0;
+  transition: transform 0.2s ease;
+}
+
+.customLook .tagify__tag:hover {
+  transform: translateY(-2px);
 }
 
 .customLook .tagify__tag > div{
   border-radius: 25px;
+  display: flex;
+  align-items: center;
+  padding: 0.6em 1em;
+  position: relative;
+}
+
+.customLook .tagify__tag__text {
+  flex: 1;
+  text-align: center;
+  width: 100%;
 }
 
 /* Do not show the "remove tag" (x) button when only a single tag remains */
@@ -41,7 +56,7 @@
 }
 
 .customLook + button{
-  color: #0052BF;
+  color: #1976d2;
   font: bold 1.4em/1.65 Arial;
   border: 0;
   background: none;
@@ -58,6 +73,11 @@
 
 .customLook + button:hover{
   box-shadow: 0 0 0 5px inset currentColor;
+  transform: scale(1.05);
+}
+
+.customLook + button:active{
+  transform: scale(0.95);
 }
 
 .customLook .tagify__input{

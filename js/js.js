@@ -71,10 +71,6 @@ class ImageNode {
         return this._imageNode == otherNode
     }
 
-    cleanup(){
-        // Reserved for future cleanup needs (e.g., event listeners, observers)
-    }
-
 }
 
 /**
@@ -206,8 +202,11 @@ class TextAnalizer {
             let compareTargetsToTextWords = (targets, wordsToAnalize) => {
                 let probableMatchingTargetWords = []
                 targets.forEach((target) => {
+                    // Skip if target doesn't have at least 2 characters
+                    if (target.length < 2) return
+
                     wordsToAnalize.forEach((word) => {
-                        if (word[0] == target[0] && word[1] == target[1]) {
+                        if (word.length >= 2 && word[0] == target[0] && word[1] == target[1]) {
                             probableMatchingTargetWords.push(word)
                         }
                     })
@@ -240,8 +239,6 @@ class TextAnalizer {
             let analysisResult = match.length > 0
 
             dependentImageNodes.forEach((imageNode) => {
-                // check
-                $(imageNode._imageNode).attr('blurResult', match)
                 imageNode.updateBlurStatus(analysisResult)
                 imageNode.textProcessingFinished()
             })
@@ -271,7 +268,6 @@ class TextAnalizer {
 class Controller {
     constructor(){
         this._imageNodeList = new ImageNodeList()
-        this._isStoped = false
         this._mutationBatch = []
         this._batchTimer = null
         this._batchProcessInterval = 500 // Process batch every 500ms
@@ -423,10 +419,7 @@ class Controller {
         this.observer.disconnect()
         clearTimeout(this._batchTimer)
         this._mutationBatch = []
-        // Clean up all image node timers
-        this._imageNodeList.getAllImages().forEach(img => img.cleanup())
         this.unBlurAll()
-        this._isStoped = true
     }
 
     resetImageNodeList(){
@@ -436,15 +429,10 @@ class Controller {
 
     blurAll(){
         this._imageNodeList.blurAllImages()
-        console.log(this._imageNodeList)
     }
 
     unBlurAll(){
         this._imageNodeList.unBlurAllImages()
-    }
-
-    isStoped(){
-        return this._isStoped
     }
 }
 
@@ -630,9 +618,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             }
             clearTimeout(controller._batchTimer)
             controller._mutationBatch = []
-            controller._isStoped = true
-            // Clean up old image node timers
-            controller._imageNodeList.getAllImages().forEach(img => img.cleanup())
             // Clear all blur/noblur classes from DOM
             $('.blur').removeClass('blur').removeClass('noblur').removeClass('permamentUnblur')
             // Reset the list and repopulate with all images
@@ -650,12 +635,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             }
             clearTimeout(controller._batchTimer)
             controller._mutationBatch = []
-            // Clean up old image node timers
-            controller._imageNodeList.getAllImages().forEach(img => img.cleanup())
             // Clear all blur/noblur classes from DOM before resetting
             $('.blur').removeClass('blur').removeClass('noblur').removeClass('permamentUnblur')
             controller._imageNodeList = new ImageNodeList()
-            controller._isStoped = false
             controller.onLoad()
         }
         break
