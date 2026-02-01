@@ -1,7 +1,6 @@
 $(() => {
     let targetWords = []
 
-    // Render tags
     function renderTags() {
         const container = $('#tags-container')
         container.empty()
@@ -24,7 +23,6 @@ $(() => {
         })
     }
 
-    // Add tag
     function addTag(word) {
         word = word.trim()
         if (!word || word.length > 30) return
@@ -37,19 +35,16 @@ $(() => {
         $('#word-input').val('')
     }
 
-    // Remove tag
     function removeTag(index) {
         targetWords.splice(index, 1)
         updateStorage()
         renderTags()
     }
 
-    // Update storage
     function updateStorage() {
         chrome.storage.sync.set({ targetWords: targetWords })
     }
 
-    // Load initial tags
     chrome.storage.sync.get('targetWords', (storage) => {
         if (storage.targetWords) {
             targetWords = storage.targetWords
@@ -71,7 +66,7 @@ $(() => {
         }
     })
 
-    $('#unblurBtn').click(() => {
+    $('#unblurBtn').parent().click(() => {
         chrome.tabs.query({ active: true, currentWindow: true },
             (tabs) => {
                 if (tabs && tabs[0]) {
@@ -84,7 +79,7 @@ $(() => {
             })
     })
 
-    $('#blurBtn').click(() => {
+    $('#blurBtn').parent().click(() => {
         chrome.tabs.query({ active: true, currentWindow: true },
             (tabs) => {
                 if (tabs && tabs[0]) {
@@ -139,7 +134,7 @@ $(() => {
     chrome.storage.sync.get('blurValueAmount', (storage) => {
         if (storage.blurValueAmount) {
             $('#blurRange').val(storage.blurValueAmount)
-        } else { $('#blurRange').val(3) }
+        } else { $('#blurRange').val(5) }
     })
 
     let arrorRightIcon = $('<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-caret-right" viewBox="0 0 16 16"><path d="M6 12.796V3.204L11.481 8 6 12.796zm.659.753 5.48-4.796a1 1 0 0 0 0-1.506L6.66 2.451C6.011 1.885 5 2.345 5 3.204v9.592a1 1 0 0 0 1.659.753z"/></svg>')

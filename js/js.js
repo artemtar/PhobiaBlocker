@@ -1,22 +1,8 @@
 const tokenizer = new natural.WordTokenizer()
 let targetWords = []
 let lastElementContext
-let phobiaBlockerEnabled = true 
+let phobiaBlockerEnabled = true
 let blurIsAlwaysOn = false
-
-let fetchPromise = async function(url,p1,p2,) {
-    return new Promise(function(resolve, reject) {
-        console.log('mypath',chrome.runtime.getURL('js/model.json'))
-        fetch(chrome.runtime.getURL('js/model.json'))
-            .then(response => {
-                console.log('model', response)
-                resolve(response)
-            }).catch(err =>{
-                console.log('myerr',err)
-                reject()
-            })
-    })
-}
 
 class ImageNode {
     constructor(imageNode) {
@@ -119,21 +105,6 @@ class ImageNodeList {
     constructor() {
         this._imageNodeList = []
     }
-
-    /**
-     * Accepts DOM node and inserts it imageNodeList or create a new ImageNode and pushs it in the list.
-     * All images are kept in imageNodeList for blur all and unblur all functions.
-     * @param {Node} nodeToCheck Node that will be used to update the list
-     * @returns {list[Node]} Amount of words in the text that match target words
-    */
-    // updateImageNodeList(nodeToCheck){
-    //     let nodeToReturn = this.getImageNode(nodeToCheck)
-    //     if (!nodeToReturn){
-    //         nodeToReturn = new ImageNode(nodeToCheck)
-    //         this._imageNodeList.push(nodeToReturn)
-    //     }
-    //     return nodeToReturn
-    // }
 
     /**
      * Accepts DOM node and checks if it already exists in controlled imageNodeList.
@@ -305,7 +276,6 @@ class Controller {
     onLoad(){
         let textAnalizer = new TextAnalizer()
         let { newImages, existingImages } = this.updateImageList(document)
-        // On initial load, all images are new, so only analyze newImages
         textAnalizer.addText($('body').text())
         textAnalizer.addText($('title').text())
         textAnalizer.startAnalysis(newImages).catch(err => {
@@ -315,8 +285,6 @@ class Controller {
     }
 
     onLoadBlurAll(){
-        // Populate image list and blur everything without text analysis
-        // Used when blurIsAlwaysOn mode is enabled
         this.updateImageList(document)
         this.blurAll()
         this._observerInit()
@@ -491,7 +459,8 @@ let setSettings = () => {
         chrome.storage.sync.get([
             'targetWords',
             'phobiaBlockerEnabled',
-            'blurIsAlwaysOn'
+            'blurIsAlwaysOn',
+            'blurValueAmount'
         ], (storage) => {
             if (chrome.runtime.lastError) {
                 return reject(chrome.runtime.lastError)
@@ -508,25 +477,35 @@ let setSettings = () => {
             }
             if(storage.blurIsAlwaysOn != undefined)
                 blurIsAlwaysOn = storage.blurIsAlwaysOn
+
+            // Apply blur amount setting
+            if (storage.blurValueAmount != undefined) {
+                let blurPixels = Math.pow(storage.blurValueAmount, 1.8) * 2
+                document.documentElement.style.setProperty('--blurValueAmount', blurPixels + 'px')
+            } else if (blurIsAlwaysOn) {
+                // First time using blur always on - use most aggressive settings
+                let maxBlurPixels = Math.pow(9, 1.8) * 2
+                document.documentElement.style.setProperty('--blurValueAmount', maxBlurPixels + 'px')
+            }
+
             return resolve()
         })
     })
 }
 
 var controller = new Controller()
+
+// Check settings early to disable blur immediately if extension is off
+setSettings().then(() => {
+    if(!phobiaBlockerEnabled) {
+        document.documentElement.style.setProperty('--blurValueAmount', 0 + 'px')
+    }
+})
+
 let main = async () => {
     await setSettings()
-    // Commented out experimental TensorFlow model loading (not implemented)
-    // let aaa = await fetchPromise('model.json')
-    // console.log('model', aaa)
-    // mobilenet.load(aaa.body)
-    // mobilenet.load({modelUrl: 'file://js/model.json'})
-    // const model = await tf.loadLayersModel('localstorage://my-model-1')
-
-    // targetWords = ['cat']
 
     if(blurIsAlwaysOn){
-        // When "blur is always on", populate images and blur everything
         controller.onLoadBlurAll()
     }
     else if(phobiaBlockerEnabled){
@@ -536,52 +515,45 @@ let main = async () => {
         document.documentElement.style.setProperty('--blurValueAmount', 0 + 'px')
     }
 }
-// main()
 $(document).ready(main)
-// document.addEventListener('DOMContentLoaded', main)
 
 document.addEventListener('contextmenu', (event) => {lastElementContext = event.target}, true)
-
-/**
- * hotkeys to Blur All (CTRL + ALT + B), and Unblur All (CTRL + ALT + U):
- **/
-$(document).keydown((event) => {
-    if (event.ctrlKey && event.altKey && event.which === 66) {
-        controller.blurAll()
-        event.preventDefault()
-    }
-    else if (event.ctrlKey && event.altKey && event.which === 85) {
-        controller.unBlurAll()
-        event.preventDefault()
-    }
-})
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     switch (message.type) {
     case 'blurAll':
+        // Check if user has set blur amount before, if not use maximum
+        chrome.storage.sync.get('blurValueAmount', (storage) => {
+            if (storage.blurValueAmount != undefined) {
+                let blurPixels = Math.pow(storage.blurValueAmount, 1.8) * 2
+                document.documentElement.style.setProperty('--blurValueAmount', blurPixels + 'px')
+            } else {
+                // First time - use most aggressive settings
+                let maxBlurPixels = Math.pow(9, 1.8) * 2
+                document.documentElement.style.setProperty('--blurValueAmount', maxBlurPixels + 'px')
+            }
+        })
         controller.blurAll()
         break
     case 'unblurAll':
         controller.unBlurAll()
         break
-    // Recives updated blur amount value from popup.js and sets it to the page
     case 'setBlurAmount':
         chrome.storage.sync.get('blurValueAmount', (storage) => {
             let blurValueAmount = storage['blurValueAmount']
             if (blurValueAmount) {
+                let blurPixels = Math.pow(blurValueAmount, 1.4) * 2
                 document.documentElement.style.setProperty(
                     '--blurValueAmount',
-                    5 * blurValueAmount + 'px'
+                    blurPixels + 'px'
                 )
             } else {
-                document.documentElement.style.setProperty('--blurValueAmount', 15 + 'px')
+                document.documentElement.style.setProperty('--blurValueAmount', 40 + 'px')
             }
         })
         break
-    // unblur on mouse right click
     case 'unblur':
         if (lastElementContext) {
-            // check how to do other way
             let blured = $(lastElementContext).find('.blur')
             if(!blured.hasClass('blur')){
                 blured = $(lastElementContext).siblings('.blur')
@@ -598,7 +570,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             controller.stop()
         }
         else {
-            // Extension is being enabled
             if(blurIsAlwaysOn){
                 controller.onLoadBlurAll()
             } else {
@@ -609,36 +580,38 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'blurIsAlwaysOn':
         blurIsAlwaysOn = message.value
         if(blurIsAlwaysOn){
-            // Switching TO "blur is always on" mode
+            // Check if user has set blur amount before, if not use maximum
+            chrome.storage.sync.get('blurValueAmount', (storage) => {
+                if (storage.blurValueAmount != undefined) {
+                    let blurPixels = Math.pow(storage.blurValueAmount, 1.8) * 2
+                    document.documentElement.style.setProperty('--blurValueAmount', blurPixels + 'px')
+                } else {
+                    // First time - use most aggressive settings
+                    let maxBlurPixels = Math.pow(9, 1.8) * 2
+                    document.documentElement.style.setProperty('--blurValueAmount', maxBlurPixels + 'px')
+                }
+            })
             if (controller.observer) {
                 controller.observer.disconnect()
             }
             clearTimeout(controller._batchTimer)
             controller._mutationBatch = []
-            // Clear all blur/noblur classes from DOM
             $('.blur').removeClass('blur').removeClass('noblur').removeClass('permamentUnblur')
-            // Reset the list and repopulate with all images
             controller._imageNodeList = new ImageNodeList()
             controller.updateImageList(document)
-            // Now blur all images
             controller.blurAll()
-            // Restart observer to catch new images
             controller._observerInit()
         }
         else {
-            // Switching FROM "blur is always on" to normal mode
             if (controller.observer) {
                 controller.observer.disconnect()
             }
             clearTimeout(controller._batchTimer)
             controller._mutationBatch = []
-            // Clear all blur/noblur classes from DOM before resetting
             $('.blur').removeClass('blur').removeClass('noblur').removeClass('permamentUnblur')
             controller._imageNodeList = new ImageNodeList()
             controller.onLoad()
         }
         break
-    default:
-        console.log('Unrecognised message: ', message)
     }
 })

@@ -1,24 +1,24 @@
 :root {
-    --blurValueAmount: 15px;
+    --blurValueAmount: 10px;
     --filterStrength: blur(var(--blurValueAmount));
 }
 
 img {
-    filter: var(--filterStrength);
-    -webkit-filter: var(--filterStrength);
-    -ms-filter: var(--filterStrength);
+    filter: var(--filterStrength) !important;
+    -webkit-filter: var(--filterStrength) !important;
+    -ms-filter: var(--filterStrength) !important;
 }
 
 img.noblur {
-    filter: none;
-    -webkit-filter: none;
-    -ms-filter: none;
+    filter: none !important;
+    -webkit-filter: none !important;
+    -ms-filter: none !important;
 }
 
 img.blur {
-    filter: var(--filterStrength);
-    -webkit-filter: var(--filterStrength);
-    -ms-filter: var(--filterStrength);
+    filter: var(--filterStrength) !important;
+    -webkit-filter: var(--filterStrength) !important;
+    -ms-filter: var(--filterStrength) !important;
     pointer-events: none;
     cursor: default;
 }
