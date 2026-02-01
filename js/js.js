@@ -480,11 +480,11 @@ let setSettings = () => {
 
             // Apply blur amount setting
             if (storage.blurValueAmount != undefined) {
-                let blurPixels = Math.pow(storage.blurValueAmount, 1.8) * 2
+                let blurPixels = Math.pow(storage.blurValueAmount * 0.09, 1.8) * 2
                 document.documentElement.style.setProperty('--blurValueAmount', blurPixels + 'px')
             } else if (blurIsAlwaysOn) {
                 // First time using blur always on - use most aggressive settings
-                let maxBlurPixels = Math.pow(9, 1.8) * 2
+                let maxBlurPixels = Math.pow(100 * 0.09, 1.8) * 2
                 document.documentElement.style.setProperty('--blurValueAmount', maxBlurPixels + 'px')
             }
 
@@ -525,11 +525,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // Check if user has set blur amount before, if not use maximum
         chrome.storage.sync.get('blurValueAmount', (storage) => {
             if (storage.blurValueAmount != undefined) {
-                let blurPixels = Math.pow(storage.blurValueAmount, 1.8) * 2
+                let blurPixels = Math.pow(storage.blurValueAmount * 0.09, 1.8) * 2
                 document.documentElement.style.setProperty('--blurValueAmount', blurPixels + 'px')
             } else {
                 // First time - use most aggressive settings
-                let maxBlurPixels = Math.pow(9, 1.8) * 2
+                let maxBlurPixels = Math.pow(100 * 0.09, 1.8) * 2
                 document.documentElement.style.setProperty('--blurValueAmount', maxBlurPixels + 'px')
             }
         })
@@ -539,18 +539,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         controller.unBlurAll()
         break
     case 'setBlurAmount':
-        chrome.storage.sync.get('blurValueAmount', (storage) => {
-            let blurValueAmount = storage['blurValueAmount']
-            if (blurValueAmount) {
-                let blurPixels = Math.pow(blurValueAmount, 1.4) * 2
-                document.documentElement.style.setProperty(
-                    '--blurValueAmount',
-                    blurPixels + 'px'
-                )
-            } else {
-                document.documentElement.style.setProperty('--blurValueAmount', 40 + 'px')
-            }
-        })
+        let blurValueAmount = message.value
+        if (blurValueAmount != undefined) {
+            // Value provided in message (real-time update while dragging)
+            let blurPixels = Math.pow(blurValueAmount * 0.09, 1.8) * 2
+            document.documentElement.style.setProperty(
+                '--blurValueAmount',
+                blurPixels + 'px'
+            )
+        } else {
+            // Get from storage (for other scenarios)
+            chrome.storage.sync.get('blurValueAmount', (storage) => {
+                let storedValue = storage['blurValueAmount']
+                if (storedValue != undefined) {
+                    let blurPixels = Math.pow(storedValue * 0.09, 1.8) * 2
+                    document.documentElement.style.setProperty(
+                        '--blurValueAmount',
+                        blurPixels + 'px'
+                    )
+                } else {
+                    document.documentElement.style.setProperty('--blurValueAmount', 40 + 'px')
+                }
+            })
+        }
         break
     case 'unblur':
         if (lastElementContext) {
@@ -583,11 +594,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             // Check if user has set blur amount before, if not use maximum
             chrome.storage.sync.get('blurValueAmount', (storage) => {
                 if (storage.blurValueAmount != undefined) {
-                    let blurPixels = Math.pow(storage.blurValueAmount, 1.8) * 2
+                    let blurPixels = Math.pow(storage.blurValueAmount * 0.09, 1.8) * 2
                     document.documentElement.style.setProperty('--blurValueAmount', blurPixels + 'px')
                 } else {
                     // First time - use most aggressive settings
-                    let maxBlurPixels = Math.pow(9, 1.8) * 2
+                    let maxBlurPixels = Math.pow(100 * 0.09, 1.8) * 2
                     document.documentElement.style.setProperty('--blurValueAmount', maxBlurPixels + 'px')
                 }
             })

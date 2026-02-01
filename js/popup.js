@@ -94,9 +94,8 @@ $(() => {
 
     $(document).on('input', '#blurRange', () => {
         let blurValueAmount = $('#blurRange').val()
-        chrome.storage.sync.set({ 'blurValueAmount': blurValueAmount })
         chrome.tabs.query({}, (tabs) => {
-            let message = { type: 'setBlurAmount' }
+            let message = { type: 'setBlurAmount', value: blurValueAmount }
             for (let i = 0; i < tabs.length; ++i) {
                 chrome.tabs.sendMessage(tabs[i].id, message, () => {
                     if (chrome.runtime.lastError) {
@@ -105,6 +104,11 @@ $(() => {
                 })
             }
         })
+    })
+
+    $(document).on('change', '#blurRange', () => {
+        let blurValueAmount = $('#blurRange').val()
+        chrome.storage.sync.set({ 'blurValueAmount': blurValueAmount })
     })
 
     $('#enabled-switch').click('changed', () => {
@@ -134,7 +138,7 @@ $(() => {
     chrome.storage.sync.get('blurValueAmount', (storage) => {
         if (storage.blurValueAmount) {
             $('#blurRange').val(storage.blurValueAmount)
-        } else { $('#blurRange').val(5) }
+        } else { $('#blurRange').val(50) }
     })
 
     let arrorRightIcon = $('<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-caret-right" viewBox="0 0 16 16"><path d="M6 12.796V3.204L11.481 8 6 12.796zm.659.753 5.48-4.796a1 1 0 0 0 0-1.506L6.66 2.451C6.011 1.885 5 2.345 5 3.204v9.592a1 1 0 0 0 1.659.753z"/></svg>')
