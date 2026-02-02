@@ -43,6 +43,16 @@ $(() => {
 
     function updateStorage() {
         chrome.storage.sync.set({ targetWords: targetWords })
+        // Notify all tabs that target words changed - they should re-analyze
+        chrome.tabs.query({}, (tabs) => {
+            for (let i = 0; i < tabs.length; ++i) {
+                chrome.tabs.sendMessage(tabs[i].id, { type: 'targetWordsChanged' }, () => {
+                    if (chrome.runtime.lastError) {
+                        // Silently ignore - content script not available on this page
+                    }
+                })
+            }
+        })
     }
 
     chrome.storage.sync.get('targetWords', (storage) => {

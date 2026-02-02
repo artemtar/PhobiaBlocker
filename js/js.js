@@ -100,6 +100,50 @@ class BgImageNode extends ImageNode {
     }
 }
 
+/**
+ * @extends {ImageNode}
+ * Handles video elements
+ */
+class VideoNode extends ImageNode {
+    constructor(imageNode){
+        super(imageNode)
+    }
+
+    blur() {
+        if (!$(this._imageNode).hasClass('permamentUnblur')){
+            $(this._imageNode).removeClass('noblur')
+            $(this._imageNode).addClass('blur')
+        }
+    }
+
+    unblur() {
+        $(this._imageNode).addClass('noblur')
+        $(this._imageNode).removeClass('blur')
+    }
+}
+
+/**
+ * @extends {ImageNode}
+ * Handles iframe elements (YouTube, Vimeo, embedded videos, etc.)
+ */
+class IframeNode extends ImageNode {
+    constructor(imageNode){
+        super(imageNode)
+    }
+
+    blur() {
+        if (!$(this._imageNode).hasClass('permamentUnblur')){
+            $(this._imageNode).removeClass('noblur')
+            $(this._imageNode).addClass('blur')
+        }
+    }
+
+    unblur() {
+        $(this._imageNode).addClass('noblur')
+        $(this._imageNode).removeClass('blur')
+    }
+}
+
 
 class ImageNodeList {
     constructor() {
@@ -247,6 +291,8 @@ class Controller {
 
     updateImageList(nodeToCheck){
         let tagImageNodes = $(nodeToCheck).find('img')
+        let videoNodes = $(nodeToCheck).find('video')
+        let iframeNodes = $(nodeToCheck).find('iframe')
         let newImages = []
         let existingImages = []
 
@@ -269,6 +315,12 @@ class Controller {
         })
         tagImageNodes.each((_, tagImageNode) => {
             checkAndUpdate(TagImageNode, _, tagImageNode)
+        })
+        videoNodes.each((_, videoNode) => {
+            checkAndUpdate(VideoNode, _, videoNode)
+        })
+        iframeNodes.each((_, iframeNode) => {
+            checkAndUpdate(IframeNode, _, iframeNode)
         })
         return { newImages, existingImages }
     }
@@ -566,11 +618,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break
     case 'unblur':
         if (lastElementContext) {
-            let blured = $(lastElementContext).find('.blur')
-            if(!blured.hasClass('blur')){
+            let blured = null
+
+            // Check if the clicked element itself is blurred
+            if ($(lastElementContext).hasClass('blur')) {
+                blured = $(lastElementContext)
+            }
+            // Check children with blur class
+            else {
+                blured = $(lastElementContext).find('.blur')
+            }
+            // Check siblings if nothing found
+            if (!blured || blured.length === 0) {
                 blured = $(lastElementContext).siblings('.blur')
             }
-            if (blured){
+            // Check parent if still nothing found
+            if (!blured || blured.length === 0) {
+                blured = $(lastElementContext).parent('.blur')
+            }
+            // Check if parent has blurred children
+            if (!blured || blured.length === 0) {
+                blured = $(lastElementContext).parent().find('.blur')
+            }
+
+            if (blured && blured.length > 0) {
                 blured.removeClass('blur')
                 blured.addClass('noblur permamentUnblur')
             }
@@ -625,6 +696,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             controller._imageNodeList = new ImageNodeList()
             controller.onLoad()
         }
+        break
+    case 'targetWordsChanged':
+        // Target words changed - reload and re-analyze
+        chrome.storage.sync.get('targetWords', (storage) => {
+            if (storage.targetWords) {
+                targetWords = expandTargetWords(storage.targetWords)
+            } else {
+                targetWords = []
+            }
+            // Clear all noblur classes except permamentUnblur
+            $('.noblur').not('.permamentUnblur').removeClass('noblur').addClass('blur')
+            // Re-analyze if extension is enabled
+            if (phobiaBlockerEnabled && !blurIsAlwaysOn) {
+                let textAnalizer = new TextAnalizer()
+                textAnalizer.addText($('body').text())
+                textAnalizer.addText($('title').text())
+                let allImages = controller._imageNodeList._imageNodeList
+                textAnalizer.startAnalysis(allImages).catch(err => {
+                    console.error('Error in targetWordsChanged analysis:', err)
+                })
+            }
+        })
         break
     }
 })

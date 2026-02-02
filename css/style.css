@@ -1,5 +1,5 @@
 :root {
-    --blurValueAmount: 10px;
+    --blurValueAmount: 40px;
     --filterStrength: blur(var(--blurValueAmount));
 }
 
@@ -16,6 +16,48 @@ img.noblur {
 }
 
 img.blur {
+    filter: var(--filterStrength) !important;
+    -webkit-filter: var(--filterStrength) !important;
+    -ms-filter: var(--filterStrength) !important;
+    pointer-events: none;
+    cursor: default;
+}
+
+/* Video elements */
+video {
+    filter: var(--filterStrength) !important;
+    -webkit-filter: var(--filterStrength) !important;
+    -ms-filter: var(--filterStrength) !important;
+}
+
+video.noblur {
+    filter: none !important;
+    -webkit-filter: none !important;
+    -ms-filter: none !important;
+}
+
+video.blur {
+    filter: var(--filterStrength) !important;
+    -webkit-filter: var(--filterStrength) !important;
+    -ms-filter: var(--filterStrength) !important;
+    pointer-events: none;
+    cursor: default;
+}
+
+/* Iframe elements (embedded videos) */
+iframe {
+    filter: var(--filterStrength) !important;
+    -webkit-filter: var(--filterStrength) !important;
+    -ms-filter: var(--filterStrength) !important;
+}
+
+iframe.noblur {
+    filter: none !important;
+    -webkit-filter: none !important;
+    -ms-filter: none !important;
+}
+
+iframe.blur {
     filter: var(--filterStrength) !important;
     -webkit-filter: var(--filterStrength) !important;
     -ms-filter: var(--filterStrength) !important;
