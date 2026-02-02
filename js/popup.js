@@ -111,7 +111,7 @@ $(() => {
         chrome.storage.sync.set({ 'blurValueAmount': blurValueAmount })
     })
 
-    $('#enabled-switch').click('changed', () => {
+    $('#enabled-switch').click(() => {
         chrome.tabs.query({ active: true, currentWindow: true },
             (tabs) => {
                 chrome.tabs.sendMessage(tabs[0].id, { type: 'phobiaBlockerEnabled', value: $('#enabled-switch').prop('checked')}, () => {
@@ -136,9 +136,18 @@ $(() => {
     })
 
     chrome.storage.sync.get('blurValueAmount', (storage) => {
-        if (storage.blurValueAmount) {
-            $('#blurRange').val(storage.blurValueAmount)
-        } else { $('#blurRange').val(50) }
+        let blurValue = storage.blurValueAmount || 50
+        $('#blurRange').val(blurValue)
+        // Sync blur amount with all tabs on popup open
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            if (tabs && tabs[0]) {
+                chrome.tabs.sendMessage(tabs[0].id, { type: 'setBlurAmount', value: blurValue }, () => {
+                    if (chrome.runtime.lastError) {
+                        // Silently ignore - content script not available on this page
+                    }
+                })
+            }
+        })
     })
 
     let arrorRightIcon = $('<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-caret-right" viewBox="0 0 16 16"><path d="M6 12.796V3.204L11.481 8 6 12.796zm.659.753 5.48-4.796a1 1 0 0 0 0-1.506L6.66 2.451C6.011 1.885 5 2.345 5 3.204v9.592a1 1 0 0 0 1.659.753z"/></svg>')
