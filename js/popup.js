@@ -123,7 +123,7 @@ $(() => {
         chrome.storage.sync.set({ 'phobiaBlockerEnabled': $('#enabled-switch').prop('checked')})
     })
 
-    $('#blurIsAlwaysOn-switch').click('changed', () => {
+    $('#blurIsAlwaysOn-switch').click(() => {
         chrome.tabs.query({ active: true, currentWindow: true },
             (tabs) => {
                 chrome.tabs.sendMessage(tabs[0].id, { type: 'blurIsAlwaysOn', value: $('#blurIsAlwaysOn-switch').prop('checked')}, () => {
@@ -189,10 +189,9 @@ $(() => {
             targetWords = defaultTarget
             renderTags()
         }
-        if (storage.phobiaBlockerEnabled)
-            $('#enabled-switch').prop('checked', storage.phobiaBlockerEnabled)
-        if (storage.blurIsAlwaysOn)
-            $('#blurIsAlwaysOn-switch').prop('checked', storage.blurIsAlwaysOn)
+        // Explicitly set toggle states (handles both true and false)
+        $('#enabled-switch').prop('checked', storage.phobiaBlockerEnabled !== false)
+        $('#blurIsAlwaysOn-switch').prop('checked', storage.blurIsAlwaysOn === true)
     })
 
     // Set keyboard shortcuts (same for all platforms)
