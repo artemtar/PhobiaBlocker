@@ -532,8 +532,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 let maxBlurPixels = Math.pow(100 * 0.09, 1.8) * 2
                 document.documentElement.style.setProperty('--blurValueAmount', maxBlurPixels + 'px')
             }
+            // Blur after blur amount is set
+            controller.blurAll()
         })
-        controller.blurAll()
         break
     case 'unblurAll':
         controller.unBlurAll()
@@ -601,17 +602,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     let maxBlurPixels = Math.pow(100 * 0.09, 1.8) * 2
                     document.documentElement.style.setProperty('--blurValueAmount', maxBlurPixels + 'px')
                 }
+                // Execute after blur amount is set
+                if (controller.observer) {
+                    controller.observer.disconnect()
+                }
+                clearTimeout(controller._batchTimer)
+                controller._mutationBatch = []
+                $('.blur').removeClass('blur').removeClass('noblur').removeClass('permamentUnblur')
+                controller._imageNodeList = new ImageNodeList()
+                controller.updateImageList(document)
+                controller.blurAll()
+                controller._observerInit()
             })
-            if (controller.observer) {
-                controller.observer.disconnect()
-            }
-            clearTimeout(controller._batchTimer)
-            controller._mutationBatch = []
-            $('.blur').removeClass('blur').removeClass('noblur').removeClass('permamentUnblur')
-            controller._imageNodeList = new ImageNodeList()
-            controller.updateImageList(document)
-            controller.blurAll()
-            controller._observerInit()
         }
         else {
             if (controller.observer) {
