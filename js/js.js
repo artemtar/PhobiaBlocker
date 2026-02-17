@@ -1,3 +1,25 @@
+// Immediately inject CSS to blur all images on page load to prevent flash
+// This runs at document_start before images load
+(function injectEarlyBlur() {
+    const style = document.createElement('style')
+    style.id = 'phobiablocker-early-blur'
+    style.textContent = `
+        /* Temporarily blur all visual content until PhobiaBlocker analyzes the page */
+        /* Uses CSS variable that will be updated when settings load */
+        img:not(.noblur):not(.permamentUnblur),
+        video:not(.noblur):not(.permamentUnblur),
+        iframe:not(.noblur):not(.permamentUnblur) {
+            filter: blur(var(--blurValueAmount, 40px)) !important;
+            -webkit-filter: blur(var(--blurValueAmount, 40px)) !important;
+        }
+    `
+    // Insert at the very beginning of head (or create head if it doesn't exist)
+    if (!document.head) {
+        document.documentElement.appendChild(document.createElement('head'))
+    }
+    document.head.insertBefore(style, document.head.firstChild)
+})()
+
 const tokenizer = new natural.WordTokenizer()
 let targetWords = []
 let lastElementContext
@@ -68,15 +90,15 @@ class TagImageNode extends ImageNode {
     }
 
     blur() {
-        if (!$(this._imageNode).hasClass('permamentUnblur')){
-            $(this._imageNode).removeClass('noblur')
-            $(this._imageNode).addClass('blur')
+        if (!this._imageNode.classList.contains('permamentUnblur')){
+            this._imageNode.classList.remove('noblur')
+            this._imageNode.classList.add('blur')
         }
     }
 
     unblur() {
-        $(this._imageNode).addClass('noblur')
-        $(this._imageNode).removeClass('blur')
+        this._imageNode.classList.add('noblur')
+        this._imageNode.classList.remove('blur')
     }
 }
 
@@ -86,17 +108,17 @@ class BgImageNode extends ImageNode {
     }
 
     blur() {
-        if (!$(this._imageNode).hasClass('permamentUnblur')){
-            $(this._imageNode).removeClass('noblur')
-            $(this._imageNode).addClass('blur')
-            $(this._imageNode).css('filter', 'blur(10px)')
+        if (!this._imageNode.classList.contains('permamentUnblur')){
+            this._imageNode.classList.remove('noblur')
+            this._imageNode.classList.add('blur')
+            this._imageNode.style.filter = 'blur(10px)'
         }
     }
 
     unblur() {
-        $(this._imageNode).addClass('noblur')
-        $(this._imageNode).removeClass('blur')
-        $(this._imageNode).css('filter', 'blur(0px)')
+        this._imageNode.classList.add('noblur')
+        this._imageNode.classList.remove('blur')
+        this._imageNode.style.filter = 'blur(0px)'
     }
 }
 
@@ -110,15 +132,16 @@ class VideoNode extends ImageNode {
     }
 
     blur() {
-        if (!$(this._imageNode).hasClass('permamentUnblur')){
-            $(this._imageNode).removeClass('noblur')
-            $(this._imageNode).addClass('blur')
+        // Use native classList API
+        if (!this._imageNode.classList.contains('permamentUnblur')){
+            this._imageNode.classList.remove('noblur')
+            this._imageNode.classList.add('blur')
         }
     }
 
     unblur() {
-        $(this._imageNode).addClass('noblur')
-        $(this._imageNode).removeClass('blur')
+        this._imageNode.classList.add('noblur')
+        this._imageNode.classList.remove('blur')
     }
 }
 
@@ -132,15 +155,15 @@ class IframeNode extends ImageNode {
     }
 
     blur() {
-        if (!$(this._imageNode).hasClass('permamentUnblur')){
-            $(this._imageNode).removeClass('noblur')
-            $(this._imageNode).addClass('blur')
+        if (!this._imageNode.classList.contains('permamentUnblur')){
+            this._imageNode.classList.remove('noblur')
+            this._imageNode.classList.add('blur')
         }
     }
 
     unblur() {
-        $(this._imageNode).addClass('noblur')
-        $(this._imageNode).removeClass('blur')
+        this._imageNode.classList.add('noblur')
+        this._imageNode.classList.remove('blur')
     }
 }
 
@@ -290,17 +313,11 @@ class Controller {
     }
 
     updateImageList(nodeToCheck){
-        let tagImageNodes = $(nodeToCheck).find('img')
-        let videoNodes = $(nodeToCheck).find('video')
-        let iframeNodes = $(nodeToCheck).find('iframe')
         let newImages = []
         let existingImages = []
 
-        let r_bgUrl = /url/gi
-        let bgImageNodes = $(nodeToCheck).find('*').filter(function() {
-            return $(this).css('background').match(r_bgUrl)
-        })
-        let checkAndUpdate = (classType, _, imageNode) => {
+        // Helper function to process a single element
+        let checkAndUpdate = (classType, imageNode) => {
             let imageToAnalize = this._imageNodeList.getImageNode(imageNode)
             if (!imageToAnalize){
                 imageToAnalize = new classType(imageNode)
@@ -310,28 +327,56 @@ class Controller {
                 existingImages.push(imageToAnalize)
             }
         }
-        bgImageNodes.each((_, bgImage) => {
-            checkAndUpdate(BgImageNode, _, bgImage)
-        })
-        tagImageNodes.each((_, tagImageNode) => {
-            checkAndUpdate(TagImageNode, _, tagImageNode)
-        })
-        videoNodes.each((_, videoNode) => {
-            checkAndUpdate(VideoNode, _, videoNode)
-        })
-        iframeNodes.each((_, iframeNode) => {
-            checkAndUpdate(IframeNode, _, iframeNode)
-        })
+
+        // Use native browser APIs for maximum performance
+        // HTMLCollections are live and much faster than jQuery
+
+        // Find all <img> tags
+        let tagImageNodes = nodeToCheck.getElementsByTagName('img')
+        for (let i = 0; i < tagImageNodes.length; i++) {
+            checkAndUpdate(TagImageNode, tagImageNodes[i])
+        }
+
+        // Find all <video> tags
+        let videoNodes = nodeToCheck.getElementsByTagName('video')
+        for (let i = 0; i < videoNodes.length; i++) {
+            checkAndUpdate(VideoNode, videoNodes[i])
+        }
+
+        // Find all <iframe> tags
+        let iframeNodes = nodeToCheck.getElementsByTagName('iframe')
+        for (let i = 0; i < iframeNodes.length; i++) {
+            checkAndUpdate(IframeNode, iframeNodes[i])
+        }
+
+        // Find elements with background images
+        // This is slower but necessary - use querySelectorAll with a more specific selector
+        // Only check divs, spans, sections, articles, and common containers
+        let r_bgUrl = /url/gi
+        let potentialBgElements = nodeToCheck.querySelectorAll('div, span, section, article, aside, header, footer, main, figure')
+        for (let i = 0; i < potentialBgElements.length; i++) {
+            let element = potentialBgElements[i]
+            // Use getComputedStyle for accurate background detection
+            let bgImage = window.getComputedStyle(element).backgroundImage
+            if (bgImage && bgImage !== 'none' && r_bgUrl.test(bgImage)) {
+                checkAndUpdate(BgImageNode, element)
+            }
+        }
+
         return { newImages, existingImages }
     }
 
     onLoad(){
         let textAnalizer = new TextAnalizer()
         let { newImages, existingImages } = this.updateImageList(document)
-        textAnalizer.addText($('body').text())
-        textAnalizer.addText($('title').text())
+        // Use native textContent for much faster text extraction (10-50x faster than jQuery)
+        textAnalizer.addText(document.body.textContent)
+        textAnalizer.addText(document.title)
         textAnalizer.startAnalysis(newImages).catch(err => {
             console.error('Error in onLoad text analysis:', err)
+        }).finally(() => {
+            // Remove early blur style after initial analysis completes
+            this._removeEarlyBlurStyle()
         })
         this._observerInit()
     }
@@ -340,54 +385,86 @@ class Controller {
         this.updateImageList(document)
         this.blurAll()
         this._observerInit()
+        // Early blur style can stay since we're blurring everything anyway
+    }
+
+    _removeEarlyBlurStyle(){
+        // Remove the early blur CSS once initial analysis is complete
+        // Images now have proper blur/noblur classes from analysis
+        let earlyBlurStyle = document.getElementById('phobiablocker-early-blur')
+        if (earlyBlurStyle) {
+            earlyBlurStyle.remove()
+        }
     }
 
     _shouldIgnoreMutation(target){
         // Ignore mutations in form fields and contenteditable to prevent typing freezes
         if (!target) return true
-        let $target = $(target)
 
-        // Check if target itself is a form element or contenteditable
-        if ($target.is('input, textarea') || $target.attr('contenteditable') === 'true') {
+        // Use native APIs for maximum performance (called on EVERY mutation)
+
+        // Check if target itself is a form element
+        let tagName = target.tagName ? target.tagName.toLowerCase() : ''
+        if (tagName === 'input' || tagName === 'textarea') {
             return true
         }
 
-        // Check if target is inside a form element or contenteditable
-        if ($target.closest('input, textarea, [contenteditable="true"]').length > 0) {
+        // Check contenteditable
+        if (target.getAttribute && target.getAttribute('contenteditable') === 'true') {
             return true
         }
 
-        // Ignore UI components by ARIA roles (toolbars, menus, etc.)
+        // Check if inside a form element or contenteditable (use native closest)
+        if (target.closest && (
+            target.closest('input') ||
+            target.closest('textarea') ||
+            target.closest('[contenteditable="true"]')
+        )) {
+            return true
+        }
+
+        // Ignore UI components by ARIA roles (use native getAttribute)
         const uiRoles = [
             'toolbar', 'menubar', 'menu', 'menuitem', 'menuitemcheckbox', 'menuitemradio',
             'listbox', 'option', 'combobox', 'tree', 'treegrid', 'grid',
             'dialog', 'alertdialog', 'tooltip', 'application'
         ]
-        const targetRole = $target.attr('role')
+        let targetRole = target.getAttribute ? target.getAttribute('role') : null
         if (targetRole && uiRoles.includes(targetRole)) {
             return true
         }
-        // Check if inside UI component
-        for (let role of uiRoles) {
-            if ($target.closest(`[role="${role}"]`).length > 0) {
-                return true
+
+        // Check if inside UI component (native closest with CSS selector)
+        if (target.closest) {
+            for (let role of uiRoles) {
+                if (target.closest(`[role="${role}"]`)) {
+                    return true
+                }
             }
         }
 
-        // Ignore elements with aria-haspopup (dropdown triggers, menus)
-        if ($target.attr('aria-haspopup') || $target.closest('[aria-haspopup]').length > 0) {
+        // Ignore elements with aria-haspopup (native getAttribute)
+        if ((target.getAttribute && target.getAttribute('aria-haspopup')) ||
+            (target.closest && target.closest('[aria-haspopup]'))) {
             return true
         }
 
         // Ignore hidden UI elements
-        if ($target.attr('aria-hidden') === 'true' ||
-            $target.css('display') === 'none' ||
-            $target.css('visibility') === 'hidden') {
+        if (target.getAttribute && target.getAttribute('aria-hidden') === 'true') {
             return true
         }
 
+        // Use getComputedStyle for display/visibility (more accurate than jQuery css())
+        if (window.getComputedStyle) {
+            let style = window.getComputedStyle(target)
+            if (style.display === 'none' || style.visibility === 'hidden') {
+                return true
+            }
+        }
+
         // Ignore script, head, style, svg, noscript tags
-        if ($target.is('script, head, style, svg, noscript')) {
+        if (tagName === 'script' || tagName === 'head' || tagName === 'style' ||
+            tagName === 'svg' || tagName === 'noscript') {
             return true
         }
 
@@ -396,11 +473,11 @@ class Controller {
 
     _isComplexEditor(target) {
         // Detect if target is inside a complex rich text editor that should be avoided
-        if (!target) return false
-        let $target = $(target)
+        if (!target || !target.closest) return false
 
-        // Check for common editor containers (fast jQuery selectors)
-        if ($target.closest([
+        // Use native closest() - much faster than jQuery
+        // Check for common editor containers with a single selector
+        return target.closest([
             '[role="application"]',
             '[role="toolbar"]',
             '.wiki-edit',
@@ -414,34 +491,22 @@ class Controller {
             '[class*="-editor"]',
             '[id*="editor"]',
             '[contenteditable="true"]'
-        ].join(',')).length > 0) {
-            return true
-        }
-
-        return false
+        ].join(',')) !== null
     }
 
     _isDataTableWithoutImages(target) {
         // Skip text analysis for table cells/rows if the table has no visual content
         if (!target) return false
-        let $target = $(target)
 
-        // Check if we're in a table row or cell
-        if (!$target.is('tr, td, th') && $target.closest('tr, td, th').length === 0) {
-            return false
-        }
-
-        // Find the parent table
-        let $table = $target.closest('table')
-        if ($table.length === 0) return false
+        // Quick native check - if target is not in a table, bail early
+        let tableElement = target.closest('table')
+        if (!tableElement) return false
 
         // Cache check: if we've checked this table recently, use cached result
-        // Use the actual DOM element as key (WeakMap would be better but this is simpler)
         if (!this._tableImageCache) {
             this._tableImageCache = new Map()
         }
 
-        let tableElement = $table[0]
         let now = Date.now()
 
         if (this._tableImageCache.has(tableElement)) {
@@ -452,9 +517,13 @@ class Controller {
             }
         }
 
-        // Check if table has images, videos, or iframes
-        // For performance, only check if the selector exists (don't count all)
-        let hasImages = $table.find('img, video, iframe')[0] !== undefined
+        // Use native browser APIs for maximum performance
+        // These are HTMLCollections and much faster than jQuery
+        let hasImages = (
+            tableElement.getElementsByTagName('img').length > 0 ||
+            tableElement.getElementsByTagName('video').length > 0 ||
+            tableElement.getElementsByTagName('iframe').length > 0
+        )
 
         // Cache the result
         this._tableImageCache.set(tableElement, {
@@ -509,7 +578,8 @@ class Controller {
             if (!this._shouldIgnoreMutation(mutation.target) &&
                 !this._isComplexEditor(mutation.target) &&
                 !this._isDataTableWithoutImages(mutation.target)) {
-                textAnalizer.addText($(mutation.target).text())
+                // Use native textContent (much faster than jQuery .text())
+                textAnalizer.addText(mutation.target.textContent || '')
             }
         })
 
@@ -675,6 +745,11 @@ var controller = new Controller()
 setSettings().then(() => {
     if(!phobiaBlockerEnabled) {
         document.documentElement.style.setProperty('--blurValueAmount', 0 + 'px')
+        // Remove early blur style if extension is disabled
+        let earlyBlurStyle = document.getElementById('phobiablocker-early-blur')
+        if (earlyBlurStyle) {
+            earlyBlurStyle.remove()
+        }
     }
 })
 
@@ -689,9 +764,17 @@ let main = async () => {
     }
     else if(!phobiaBlockerEnabled) {
         document.documentElement.style.setProperty('--blurValueAmount', 0 + 'px')
+        // Remove early blur style if extension is disabled
+        controller._removeEarlyBlurStyle()
     }
 }
-$(document).ready(main)
+// Use native DOMContentLoader
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', main)
+} else {
+    // Document already loaded
+    main()
+}
 
 document.addEventListener('contextmenu', (event) => {lastElementContext = event.target}, true)
 
@@ -783,6 +866,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         phobiaBlockerEnabled = message.value
         if(!phobiaBlockerEnabled){
             controller.stop()
+            // Remove early blur style when disabling extension
+            controller._removeEarlyBlurStyle()
         }
         else {
             if(blurIsAlwaysOn){
@@ -844,8 +929,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             // Re-analyze if extension is enabled
             if (phobiaBlockerEnabled && !blurIsAlwaysOn) {
                 let textAnalizer = new TextAnalizer()
-                textAnalizer.addText($('body').text())
-                textAnalizer.addText($('title').text())
+                // Use native textContent (much faster than jQuery)
+                textAnalizer.addText(document.body.textContent)
+                textAnalizer.addText(document.title)
                 let allImages = controller._imageNodeList._imageNodeList
                 textAnalizer.startAnalysis(allImages).catch(err => {
                     console.error('Error in targetWordsChanged analysis:', err)
