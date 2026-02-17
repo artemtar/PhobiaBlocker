@@ -343,26 +343,138 @@ class Controller {
     }
 
     _shouldIgnoreMutation(target){
-        // Ignore mutations in form fields to prevent typing freezes
+        // Ignore mutations in form fields and contenteditable to prevent typing freezes
         if (!target) return true
         let $target = $(target)
 
-        // Check if target itself is a form element
+        // Check if target itself is a form element or contenteditable
         if ($target.is('input, textarea') || $target.attr('contenteditable') === 'true') {
             return true
         }
 
-        // Check if target is inside a form element
+        // Check if target is inside a form element or contenteditable
         if ($target.closest('input, textarea, [contenteditable="true"]').length > 0) {
             return true
         }
 
-        // Ignore script, head, style tags
-        if ($target.is('script') || $target.is('head') || $target.is('style')) {
+        // Ignore UI components by ARIA roles (toolbars, menus, etc.)
+        const uiRoles = [
+            'toolbar', 'menubar', 'menu', 'menuitem', 'menuitemcheckbox', 'menuitemradio',
+            'listbox', 'option', 'combobox', 'tree', 'treegrid', 'grid',
+            'dialog', 'alertdialog', 'tooltip', 'application'
+        ]
+        const targetRole = $target.attr('role')
+        if (targetRole && uiRoles.includes(targetRole)) {
+            return true
+        }
+        // Check if inside UI component
+        for (let role of uiRoles) {
+            if ($target.closest(`[role="${role}"]`).length > 0) {
+                return true
+            }
+        }
+
+        // Ignore elements with aria-haspopup (dropdown triggers, menus)
+        if ($target.attr('aria-haspopup') || $target.closest('[aria-haspopup]').length > 0) {
+            return true
+        }
+
+        // Ignore hidden UI elements
+        if ($target.attr('aria-hidden') === 'true' ||
+            $target.css('display') === 'none' ||
+            $target.css('visibility') === 'hidden') {
+            return true
+        }
+
+        // Ignore script, head, style, svg, noscript tags
+        if ($target.is('script, head, style, svg, noscript')) {
             return true
         }
 
         return false
+    }
+
+    _isComplexEditor(target) {
+        // Detect if target is inside a complex rich text editor that should be avoided
+        if (!target) return false
+        let $target = $(target)
+
+        // Check for common editor containers (fast jQuery selectors)
+        if ($target.closest([
+            '[role="application"]',
+            '[role="toolbar"]',
+            '.wiki-edit',
+            '.wiki-edit-content',
+            '.wiki-edit-toolbar',
+            '.aui-toolbar',
+            '.aui-toolbar2',
+            '.tox-tinymce',
+            '.ck-editor',
+            '.ql-container',
+            '[class*="-editor"]',
+            '[id*="editor"]',
+            '[contenteditable="true"]'
+        ].join(',')).length > 0) {
+            return true
+        }
+
+        return false
+    }
+
+    _isDataTableWithoutImages(target) {
+        // Skip text analysis for table cells/rows if the table has no visual content
+        if (!target) return false
+        let $target = $(target)
+
+        // Check if we're in a table row or cell
+        if (!$target.is('tr, td, th') && $target.closest('tr, td, th').length === 0) {
+            return false
+        }
+
+        // Find the parent table
+        let $table = $target.closest('table')
+        if ($table.length === 0) return false
+
+        // Cache check: if we've checked this table recently, use cached result
+        // Use the actual DOM element as key (WeakMap would be better but this is simpler)
+        if (!this._tableImageCache) {
+            this._tableImageCache = new Map()
+        }
+
+        let tableElement = $table[0]
+        let now = Date.now()
+
+        if (this._tableImageCache.has(tableElement)) {
+            let cached = this._tableImageCache.get(tableElement)
+            // Cache valid for 5 seconds
+            if (now - cached.timestamp < 5000) {
+                return !cached.hasImages // Return true if table has NO images
+            }
+        }
+
+        // Check if table has images, videos, or iframes
+        // For performance, only check if the selector exists (don't count all)
+        let hasImages = $table.find('img, video, iframe')[0] !== undefined
+
+        // Cache the result
+        this._tableImageCache.set(tableElement, {
+            hasImages: hasImages,
+            timestamp: now
+        })
+
+        // Clean up old cache entries (keep cache under 100 entries)
+        if (this._tableImageCache.size > 100) {
+            let entriesToDelete = []
+            for (let [key, value] of this._tableImageCache.entries()) {
+                if (now - value.timestamp > 5000) {
+                    entriesToDelete.push(key)
+                }
+            }
+            entriesToDelete.forEach(key => this._tableImageCache.delete(key))
+        }
+
+        // Return true if table has NO visual content (should skip text analysis)
+        return !hasImages
     }
 
     _processMutationBatch(){
@@ -390,7 +502,13 @@ class Controller {
             allNewImages = allNewImages.concat(newImages)
             allExistingImages = allExistingImages.concat(existingImages)
 
-            if (!this._shouldIgnoreMutation(mutation.target)) {
+            // Skip text extraction for:
+            // 1. Form fields and editors (to prevent typing lag)
+            // 2. Data tables without images (no visual content to blur)
+            // BUT we still checked for images above, so images in tables will be found
+            if (!this._shouldIgnoreMutation(mutation.target) &&
+                !this._isComplexEditor(mutation.target) &&
+                !this._isDataTableWithoutImages(mutation.target)) {
                 textAnalizer.addText($(mutation.target).text())
             }
         })
@@ -413,9 +531,15 @@ class Controller {
         }
 
         this.observer = new MutationObserver((mutations) => {
-            // Filter and add mutations to batch
+            // Filter mutations - drop complex editor and data table mutations immediately
             mutations.forEach((mutation) => {
-                // Still add mutation even if we ignore text, as we need to check for images
+                // Skip mutations in complex editors entirely to prevent freezing
+                if (this._isComplexEditor(mutation.target)) {
+                    return
+                }
+                // Skip mutations in data tables without images (but still check for images)
+                // We do a quick check here - if table has no images, we'll skip text but still
+                // process the mutation to find any new images that appear
                 this._mutationBatch.push(mutation)
             })
 
@@ -584,11 +708,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 let maxBlurPixels = Math.pow(100 * 0.09, 1.8) * 2
                 document.documentElement.style.setProperty('--blurValueAmount', maxBlurPixels + 'px')
             }
+            // Populate image list if empty (e.g., if page loaded with extension disabled)
+            if (controller._imageNodeList.getAllImages().length === 0) {
+                controller.updateImageList(document)
+            }
             // Blur after blur amount is set
             controller.blurAll()
         })
         break
     case 'unblurAll':
+        // Populate image list if empty (e.g., if page loaded with extension disabled)
+        if (controller._imageNodeList.getAllImages().length === 0) {
+            controller.updateImageList(document)
+        }
         controller.unBlurAll()
         break
     case 'setBlurAmount':
@@ -679,7 +811,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 }
                 clearTimeout(controller._batchTimer)
                 controller._mutationBatch = []
-                $('.blur').removeClass('blur').removeClass('noblur').removeClass('permamentUnblur')
+                // Clear classes but preserve permamentUnblur
+                $('.blur, .noblur').not('.permamentUnblur').removeClass('blur').removeClass('noblur')
                 controller._imageNodeList = new ImageNodeList()
                 controller.updateImageList(document)
                 controller.blurAll()
@@ -692,7 +825,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             }
             clearTimeout(controller._batchTimer)
             controller._mutationBatch = []
-            $('.blur').removeClass('blur').removeClass('noblur').removeClass('permamentUnblur')
+            // Clear classes but preserve permamentUnblur
+            $('.blur, .noblur').not('.permamentUnblur').removeClass('blur').removeClass('noblur')
             controller._imageNodeList = new ImageNodeList()
             controller.onLoad()
         }

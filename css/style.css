@@ -3,18 +3,7 @@
     --filterStrength: blur(var(--blurValueAmount));
 }
 
-img {
-    filter: var(--filterStrength) !important;
-    -webkit-filter: var(--filterStrength) !important;
-    -ms-filter: var(--filterStrength) !important;
-}
-
-img.noblur {
-    filter: none !important;
-    -webkit-filter: none !important;
-    -ms-filter: none !important;
-}
-
+/* Only blur images with .blur class */
 img.blur {
     filter: var(--filterStrength) !important;
     -webkit-filter: var(--filterStrength) !important;
@@ -23,19 +12,13 @@ img.blur {
     cursor: default;
 }
 
-/* Video elements */
-video {
-    filter: var(--filterStrength) !important;
-    -webkit-filter: var(--filterStrength) !important;
-    -ms-filter: var(--filterStrength) !important;
-}
-
-video.noblur {
+img.noblur {
     filter: none !important;
     -webkit-filter: none !important;
     -ms-filter: none !important;
 }
 
+/* Video elements - only blur with .blur class */
 video.blur {
     filter: var(--filterStrength) !important;
     -webkit-filter: var(--filterStrength) !important;
@@ -44,23 +27,23 @@ video.blur {
     cursor: default;
 }
 
-/* Iframe elements (embedded videos) */
-iframe {
-    filter: var(--filterStrength) !important;
-    -webkit-filter: var(--filterStrength) !important;
-    -ms-filter: var(--filterStrength) !important;
-}
-
-iframe.noblur {
+video.noblur {
     filter: none !important;
     -webkit-filter: none !important;
     -ms-filter: none !important;
 }
 
+/* Iframe elements - only blur with .blur class */
 iframe.blur {
     filter: var(--filterStrength) !important;
     -webkit-filter: var(--filterStrength) !important;
     -ms-filter: var(--filterStrength) !important;
     pointer-events: none;
     cursor: default;
+}
+
+iframe.noblur {
+    filter: none !important;
+    -webkit-filter: none !important;
+    -ms-filter: none !important;
 }

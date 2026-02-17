@@ -1,7 +1,7 @@
 
 html{
-    width: 400px;
-    border-radius: 12px;
+    width: 450px;
+    border-radius: 20px;
     overflow: hidden;
 }
 
@@ -15,7 +15,7 @@ body {
   margin: 0;
   padding: 0 0 16px 0;
   min-height: 100vh;
-  border-radius: 12px;
+  border-radius: 20px;
 }
 
 .header{
