@@ -290,16 +290,12 @@ class TextAnalizer {
     }
 
     _regexTextCleanUp(text){
-        let r_embededScripts = /<script.*?>([\s\S]*?)<\/script>/gis
-        let r_embededStyle = /<style.*?>([\s\S]*?)<\/style>/gis
-        let r_embededTags = /(<([^>]+)>)/ig
-        let r_greadySearchForPossibleJSFunction = /\(.*?\)[\s|=>| => ]?{[\s\S]*}/gis
-        let r_variables = /.*?\s?=.*?[;|,]?/gis
-        return text.replace(r_embededScripts, '')
-            .replace(r_embededStyle, '')
-            .replace(r_embededTags, '')
-            // .replace(r_greadySearchForPossibleJSFunction, '')
-            // .replace(r_variables, '')
+        // Since we now use textContent (not innerHTML), text is already plain text
+        // Just normalize whitespace and return
+        if (!text) return ''
+
+        // Replace multiple spaces/newlines/tabs with single space
+        return text.replace(/\s+/g, ' ').trim()
     }
 }
 
@@ -398,73 +394,22 @@ class Controller {
     }
 
     _shouldIgnoreMutation(target){
-        // Ignore mutations in form fields and contenteditable to prevent typing freezes
+        // Simple, fast check for text input areas
         if (!target) return true
 
-        // Use native APIs for maximum performance (called on EVERY mutation)
+        // Handle text nodes - check parent
+        let element = target.nodeType === 3 ? target.parentElement : target
+        if (!element) return true
 
-        // Check if target itself is a form element
-        let tagName = target.tagName ? target.tagName.toLowerCase() : ''
-        if (tagName === 'input' || tagName === 'textarea') {
+        // Fast tagName check
+        let tagName = element.tagName ? element.tagName.toLowerCase() : ''
+        if (tagName === 'input' || tagName === 'textarea' || tagName === 'script' ||
+            tagName === 'style' || tagName === 'noscript') {
             return true
         }
 
-        // Check contenteditable
-        if (target.getAttribute && target.getAttribute('contenteditable') === 'true') {
-            return true
-        }
-
-        // Check if inside a form element or contenteditable (use native closest)
-        if (target.closest && (
-            target.closest('input') ||
-            target.closest('textarea') ||
-            target.closest('[contenteditable="true"]')
-        )) {
-            return true
-        }
-
-        // Ignore UI components by ARIA roles (use native getAttribute)
-        const uiRoles = [
-            'toolbar', 'menubar', 'menu', 'menuitem', 'menuitemcheckbox', 'menuitemradio',
-            'listbox', 'option', 'combobox', 'tree', 'treegrid', 'grid',
-            'dialog', 'alertdialog', 'tooltip', 'application'
-        ]
-        let targetRole = target.getAttribute ? target.getAttribute('role') : null
-        if (targetRole && uiRoles.includes(targetRole)) {
-            return true
-        }
-
-        // Check if inside UI component (native closest with CSS selector)
-        if (target.closest) {
-            for (let role of uiRoles) {
-                if (target.closest(`[role="${role}"]`)) {
-                    return true
-                }
-            }
-        }
-
-        // Ignore elements with aria-haspopup (native getAttribute)
-        if ((target.getAttribute && target.getAttribute('aria-haspopup')) ||
-            (target.closest && target.closest('[aria-haspopup]'))) {
-            return true
-        }
-
-        // Ignore hidden UI elements
-        if (target.getAttribute && target.getAttribute('aria-hidden') === 'true') {
-            return true
-        }
-
-        // Use getComputedStyle for display/visibility (more accurate than jQuery css())
-        if (window.getComputedStyle) {
-            let style = window.getComputedStyle(target)
-            if (style.display === 'none' || style.visibility === 'hidden') {
-                return true
-            }
-        }
-
-        // Ignore script, head, style, svg, noscript tags
-        if (tagName === 'script' || tagName === 'head' || tagName === 'style' ||
-            tagName === 'svg' || tagName === 'noscript') {
+        // Check contenteditable on element itself
+        if (element.isContentEditable) {
             return true
         }
 
@@ -472,34 +417,37 @@ class Controller {
     }
 
     _isComplexEditor(target) {
-        // Detect if target is inside a complex rich text editor that should be avoided
-        if (!target || !target.closest) return false
+        // Generic check for any complex UI with many elements
+        if (!target) return false
 
-        // Use native closest() - much faster than jQuery
-        // Check for common editor containers with a single selector
-        return target.closest([
-            '[role="application"]',
-            '[role="toolbar"]',
-            '.wiki-edit',
-            '.wiki-edit-content',
-            '.wiki-edit-toolbar',
-            '.aui-toolbar',
-            '.aui-toolbar2',
-            '.tox-tinymce',
-            '.ck-editor',
-            '.ql-container',
-            '[class*="-editor"]',
-            '[id*="editor"]',
-            '[contenteditable="true"]'
-        ].join(',')) !== null
+        // Handle text nodes
+        let element = target.nodeType === 3 ? target.parentElement : target
+        if (!element) return false
+
+        // Check if we're inside a contenteditable area (rich text editors)
+        if (element.isContentEditable) {
+            return true
+        }
+
+        // Check if parent tree has many siblings (complex UI indicator)
+        // Simple heuristic: if parent has > 20 children, likely a complex UI component
+        if (element.parentElement && element.parentElement.children.length > 20) {
+            return true
+        }
+
+        return false
     }
 
     _isDataTableWithoutImages(target) {
         // Skip text analysis for table cells/rows if the table has no visual content
         if (!target) return false
 
+        // Handle text nodes - check parent element
+        let elementToCheck = target.nodeType === 3 ? target.parentElement : target
+        if (!elementToCheck || !elementToCheck.closest) return false
+
         // Quick native check - if target is not in a table, bail early
-        let tableElement = target.closest('table')
+        let tableElement = elementToCheck.closest('table')
         if (!tableElement) return false
 
         // Cache check: if we've checked this table recently, use cached result
@@ -601,15 +549,35 @@ class Controller {
         }
 
         this.observer = new MutationObserver((mutations) => {
-            // Filter mutations - drop complex editor and data table mutations immediately
+            // Aggressively filter mutations before processing
             mutations.forEach((mutation) => {
-                // Skip mutations in complex editors entirely to prevent freezing
-                if (this._isComplexEditor(mutation.target)) {
+                // Drop character data mutations immediately (text changes in inputs)
+                if (mutation.type === 'characterData') {
                     return
                 }
-                // Skip mutations in data tables without images (but still check for images)
-                // We do a quick check here - if table has no images, we'll skip text but still
-                // process the mutation to find any new images that appear
+
+                let target = mutation.target
+
+                // Fast path: check if it's a text node's parent that's an input
+                if (target.nodeType === 3) {
+                    let parent = target.parentElement
+                    if (parent && (parent.tagName === 'INPUT' || parent.tagName === 'TEXTAREA' || parent.isContentEditable)) {
+                        return
+                    }
+                }
+
+                // Skip if target is input/textarea/contenteditable
+                if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+                    return
+                }
+
+                // Only process childList mutations (new elements added/removed)
+                // Ignore attribute and characterData
+                if (mutation.type !== 'childList') {
+                    return
+                }
+
+                // Add to batch for processing
                 this._mutationBatch.push(mutation)
             })
 
