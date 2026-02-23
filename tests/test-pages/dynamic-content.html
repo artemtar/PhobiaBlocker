@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Page - Dynamic Content</title>
+</head>
+<body>
+    <h1>Dynamic Content Test Page</h1>
+
+    <div id="container">
+        <p>Initial content loaded. Click button to add images dynamically.</p>
+    </div>
+
+    <button id="add-spider-content">Add Spider Content</button>
+    <button id="add-safe-content">Add Safe Content</button>
+
+    <script>
+        document.getElementById('add-spider-content').addEventListener('click', function() {
+            const div = document.createElement('div');
+            div.innerHTML = `
+                <h2>Dynamically Added Spider Content</h2>
+                <p>This section was added dynamically. It contains information about spiders and their webs.</p>
+                <img class="dynamic-spider" src="https://via.placeholder.com/300x200/ff00ff/ffffff?text=Dynamic+Spider" alt="Dynamic Spider">
+                <p>Spiders are fascinating creatures with eight legs.</p>
+            `;
+            document.getElementById('container').appendChild(div);
+        });
+
+        document.getElementById('add-safe-content').addEventListener('click', function() {
+            const div = document.createElement('div');
+            div.innerHTML = `
+                <h2>Dynamically Added Safe Content</h2>
+                <p>This section was added dynamically. It shows beautiful flowers and gardens.</p>
+                <img class="dynamic-safe" src="https://via.placeholder.com/300x200/00ff00/ffffff?text=Dynamic+Flowers" alt="Dynamic Flowers">
+                <p>Flowers are colorful and smell nice.</p>
+            `;
+            document.getElementById('container').appendChild(div);
+        });
+    </script>
+</body>
+</html>

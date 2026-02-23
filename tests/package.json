@@ -1,0 +1,24 @@
+{
+  "name": "phobiablocker-tests",
+  "version": "1.0.0",
+  "description": "End-to-end tests for PhobiaBlocker Chrome Extension",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test",
+    "test:watch": "node --test --watch",
+    "test:basic": "node basic-functionality.test.js",
+    "test:nlp": "node nlp-analysis.test.js",
+    "test:visual": "node visual-content.test.js",
+    "test:all": "node --test *.test.js"
+  },
+  "keywords": [
+    "chrome-extension",
+    "testing",
+    "e2e"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "puppeteer": "^22.0.0"
+  }
+}
