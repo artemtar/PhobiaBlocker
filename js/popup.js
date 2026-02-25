@@ -194,9 +194,16 @@ $(() => {
         'phobiaBlockerEnabled',
         'blurIsAlwaysOn'
     ], (storage) => {
-        if (!storage.targetWords) {
+        // Only set defaults if targetWords is undefined (not just empty array)
+        // Empty array [] is a valid user choice (no phobia words)
+        if (storage.targetWords === undefined) {
+            // Fallback initialization (background.js should handle this on install)
             chrome.storage.sync.set({ 'targetWords': defaultTarget })
             targetWords = defaultTarget
+            renderTags()
+        } else if (Array.isArray(storage.targetWords)) {
+            // Use existing words from storage
+            targetWords = storage.targetWords
             renderTags()
         }
         // Explicitly set toggle states (handles both true and false)

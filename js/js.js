@@ -679,12 +679,16 @@ let setSettings = () => {
             if (chrome.runtime.lastError) {
                 return reject(chrome.runtime.lastError)
             }
-            if (!storage.targetWords) {
-                chrome.storage.sync.set({ 'targetWords': [] })
-                targetWords = []
-            } else {
+            // IMPORTANT: Never initialize storage in content script - only read from it
+            // Storage should only be initialized by popup.js on first install
+            // This prevents overwriting user data during updates or sync delays
+            if (storage.targetWords && Array.isArray(storage.targetWords)) {
                 // Expand target words to include variations (plurals, verb forms, etc.)
                 targetWords = expandTargetWords(storage.targetWords)
+            } else {
+                // No targetWords in storage - use empty array in memory
+                // Don't persist this to storage (popup.js handles initialization)
+                targetWords = []
             }
             if(storage.phobiaBlockerEnabled != undefined){
                 phobiaBlockerEnabled = storage.phobiaBlockerEnabled
