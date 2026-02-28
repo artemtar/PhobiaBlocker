@@ -3,7 +3,17 @@
     --filterStrength: blur(var(--blurValueAmount));
 }
 
-/* Only blur images with .blur class */
+/* FLASH PREVENTION: Blur all images by default (before JS processes them) */
+/* This prevents showing unblurred images even for a split second */
+img:not(.noblur):not(.permamentUnblur) {
+    filter: var(--filterStrength) !important;
+    -webkit-filter: var(--filterStrength) !important;
+    -ms-filter: var(--filterStrength) !important;
+    pointer-events: none;
+    cursor: default;
+}
+
+/* Blur images with .blur class (JS-added) */
 img.blur {
     filter: var(--filterStrength) !important;
     -webkit-filter: var(--filterStrength) !important;
@@ -18,7 +28,16 @@ img.noblur {
     -ms-filter: none !important;
 }
 
-/* Video elements - only blur with .blur class */
+/* FLASH PREVENTION: Blur all videos by default */
+video:not(.noblur):not(.permamentUnblur) {
+    filter: var(--filterStrength) !important;
+    -webkit-filter: var(--filterStrength) !important;
+    -ms-filter: var(--filterStrength) !important;
+    pointer-events: none;
+    cursor: default;
+}
+
+/* Blur videos with .blur class (JS-added) */
 video.blur {
     filter: var(--filterStrength) !important;
     -webkit-filter: var(--filterStrength) !important;
@@ -33,7 +52,16 @@ video.noblur {
     -ms-filter: none !important;
 }
 
-/* Iframe elements - only blur with .blur class */
+/* FLASH PREVENTION: Blur all iframes by default */
+iframe:not(.noblur):not(.permamentUnblur) {
+    filter: var(--filterStrength) !important;
+    -webkit-filter: var(--filterStrength) !important;
+    -ms-filter: var(--filterStrength) !important;
+    pointer-events: none;
+    cursor: default;
+}
+
+/* Blur iframes with .blur class (JS-added) */
 iframe.blur {
     filter: var(--filterStrength) !important;
     -webkit-filter: var(--filterStrength) !important;

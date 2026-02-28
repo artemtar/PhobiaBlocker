@@ -1,23 +1,65 @@
-// Immediately inject CSS to blur all images on page load to prevent flash
-// This runs at document_start before images load
+// Inject CSS to blur all images on page load to prevent flash
+// Uses requestAnimationFrame to avoid disrupting framework initialization
+// while still being early enough to prevent unblurred image flash
 (function injectEarlyBlur() {
-    const style = document.createElement('style')
-    style.id = 'phobiablocker-early-blur'
-    style.textContent = `
-        /* Temporarily blur all visual content until PhobiaBlocker analyzes the page */
-        /* Uses CSS variable that will be updated when settings load */
-        img:not(.noblur):not(.permamentUnblur),
-        video:not(.noblur):not(.permamentUnblur),
-        iframe:not(.noblur):not(.permamentUnblur) {
-            filter: blur(var(--blurValueAmount, 40px)) !important;
-            -webkit-filter: blur(var(--blurValueAmount, 40px)) !important;
+    const injectStyle = () => {
+        try {
+            // Check if already injected
+            if (document.getElementById('phobiablocker-early-blur')) {
+                return
+            }
+
+            const style = document.createElement('style')
+            style.id = 'phobiablocker-early-blur'
+            style.textContent = `
+                /* CRITICAL: Blur ALL visual content immediately to prevent flash */
+                /* Covers both unprocessed images AND images with .blur class */
+                /* This ensures no gap in coverage while manifest CSS loads */
+                img:not(.noblur):not(.permamentUnblur),
+                img.blur:not(.permamentUnblur),
+                video:not(.noblur):not(.permamentUnblur),
+                video.blur:not(.permamentUnblur),
+                iframe:not(.noblur):not(.permamentUnblur),
+                iframe.blur:not(.permamentUnblur) {
+                    filter: blur(var(--blurValueAmount, 40px)) !important;
+                    -webkit-filter: blur(var(--blurValueAmount, 40px)) !important;
+                    pointer-events: none !important;
+                    cursor: default !important;
+                }
+            `
+
+            // Defensive: Ensure document and documentElement exist
+            if (!document || !document.documentElement) {
+                return
+            }
+
+            // Inject into body if available (less disruptive than head for frameworks)
+            // Otherwise fall back to head
+            const targetParent = document.body || document.head
+
+            if (targetParent) {
+                targetParent.appendChild(style)
+            } else if (document.documentElement) {
+                // Last resort: append directly to html element
+                document.documentElement.appendChild(style)
+            }
+        } catch (error) {
+            // Silently fail - don't break the page if blur injection fails
+            // The CSS file loaded via manifest will still apply blur as fallback
+            console.error('PhobiaBlocker: Failed to inject early blur CSS', error)
         }
-    `
-    // Insert at the very beginning of head (or create head if it doesn't exist)
-    if (!document.head) {
-        document.documentElement.appendChild(document.createElement('head'))
     }
-    document.head.insertBefore(style, document.head.firstChild)
+
+    // Try immediate injection first for fastest blur
+    injectStyle()
+
+    // Also try after a microtask to ensure it works if first attempt was too early
+    // This gives frameworks a chance to initialize their head management
+    if (typeof requestAnimationFrame !== 'undefined') {
+        requestAnimationFrame(injectStyle)
+    } else {
+        setTimeout(injectStyle, 0)
+    }
 })()
 
 const tokenizer = new natural.WordTokenizer()
@@ -39,12 +81,25 @@ class ImageNode {
     }
 
     _init(){
-        // Always blur initially - will unblur later if text analysis determines it's safe
-        this.blur()
+        // FAIL-SAFE: Always blur initially - will unblur later if text analysis determines it's safe
+        // If blur() fails, the CSS from early injection will keep it blurred
+        try {
+            this.blur()
+        } catch (blurError) {
+            console.error('PhobiaBlocker: Failed to blur element, relying on CSS fallback', blurError)
+            // Element will remain blurred via CSS - this is the safe default
+        }
     }
 
     getImageNode(){
         return this._imageNode
+    }
+
+    // Defensive helper to check if node is still valid for DOM manipulation
+    _isNodeValid(){
+        return this._imageNode &&
+               this._imageNode.classList &&
+               this._imageNode.isConnected !== false
     }
 
     blur() {
@@ -62,11 +117,17 @@ class ImageNode {
     textProcessingFinished(){
         this.runningTextProcessing -= 1
 
+        // FAIL-SAFE: Only unblur if we're absolutely certain it's safe
         // If all text processing is complete and image should not be blurred, unblur it
         if (this.runningTextProcessing <= 0 && !this.isBlured && !blurIsAlwaysOn) {
-            // Unblur immediately - the mutation observer batch delay already handles
-            // waiting for dynamic content to stabilize
-            this.unblur()
+            try {
+                // Unblur immediately - the mutation observer batch delay already handles
+                // waiting for dynamic content to stabilize
+                this.unblur()
+            } catch (unblurError) {
+                // FAIL-SAFE: If unblur fails, keep element blurred (safe default)
+                console.error('PhobiaBlocker: Failed to unblur element, keeping blurred for safety', unblurError)
+            }
         }
     }
 
@@ -90,6 +151,7 @@ class TagImageNode extends ImageNode {
     }
 
     blur() {
+        if (!this._isNodeValid()) return
         if (!this._imageNode.classList.contains('permamentUnblur')){
             this._imageNode.classList.remove('noblur')
             this._imageNode.classList.add('blur')
@@ -97,6 +159,7 @@ class TagImageNode extends ImageNode {
     }
 
     unblur() {
+        if (!this._isNodeValid()) return
         this._imageNode.classList.add('noblur')
         this._imageNode.classList.remove('blur')
     }
@@ -108,6 +171,7 @@ class BgImageNode extends ImageNode {
     }
 
     blur() {
+        if (!this._isNodeValid()) return
         if (!this._imageNode.classList.contains('permamentUnblur')){
             this._imageNode.classList.remove('noblur')
             this._imageNode.classList.add('blur')
@@ -116,6 +180,7 @@ class BgImageNode extends ImageNode {
     }
 
     unblur() {
+        if (!this._isNodeValid()) return
         this._imageNode.classList.add('noblur')
         this._imageNode.classList.remove('blur')
         this._imageNode.style.filter = 'blur(0px)'
@@ -132,6 +197,7 @@ class VideoNode extends ImageNode {
     }
 
     blur() {
+        if (!this._isNodeValid()) return
         // Use native classList API
         if (!this._imageNode.classList.contains('permamentUnblur')){
             this._imageNode.classList.remove('noblur')
@@ -140,6 +206,7 @@ class VideoNode extends ImageNode {
     }
 
     unblur() {
+        if (!this._isNodeValid()) return
         this._imageNode.classList.add('noblur')
         this._imageNode.classList.remove('blur')
     }
@@ -155,6 +222,7 @@ class IframeNode extends ImageNode {
     }
 
     blur() {
+        if (!this._isNodeValid()) return
         if (!this._imageNode.classList.contains('permamentUnblur')){
             this._imageNode.classList.remove('noblur')
             this._imageNode.classList.add('blur')
@@ -162,6 +230,7 @@ class IframeNode extends ImageNode {
     }
 
     unblur() {
+        if (!this._isNodeValid()) return
         this._imageNode.classList.add('noblur')
         this._imageNode.classList.remove('blur')
     }
@@ -306,6 +375,7 @@ class Controller {
         this._batchTimer = null
         this._batchProcessInterval = 500 // Process batch every 500ms
         this._maxBatchSize = 10 // Or when we collect 10 mutations
+        this._editorContainerCache = new WeakSet() // Cache known editor containers for fast lookup
     }
 
     updateImageList(nodeToCheck){
@@ -339,10 +409,18 @@ class Controller {
             checkAndUpdate(VideoNode, videoNodes[i])
         }
 
-        // Find all <iframe> tags
+        // Find all <iframe> tags (detect and immediately unblur editor/form iframes)
         let iframeNodes = nodeToCheck.getElementsByTagName('iframe')
         for (let i = 0; i < iframeNodes.length; i++) {
-            checkAndUpdate(IframeNode, iframeNodes[i])
+            let iframe = iframeNodes[i]
+            // If iframe is part of a text editor or form input, immediately unblur it
+            if (this._isEditorIframe(iframe)) {
+                // Unblur editor iframes immediately to prevent blocking text input
+                iframe.classList.add('noblur')
+                iframe.classList.remove('blur')
+                continue
+            }
+            checkAndUpdate(IframeNode, iframe)
         }
 
         // Find elements with background images
@@ -352,10 +430,20 @@ class Controller {
         let potentialBgElements = nodeToCheck.querySelectorAll('div, span, section, article, aside, header, footer, main, figure')
         for (let i = 0; i < potentialBgElements.length; i++) {
             let element = potentialBgElements[i]
-            // Use getComputedStyle for accurate background detection
-            let bgImage = window.getComputedStyle(element).backgroundImage
-            if (bgImage && bgImage !== 'none' && r_bgUrl.test(bgImage)) {
-                checkAndUpdate(BgImageNode, element)
+            try {
+                // Use getComputedStyle for accurate background detection
+                // Defensive: getComputedStyle can return null for detached elements
+                let computedStyle = window.getComputedStyle(element)
+                if (!computedStyle) continue
+
+                let bgImage = computedStyle.backgroundImage
+                if (bgImage && bgImage !== 'none' && r_bgUrl.test(bgImage)) {
+                    checkAndUpdate(BgImageNode, element)
+                }
+            } catch (styleError) {
+                // Skip elements that cause style computation errors
+                // This can happen with detached nodes or elements in unusual states
+                continue
             }
         }
 
@@ -363,25 +451,36 @@ class Controller {
     }
 
     onLoad(){
-        let textAnalizer = new TextAnalizer()
-        let { newImages, existingImages } = this.updateImageList(document)
-        // Use native textContent for much faster text extraction (10-50x faster than jQuery)
-        textAnalizer.addText(document.body.textContent)
-        textAnalizer.addText(document.title)
-        textAnalizer.startAnalysis(newImages).catch(err => {
-            console.error('Error in onLoad text analysis:', err)
-        }).finally(() => {
-            // Remove early blur style after initial analysis completes
-            this._removeEarlyBlurStyle()
-        })
-        this._observerInit()
+        try {
+            let textAnalizer = new TextAnalizer()
+            let { newImages, existingImages } = this.updateImageList(document)
+            // Use native textContent for much faster text extraction (10-50x faster than jQuery)
+            textAnalizer.addText(document.body.textContent)
+            textAnalizer.addText(document.title)
+            textAnalizer.startAnalysis(newImages).catch(err => {
+                // FAIL-SAFE: If text analysis fails, images stay blurred (safe default)
+                console.error('PhobiaBlocker: Text analysis failed, images remain blurred', err)
+            }).finally(() => {
+                // Remove early blur style after initial analysis completes
+                this._removeEarlyBlurStyle()
+            })
+            this._observerInit()
+        } catch (loadError) {
+            // FAIL-SAFE: If onLoad completely fails, images stay blurred via CSS
+            console.error('PhobiaBlocker: onLoad failed, images remain blurred via CSS', loadError)
+        }
     }
 
     onLoadBlurAll(){
-        this.updateImageList(document)
-        this.blurAll()
-        this._observerInit()
-        // Early blur style can stay since we're blurring everything anyway
+        try {
+            this.updateImageList(document)
+            this.blurAll()
+            this._observerInit()
+            // Early blur style can stay since we're blurring everything anyway
+        } catch (blurAllError) {
+            // FAIL-SAFE: If blur-all mode fails, CSS blur is still active
+            console.error('PhobiaBlocker: onLoadBlurAll failed, relying on CSS blur', blurAllError)
+        }
     }
 
     _removeEarlyBlurStyle(){
@@ -433,6 +532,129 @@ class Controller {
         // Simple heuristic: if parent has > 20 children, likely a complex UI component
         if (element.parentElement && element.parentElement.children.length > 20) {
             return true
+        }
+
+        return false
+    }
+
+    _isInsideEditorContainer(element) {
+        // Check if element is inside an editor/form container (prevents typing lag)
+        if (!element || !element.parentElement) return false
+
+        // Handle text nodes - check parent element
+        let target = element.nodeType === 3 ? element.parentElement : element
+        if (!target) return false
+
+        // OPTIMIZATION: Cache check first (O(1) lookup)
+        let current = target
+        let depth = 0
+        const maxDepth = 10
+
+        while (current && depth < maxDepth) {
+            // Fast path: check if this element is already known to be in an editor
+            if (this._editorContainerCache.has(current)) {
+                return true
+            }
+
+            // Check if current element is contenteditable
+            if (current.isContentEditable) {
+                this._editorContainerCache.add(current)
+                return true
+            }
+
+            // Check tagName for form elements
+            let tagName = current.tagName ? current.tagName.toLowerCase() : ''
+            if (tagName === 'form' || tagName === 'textarea' || tagName === 'input') {
+                this._editorContainerCache.add(current)
+                return true
+            }
+
+            // Check class names for editor patterns (only if className is a string)
+            if (typeof current.className === 'string') {
+                let className = current.className.toLowerCase()
+                if (className.includes('editor') || className.includes('wiki-edit') ||
+                    className.includes('rte-container') || className.includes('richeditor') ||
+                    className.includes('tox-') || className.includes('cke') ||
+                    className.includes('mce') || className.includes('tinymce') ||
+                    className.includes('wysiwyg') || className.includes('contenteditable')) {
+                    this._editorContainerCache.add(current)
+                    return true
+                }
+            }
+
+            // Check ID for editor patterns
+            if (typeof current.id === 'string') {
+                let id = current.id.toLowerCase()
+                if (id.includes('editor') || id.includes('mce') || id.includes('cke')) {
+                    this._editorContainerCache.add(current)
+                    return true
+                }
+            }
+
+            // Stop at body element
+            if (tagName === 'body' || current === document.documentElement) {
+                break
+            }
+
+            current = current.parentElement
+            depth++
+        }
+
+        return false
+    }
+
+    _isEditorIframe(iframe) {
+        // Check if iframe is part of a text editor or form input
+        if (!iframe) return false
+
+        // Check iframe title for editor indicators
+        let title = (iframe.getAttribute('title') || '').toLowerCase()
+        if (title.includes('editor') || title.includes('text area') ||
+            title.includes('rich text') || title.includes('input')) {
+            return true
+        }
+
+        // Check iframe class names for common editor patterns
+        let className = (iframe.className || '').toLowerCase()
+        if (className.includes('editor') || className.includes('tox-edit') ||
+            className.includes('cke') || className.includes('mce') ||
+            className.includes('tinymce') || className.includes('richeditor') ||
+            className.includes('wysiwyg')) {
+            return true
+        }
+
+        // Check iframe ID for editor patterns
+        let id = (iframe.id || '').toLowerCase()
+        if (id.includes('editor') || id.includes('mce_') || id.includes('cke_')) {
+            return true
+        }
+
+        // Check if iframe is inside a contenteditable container or form
+        let parent = iframe.parentElement
+        while (parent) {
+            // Check if parent is contenteditable
+            if (parent.isContentEditable) {
+                return true
+            }
+
+            // Check if parent is a form or has editor-related classes
+            let tagName = parent.tagName ? parent.tagName.toLowerCase() : ''
+            if (tagName === 'form') {
+                return true
+            }
+
+            let parentClass = (parent.className || '').toLowerCase()
+            if (parentClass.includes('editor') || parentClass.includes('wiki-edit') ||
+                parentClass.includes('rte-container') || parentClass.includes('richeditor')) {
+                return true
+            }
+
+            // Don't traverse too far up the DOM
+            if (tagName === 'body' || parent === document.documentElement) {
+                break
+            }
+
+            parent = parent.parentElement
         }
 
         return false
@@ -549,37 +771,59 @@ class Controller {
         }
 
         this.observer = new MutationObserver((mutations) => {
-            // Aggressively filter mutations before processing
-            mutations.forEach((mutation) => {
-                // Drop character data mutations immediately (text changes in inputs)
-                if (mutation.type === 'characterData') {
-                    return
-                }
+            // Defensive: wrap entire observer in try-catch to prevent breaking pages
+            try {
+                // Aggressively filter mutations before processing
+                mutations.forEach((mutation) => {
+                    try {
+                        // Drop character data mutations immediately (text changes in inputs)
+                        if (mutation.type === 'characterData') {
+                            return
+                        }
 
-                let target = mutation.target
+                        let target = mutation.target
 
-                // Fast path: check if it's a text node's parent that's an input
-                if (target.nodeType === 3) {
-                    let parent = target.parentElement
-                    if (parent && (parent.tagName === 'INPUT' || parent.tagName === 'TEXTAREA' || parent.isContentEditable)) {
-                        return
+                        // Defensive: skip if target is null or undefined
+                        if (!target) {
+                            return
+                        }
+
+                        // Fast path: check if it's a text node's parent that's an input
+                        if (target.nodeType === 3) {
+                            let parent = target.parentElement
+                            if (parent && (parent.tagName === 'INPUT' || parent.tagName === 'TEXTAREA' || parent.isContentEditable)) {
+                                return
+                            }
+                        }
+
+                        // Skip if target is input/textarea/contenteditable (with defensive checks)
+                        if (target.tagName && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+                            return
+                        }
+
+                        // Skip if mutation is inside an editor container (prevents typing lag)
+                        // Check for common editor container patterns
+                        if (this._isInsideEditorContainer(target)) {
+                            return
+                        }
+
+                        // Only process childList mutations (new elements added/removed)
+                        // Ignore attribute and characterData
+                        if (mutation.type !== 'childList') {
+                            return
+                        }
+
+                        // Add to batch for processing
+                        this._mutationBatch.push(mutation)
+                    } catch (mutationError) {
+                        // Silently skip problematic mutations
+                        // Don't break the entire observer for one bad mutation
                     }
-                }
-
-                // Skip if target is input/textarea/contenteditable
-                if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
-                    return
-                }
-
-                // Only process childList mutations (new elements added/removed)
-                // Ignore attribute and characterData
-                if (mutation.type !== 'childList') {
-                    return
-                }
-
-                // Add to batch for processing
-                this._mutationBatch.push(mutation)
-            })
+                })
+            } catch (observerError) {
+                // Log but don't break the page
+                console.error('PhobiaBlocker: MutationObserver error', observerError)
+            }
 
             // Process immediately if batch is large (for infinite scroll)
             if (this._mutationBatch.length >= this._maxBatchSize) {
@@ -669,45 +913,73 @@ let expandTargetWords = (words) => {
  * Target words are words defined by user in the extention
  */
 let setSettings = () => {
-    return new Promise((resolve, reject) => {
-        chrome.storage.sync.get([
-            'targetWords',
-            'phobiaBlockerEnabled',
-            'blurIsAlwaysOn',
-            'blurValueAmount'
-        ], (storage) => {
-            if (chrome.runtime.lastError) {
-                return reject(chrome.runtime.lastError)
-            }
-            // IMPORTANT: Never initialize storage in content script - only read from it
-            // Storage should only be initialized by popup.js on first install
-            // This prevents overwriting user data during updates or sync delays
-            if (storage.targetWords && Array.isArray(storage.targetWords)) {
-                // Expand target words to include variations (plurals, verb forms, etc.)
-                targetWords = expandTargetWords(storage.targetWords)
-            } else {
-                // No targetWords in storage - use empty array in memory
-                // Don't persist this to storage (popup.js handles initialization)
-                targetWords = []
-            }
-            if(storage.phobiaBlockerEnabled != undefined){
-                phobiaBlockerEnabled = storage.phobiaBlockerEnabled
-            }
-            if(storage.blurIsAlwaysOn != undefined)
-                blurIsAlwaysOn = storage.blurIsAlwaysOn
+    return new Promise((resolve) => {
+        try {
+            chrome.storage.sync.get([
+                'targetWords',
+                'phobiaBlockerEnabled',
+                'blurIsAlwaysOn',
+                'blurValueAmount'
+            ], (storage) => {
+                try {
+                    if (chrome.runtime.lastError) {
+                        // FAIL-SAFE: If storage fails, keep blur enabled
+                        console.error('PhobiaBlocker: Storage error, defaulting to blur-all mode', chrome.runtime.lastError)
+                        phobiaBlockerEnabled = true
+                        blurIsAlwaysOn = true
+                        return resolve() // Continue with blur-all mode
+                    }
 
-            // Apply blur amount setting
-            if (storage.blurValueAmount != undefined) {
-                let blurPixels = Math.pow(storage.blurValueAmount * 0.09, 1.8) * 2
-                document.documentElement.style.setProperty('--blurValueAmount', blurPixels + 'px')
-            } else if (blurIsAlwaysOn) {
-                // First time using blur always on - use most aggressive settings
-                let maxBlurPixels = Math.pow(100 * 0.09, 1.8) * 2
-                document.documentElement.style.setProperty('--blurValueAmount', maxBlurPixels + 'px')
-            }
+                    // IMPORTANT: Never initialize storage in content script - only read from it
+                    // Storage should only be initialized by popup.js on first install
+                    // This prevents overwriting user data during updates or sync delays
+                    if (storage.targetWords && Array.isArray(storage.targetWords)) {
+                        try {
+                            // Expand target words to include variations (plurals, verb forms, etc.)
+                            targetWords = expandTargetWords(storage.targetWords)
+                        } catch (expandError) {
+                            // FAIL-SAFE: If expansion fails, use original words
+                            console.error('PhobiaBlocker: Word expansion failed, using original words', expandError)
+                            targetWords = storage.targetWords.map(w => w.toLowerCase())
+                        }
+                    } else {
+                        // No targetWords in storage - use empty array in memory
+                        // Don't persist this to storage (popup.js handles initialization)
+                        targetWords = []
+                    }
 
-            return resolve()
-        })
+                    if(storage.phobiaBlockerEnabled != undefined){
+                        phobiaBlockerEnabled = storage.phobiaBlockerEnabled
+                    }
+                    if(storage.blurIsAlwaysOn != undefined)
+                        blurIsAlwaysOn = storage.blurIsAlwaysOn
+
+                    // Apply blur amount setting
+                    if (storage.blurValueAmount != undefined) {
+                        let blurPixels = Math.pow(storage.blurValueAmount * 0.09, 1.8) * 2
+                        document.documentElement.style.setProperty('--blurValueAmount', blurPixels + 'px')
+                    } else if (blurIsAlwaysOn) {
+                        // First time using blur always on - use most aggressive settings
+                        let maxBlurPixels = Math.pow(100 * 0.09, 1.8) * 2
+                        document.documentElement.style.setProperty('--blurValueAmount', maxBlurPixels + 'px')
+                    }
+
+                    return resolve()
+                } catch (storageError) {
+                    // FAIL-SAFE: If anything fails, default to blur-all mode
+                    console.error('PhobiaBlocker: Settings error, defaulting to blur-all mode', storageError)
+                    phobiaBlockerEnabled = true
+                    blurIsAlwaysOn = true
+                    return resolve() // Continue with blur-all mode
+                }
+            })
+        } catch (outerError) {
+            // FAIL-SAFE: If chrome.storage.sync is unavailable, default to blur-all
+            console.error('PhobiaBlocker: Storage API unavailable, defaulting to blur-all mode', outerError)
+            phobiaBlockerEnabled = true
+            blurIsAlwaysOn = true
+            return resolve() // Continue with blur-all mode
+        }
     })
 }
 
@@ -726,20 +998,32 @@ setSettings().then(() => {
 })
 
 let main = async () => {
-    await setSettings()
+    try {
+        await setSettings()
 
-    if(blurIsAlwaysOn){
-        controller.onLoadBlurAll()
-    }
-    else if(phobiaBlockerEnabled){
-        controller.onLoad()
-    }
-    else if(!phobiaBlockerEnabled) {
-        document.documentElement.style.setProperty('--blurValueAmount', 0 + 'px')
-        // Remove early blur style if extension is disabled
-        controller._removeEarlyBlurStyle()
+        if(blurIsAlwaysOn){
+            controller.onLoadBlurAll()
+        }
+        else if(phobiaBlockerEnabled){
+            controller.onLoad()
+        }
+        else if(!phobiaBlockerEnabled) {
+            document.documentElement.style.setProperty('--blurValueAmount', 0 + 'px')
+            // Remove early blur style if extension is disabled
+            controller._removeEarlyBlurStyle()
+        }
+    } catch (mainError) {
+        // FAIL-SAFE: If main execution fails, blur everything
+        console.error('PhobiaBlocker: Main execution failed, defaulting to blur-all mode', mainError)
+        try {
+            controller.onLoadBlurAll()
+        } catch (blurError) {
+            // Last resort: CSS blur is already applied from early injection
+            console.error('PhobiaBlocker: Could not activate blur-all mode, relying on CSS', blurError)
+        }
     }
 }
+
 // Use native DOMContentLoader
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', main)
@@ -808,29 +1092,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             let blured = null
 
             // Check if the clicked element itself is blurred
-            if ($(lastElementContext).hasClass('blur')) {
-                blured = $(lastElementContext)
+            if (lastElementContext.classList && lastElementContext.classList.contains('blur')) {
+                blured = lastElementContext
             }
             // Check children with blur class
             else {
-                blured = $(lastElementContext).find('.blur')
+                blured = lastElementContext.querySelector('.blur')
             }
             // Check siblings if nothing found
-            if (!blured || blured.length === 0) {
-                blured = $(lastElementContext).siblings('.blur')
+            if (!blured && lastElementContext.parentElement) {
+                const siblings = Array.from(lastElementContext.parentElement.children)
+                blured = siblings.find(sibling =>
+                    sibling !== lastElementContext &&
+                    sibling.classList &&
+                    sibling.classList.contains('blur')
+                )
             }
             // Check parent if still nothing found
-            if (!blured || blured.length === 0) {
-                blured = $(lastElementContext).parent('.blur')
+            if (!blured && lastElementContext.parentElement) {
+                const parent = lastElementContext.parentElement
+                if (parent.classList && parent.classList.contains('blur')) {
+                    blured = parent
+                }
             }
             // Check if parent has blurred children
-            if (!blured || blured.length === 0) {
-                blured = $(lastElementContext).parent().find('.blur')
+            if (!blured && lastElementContext.parentElement) {
+                blured = lastElementContext.parentElement.querySelector('.blur')
             }
 
-            if (blured && blured.length > 0) {
-                blured.removeClass('blur')
-                blured.addClass('noblur permamentUnblur')
+            if (blured) {
+                blured.classList.remove('blur')
+                blured.classList.add('noblur', 'permamentUnblur')
             }
         }
         break
@@ -869,7 +1161,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 clearTimeout(controller._batchTimer)
                 controller._mutationBatch = []
                 // Clear classes but preserve permamentUnblur
-                $('.blur, .noblur').not('.permamentUnblur').removeClass('blur').removeClass('noblur')
+                const elementsToReset = document.querySelectorAll('.blur:not(.permamentUnblur), .noblur:not(.permamentUnblur)')
+                elementsToReset.forEach(el => {
+                    el.classList.remove('blur', 'noblur')
+                })
                 controller._imageNodeList = new ImageNodeList()
                 controller.updateImageList(document)
                 controller.blurAll()
@@ -883,7 +1178,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             clearTimeout(controller._batchTimer)
             controller._mutationBatch = []
             // Clear classes but preserve permamentUnblur
-            $('.blur, .noblur').not('.permamentUnblur').removeClass('blur').removeClass('noblur')
+            const elementsToReset = document.querySelectorAll('.blur:not(.permamentUnblur), .noblur:not(.permamentUnblur)')
+            elementsToReset.forEach(el => {
+                el.classList.remove('blur', 'noblur')
+            })
             controller._imageNodeList = new ImageNodeList()
             controller.onLoad()
         }
@@ -897,7 +1195,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 targetWords = []
             }
             // Clear all noblur classes except permamentUnblur
-            $('.noblur').not('.permamentUnblur').removeClass('noblur').addClass('blur')
+            const noblurElements = document.querySelectorAll('.noblur:not(.permamentUnblur)')
+            noblurElements.forEach(el => {
+                el.classList.remove('noblur')
+                el.classList.add('blur')
+            })
             // Re-analyze if extension is enabled
             if (phobiaBlockerEnabled && !blurIsAlwaysOn) {
                 let textAnalizer = new TextAnalizer()

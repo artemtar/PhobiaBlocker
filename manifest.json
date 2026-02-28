@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
     "name": "PhobiaBlocker",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "description": "Intelligently blur images on web pages that might contain content related to your specific phobias using NLP text analysis.",
     "icons": {
         "16": "icons/icon16.png",
@@ -22,7 +22,6 @@
             "<all_urls>"
         ],
         "js": [
-            "js/jquery-3.7.1.min.js",
             "js/compromise.min.js",
             "js/natural.js",
             "js/stopWords.js",

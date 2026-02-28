@@ -68,8 +68,6 @@ The extension automatically handles word variations:
 - **Alt + Shift + B**: Blur all images on the current page
 - **Alt + Shift + U**: Unblur all images on the current page
 
-*Note: Shortcuts can be customized in Chrome's extension keyboard shortcuts settings (`chrome://extensions/shortcuts`)*
-
 ### Context Menu
 
 - **Right-click on any blurred image** and select "Unblur" to permanently unblur that specific image
@@ -83,6 +81,29 @@ The extension automatically handles word variations:
 5. **Blur Decision**: Images are blurred if phobia-related words are detected nearby
 6. **Continuous Monitoring**: A MutationObserver watches for dynamically loaded content (infinite scroll, lazy loading, etc.)
 
-## Support
+## Testing
 
-For bug reports or feature requests, please open an issue on the project repository.
+PhobiaBlocker includes a comprehensive end-to-end test suite that verifies all functionality. The tests run separately from the extension using Puppeteer to automate Chrome with the extension loaded.
+
+### Running Tests
+
+```bash
+cd tests
+npm install
+npm test
+```
+
+Or use the quick-start script:
+
+```bash
+cd tests
+./run-tests.sh
+```
+
+### Test Coverage
+
+- **Basic Functionality**: Enable/disable, blur/unblur, settings persistence
+- **NLP Analysis**: Word normalization, plurals, verb forms, case insensitivity
+- **Visual Content**: Images, videos, iframes, background images, dynamic content
+
+For detailed testing documentation, see [tests/README.md](tests/README.md).

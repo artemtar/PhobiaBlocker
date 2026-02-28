@@ -59,16 +59,26 @@ async function getExtensionServiceWorker(browser, timeout = 10000) {
 /**
  * Get the extension ID
  * @param {Browser} browser - Puppeteer browser instance
+ * @param {number} retries - Number of retries
  * @returns {Promise<string>} The extension ID
  */
-async function getExtensionId(browser) {
-    const serviceWorkerTarget = await getExtensionServiceWorker(browser)
-    if (!serviceWorkerTarget) {
-        throw new Error('Extension service worker not found')
+async function getExtensionId(browser, retries = 3) {
+    for (let i = 0; i < retries; i++) {
+        const serviceWorkerTarget = await getExtensionServiceWorker(browser, 15000)
+        if (serviceWorkerTarget) {
+            const extensionUrl = serviceWorkerTarget.url()
+            const match = extensionUrl.match(/chrome-extension:\/\/([a-z]+)/)
+            if (match) return match[1]
+        }
+
+        // If not found and we have retries left, wait and try again
+        if (i < retries - 1) {
+            console.log(`Service worker not found, retrying ${i + 1}/${retries}...`)
+            await new Promise(resolve => setTimeout(resolve, 2000))
+        }
     }
-    const extensionUrl = serviceWorkerTarget.url()
-    const match = extensionUrl.match(/chrome-extension:\/\/([a-z]+)/)
-    return match ? match[1] : null
+
+    throw new Error('Extension service worker not found after retries')
 }
 
 /**
@@ -121,7 +131,7 @@ async function setPhobiaWords(browser, words) {
     await extPage.close()
 
     // Wait a bit for the content script to react
-    await new Promise(resolve => setTimeout(resolve, 500))
+    await new Promise(resolve => setTimeout(resolve, 200))
 }
 
 /**
@@ -161,7 +171,7 @@ async function setExtensionEnabled(browser, enabled) {
     await extPage.close()
 
     // Wait for content script to react
-    await new Promise(resolve => setTimeout(resolve, 500))
+    await new Promise(resolve => setTimeout(resolve, 200))
 }
 
 /**
