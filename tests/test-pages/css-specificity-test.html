@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>CSS Specificity Test</title>
+    <style>
+        /* Try to override blur with high specificity */
+        img { filter: none !important; }
+    </style>
+</head>
+<body>
+    <h1>CSS Override Test</h1>
+    <div>
+        <p>This page contains test content to trigger phobia detection.</p>
+        <p>Multiple test paragraphs ensure proper content analysis.</p>
+        <img id="override-test" src="https://via.placeholder.com/300x200" alt="Test Image">
+    </div>
+</body>
+</html>

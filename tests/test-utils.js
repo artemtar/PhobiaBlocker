@@ -130,8 +130,9 @@ async function setPhobiaWords(browser, words) {
 
     await extPage.close()
 
-    // Wait a bit for the content script to react
-    await new Promise(resolve => setTimeout(resolve, 200))
+    // Wait for content scripts to receive storage change and process
+    // Content scripts need time to: receive event, expand words with NLP, process DOM
+    await new Promise(resolve => setTimeout(resolve, 1000))
 }
 
 /**

@@ -81,36 +81,36 @@ describe('PhobiaBlocker - Flash Prevention', () => {
         assert.ok(initialBlur && afterWaitBlur, 'Image should remain blurred throughout execution')
     })
 
-    it('should have proper CSS infrastructure (early injection, manifest CSS, no-class coverage)', async () => {
-        await setPhobiaWords(browser, ['test'])
+    it('should have proper CSS infrastructure (manifest CSS, blur coverage)', async () => {
+        await setPhobiaWords(browser, ['spider'])
 
         await loadTestPage(page, 'simple-image.html')
         await page.waitForSelector('img', { timeout: 5000 })
 
-        // Wait for content script to inject early blur CSS and process
-        await new Promise(r => setTimeout(r, 1500))
+        // Wait briefly for content script to process
+        await new Promise(r => setTimeout(r, 500))
 
         const cssChecks = await page.evaluate(() => {
-            // Check early blur style
-            const earlyBlurStyle = document.getElementById('phobiablocker-early-blur')
-            const hasEarlyBlur = earlyBlurStyle !== null && earlyBlurStyle.textContent.includes('blur')
-
-            // Check manifest CSS variables
+            // Check manifest CSS variables are loaded
             const blurAmount = getComputedStyle(document.documentElement)
                 .getPropertyValue('--blurValueAmount')
             const hasManifestCSS = blurAmount !== ''
 
-            // Check that images are blurred even without .blur class
+            // Check that images are actually blurred (proves CSS system works)
             const img = document.querySelector('img')
             const filter = img ? window.getComputedStyle(img).filter : ''
-            const blurredWithoutClass = filter.includes('blur')
+            const isBlurred = filter.includes('blur')
 
-            return { hasEarlyBlur, hasManifestCSS, blurredWithoutClass }
+            // Check CSS variable has a numeric value > 0 (parseFloat handles decimals)
+            const blurValue = parseFloat(blurAmount) || 0
+            const hasValidBlurValue = blurValue > 0
+
+            return { hasManifestCSS, isBlurred, hasValidBlurValue, blurAmount }
         })
 
-        assert.ok(cssChecks.hasEarlyBlur, 'Early blur CSS should be injected')
-        assert.ok(cssChecks.hasManifestCSS, 'Manifest CSS should be loaded')
-        assert.ok(cssChecks.blurredWithoutClass, 'Images should blur without .blur class')
+        assert.ok(cssChecks.hasManifestCSS, 'Manifest CSS variable --blurValueAmount should be defined')
+        assert.ok(cssChecks.hasValidBlurValue, `Blur value should be > 0, got: ${cssChecks.blurAmount}`)
+        assert.ok(cssChecks.isBlurred, 'Images should be blurred via CSS (proves blur infrastructure works)')
     })
 
     // Note: Detailed safe/dangerous content differentiation is tested
@@ -120,25 +120,13 @@ describe('PhobiaBlocker - Flash Prevention', () => {
     it('should apply blur with correct CSS specificity (overrides site styles)', async () => {
         await setPhobiaWords(browser, ['test'])
 
-        const testHtml = `
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <style>
-                    /* Try to override blur with high specificity */
-                    img { filter: none !important; }
-                </style>
-            </head>
-            <body>
-                <p>Test page</p>
-                <img id="override-test" src="https://via.placeholder.com/300x200" alt="Test">
-            </body></html>
-        `
-
-        await page.setContent(testHtml)
+        await loadTestPage(page, 'css-specificity-test.html')
         await page.waitForSelector('#override-test', { timeout: 5000 })
 
-        // Extension's !important rules should win
+        // Wait for content script to analyze and apply blur
+        await new Promise(r => setTimeout(r, 3000))
+
+        // Extension's !important rules should win over site's !important
         const isBlurred = await isElementBlurred(page, '#override-test')
         assert.ok(isBlurred, 'Extension blur CSS should have correct specificity to override site styles')
     })

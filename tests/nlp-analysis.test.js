@@ -6,7 +6,8 @@ const {
     setExtensionEnabled,
     clearExtensionStorage,
     isElementBlurred,
-    setBlurAmount
+    setBlurAmount,
+    loadTestPage
 } = require('./test-utils')
 
 describe('PhobiaBlocker - NLP Text Analysis', () => {
@@ -38,46 +39,25 @@ describe('PhobiaBlocker - NLP Text Analysis', () => {
         // Using phobia words set in before(): spider, crawl, mouse
 
         // Test singular when plural configured
-        let testHtml = `
-            <!DOCTYPE html>
-            <html><body>
-                <p>This page has many spiders on it.</p>
-                <img id="plural-test" src="https://via.placeholder.com/300x200" alt="Test">
-            </body></html>
-        `
-        await page.setContent(testHtml)
+        await loadTestPage(page, 'nlp-plural-test.html')
         await page.waitForSelector('#plural-test', { timeout: 5000 })
-        await new Promise(r => setTimeout(r, 2000))
+        await new Promise(r => setTimeout(r, 3000))
 
         let isBlurred = await isElementBlurred(page, '#plural-test')
         assert.ok(isBlurred, 'Should detect plural "spiders" when "spider" configured')
 
         // Test verb form
-        testHtml = `
-            <!DOCTYPE html>
-            <html><body>
-                <p>The creature is crawling on the wall.</p>
-                <img id="verb-test" src="https://via.placeholder.com/300x200" alt="Test">
-            </body></html>
-        `
-        await page.setContent(testHtml)
+        await loadTestPage(page, 'nlp-verb-test.html')
         await page.waitForSelector('#verb-test', { timeout: 5000 })
-        await new Promise(r => setTimeout(r, 2000))
+        await new Promise(r => setTimeout(r, 3000))
 
         isBlurred = await isElementBlurred(page, '#verb-test')
         assert.ok(isBlurred, 'Should detect verb form "crawling" when "crawl" configured')
 
         // Test irregular plural
-        testHtml = `
-            <!DOCTYPE html>
-            <html><body>
-                <p>There are mice in the house.</p>
-                <img id="irregular-test" src="https://via.placeholder.com/300x200" alt="Test">
-            </body></html>
-        `
-        await page.setContent(testHtml)
+        await loadTestPage(page, 'nlp-irregular-plural-test.html')
         await page.waitForSelector('#irregular-test', { timeout: 5000 })
-        await new Promise(r => setTimeout(r, 2000))
+        await new Promise(r => setTimeout(r, 3000))
 
         isBlurred = await isElementBlurred(page, '#irregular-test')
         assert.ok(isBlurred, 'Should detect irregular plural "mice" when "mouse" configured')
@@ -87,49 +67,25 @@ describe('PhobiaBlocker - NLP Text Analysis', () => {
         // Using phobia words set in before(): spider, snake, clown
 
         // Test case insensitivity
-        let testHtml = `
-            <!DOCTYPE html>
-            <html><body>
-                <p>SNAKE WARNING: There are SNAKES in this area.</p>
-                <img id="case-test" src="https://via.placeholder.com/300x200" alt="Test">
-            </body></html>
-        `
-        await page.setContent(testHtml)
+        await loadTestPage(page, 'nlp-case-test.html')
         await page.waitForSelector('#case-test', { timeout: 5000 })
-        await new Promise(r => setTimeout(r, 2000))
+        await new Promise(r => setTimeout(r, 3000))
 
         let isBlurred = await isElementBlurred(page, '#case-test')
         assert.ok(isBlurred, 'Should detect phobia words regardless of case')
 
         // Test possessive forms
-        testHtml = `
-            <!DOCTYPE html>
-            <html><body>
-                <p>The spider's web is intricate and beautiful.</p>
-                <img id="possessive-test" src="https://via.placeholder.com/300x200" alt="Test">
-            </body></html>
-        `
-        await page.setContent(testHtml)
+        await loadTestPage(page, 'nlp-possessive-test.html')
         await page.waitForSelector('#possessive-test', { timeout: 5000 })
-        await new Promise(r => setTimeout(r, 2000))
+        await new Promise(r => setTimeout(r, 3000))
 
         isBlurred = await isElementBlurred(page, '#possessive-test')
         assert.ok(isBlurred, 'Should detect possessive forms like "spider\'s"')
 
         // Test detection in page title
-        testHtml = `
-            <!DOCTYPE html>
-            <html>
-                <head><title>Clown Performance Tonight</title></head>
-                <body>
-                    <p>This is an event page.</p>
-                    <img id="title-test" src="https://via.placeholder.com/300x200" alt="Test">
-                </body>
-            </html>
-        `
-        await page.setContent(testHtml)
+        await loadTestPage(page, 'nlp-title-test.html')
         await page.waitForSelector('#title-test', { timeout: 5000 })
-        await new Promise(r => setTimeout(r, 2000))
+        await new Promise(r => setTimeout(r, 3000))
 
         isBlurred = await isElementBlurred(page, '#title-test')
         assert.ok(isBlurred, 'Should detect phobia words in page title')
@@ -138,16 +94,8 @@ describe('PhobiaBlocker - NLP Text Analysis', () => {
     it('should not trigger on partial word matches', async () => {
         // Using phobia word 'cat' set in before()
 
-        // Create test page with words containing "cat" but not the word "cat"
-        const testHtml = `
-            <!DOCTYPE html>
-            <html><body>
-                <p>This is about education and catalogue items.</p>
-                <img id="test-img" src="https://via.placeholder.com/300x200" alt="Test">
-            </body></html>
-        `
-
-        await page.setContent(testHtml)
+        // Load test page with words containing "cat" but not the word "cat"
+        await loadTestPage(page, 'nlp-partial-match-test.html')
         await page.waitForSelector('#test-img', { timeout: 5000 })
 
         // FLASH PREVENTION: Image starts blurred, wait for analysis + unveil timer
@@ -165,18 +113,10 @@ describe('PhobiaBlocker - NLP Text Analysis', () => {
     it('should handle special characters in text', async () => {
         // Using phobia word 'spider' set in before()
 
-        // Create test page with special characters
-        const testHtml = `
-            <!DOCTYPE html>
-            <html><body>
-                <p>Warning!!! Spider@#$% ahead... (dangerous)</p>
-                <img id="test-img" src="https://via.placeholder.com/300x200" alt="Test">
-            </body></html>
-        `
-
-        await page.setContent(testHtml)
+        // Load test page with special characters
+        await loadTestPage(page, 'nlp-special-chars-test.html')
         await page.waitForSelector('#test-img', { timeout: 5000 })
-        await new Promise(r => setTimeout(r, 2000))
+        await new Promise(r => setTimeout(r, 3000))
 
         const isBlurred = await isElementBlurred(page, '#test-img')
         assert.ok(isBlurred, 'Should detect words even with special characters around them')

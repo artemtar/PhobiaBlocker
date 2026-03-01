@@ -103,8 +103,10 @@ for test_file in "${TEST_FILES[@]}"; do
     ((TOTAL_TESTS++))
 
     # Longer delay between tests to allow full browser/service worker cleanup
-    # Chrome needs time to properly unload extensions between test runs
-    sleep 3
+    # Chrome needs significant time to properly unload extensions between test runs
+    # After heavy service worker usage (20-30s tests), Chrome requires substantial cleanup time
+    # Tests fail with 10s delay, need at least 20s for reliable service worker availability
+    sleep 20
 done
 
 # Print summary
