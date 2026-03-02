@@ -68,6 +68,17 @@ let lastElementContext
 let phobiaBlockerEnabled = true
 let blurIsAlwaysOn = false
 
+// Debug logging function
+function debugLog(category, message, data) {
+    if (window.PHOBIABLOCKER_DEBUG) {
+        const timestamp = new Date().toISOString().split('T')[1].slice(0, -1)
+        console.log(`[PhobiaBlocker:${category}] ${timestamp} - ${message}`, data !== undefined ? data : '')
+    }
+}
+
+// Initialize debug mode from storage
+window.PHOBIABLOCKER_DEBUG = false
+
 class ImageNode {
     constructor(imageNode) {
         if (this.constructor == ImageNode) {
@@ -292,6 +303,12 @@ class TextAnalizer {
     async startAnalysis (dependentImageNodes){
         try {
             if(!dependentImageNodes || dependentImageNodes.length === 0) return
+
+            debugLog('TextAnalysis', 'Starting text analysis', {
+                imageCount: dependentImageNodes.length,
+                targetWordsCount: targetWords.length
+            })
+
             dependentImageNodes.forEach((imageNode) => {
                 imageNode.newTextProcessingStarted()
             })
@@ -344,6 +361,14 @@ class TextAnalizer {
                 .filter(n => n)
 
             let analysisResult = match.length > 0
+
+            debugLog('TextAnalysis', 'Analysis complete', {
+                targetWords: targetWords.slice(0, 10),
+                textWordsChecked: wordsToCheckNormalized.length,
+                matches: match,
+                shouldBlur: analysisResult,
+                imageCount: dependentImageNodes.length
+            })
 
             dependentImageNodes.forEach((imageNode) => {
                 imageNode.updateBlurStatus(analysisResult)
@@ -919,7 +944,8 @@ let setSettings = () => {
                 'targetWords',
                 'phobiaBlockerEnabled',
                 'blurIsAlwaysOn',
-                'blurValueAmount'
+                'blurValueAmount',
+                'debugMode'
             ], (storage) => {
                 try {
                     if (chrome.runtime.lastError) {
@@ -963,6 +989,18 @@ let setSettings = () => {
                         let maxBlurPixels = Math.pow(100 * 0.09, 1.8) * 2
                         document.documentElement.style.setProperty('--blurValueAmount', maxBlurPixels + 'px')
                     }
+
+                    // Load debug mode setting
+                    if (storage.debugMode != undefined) {
+                        window.PHOBIABLOCKER_DEBUG = storage.debugMode
+                    }
+
+                    debugLog('Storage', 'Settings loaded', {
+                        targetWordsCount: targetWords.length,
+                        enabled: phobiaBlockerEnabled,
+                        blurAlways: blurIsAlwaysOn,
+                        debugMode: window.PHOBIABLOCKER_DEBUG
+                    })
 
                     return resolve()
                 } catch (storageError) {
@@ -1212,6 +1250,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 })
             }
         })
+        break
+    case 'debugModeChanged':
+        // Debug mode changed from settings page
+        window.PHOBIABLOCKER_DEBUG = message.value
+        debugLog('MessagePassing', 'Debug mode changed', { debugMode: message.value })
         break
     }
 })

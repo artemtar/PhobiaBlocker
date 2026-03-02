@@ -39,6 +39,10 @@
     "background": {
         "service_worker": "js/background.js"
     },
+    "options_ui": {
+        "page": "settings.html",
+        "open_in_tab": true
+    },
     "commands": {
         "blur-all": {
             "suggested_key": {

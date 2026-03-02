@@ -76,7 +76,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     })
 
-    document.getElementById('unblurBtn').parentElement.addEventListener('click', () => {
+    document.getElementById('unblurBtn').addEventListener('click', () => {
         chrome.tabs.query({ active: true, currentWindow: true },
             (tabs) => {
                 if (tabs && tabs[0]) {
@@ -89,7 +89,7 @@ document.addEventListener('DOMContentLoaded', () => {
             })
     })
 
-    document.getElementById('blurBtn').parentElement.addEventListener('click', () => {
+    document.getElementById('blurBtn').addEventListener('click', () => {
         chrome.tabs.query({ active: true, currentWindow: true },
             (tabs) => {
                 if (tabs && tabs[0]) {
@@ -223,7 +223,43 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('blurIsAlwaysOn-switch').checked = storage.blurIsAlwaysOn === true
     })
 
-    // Set keyboard shortcuts (same for all platforms)
-    document.querySelector('#blur-shortcut i').textContent = 'Alt + Shift + B'
-    document.querySelector('#unblur-shortcut i').textContent = 'Alt + Shift + U'
+    // Settings button click handler
+    document.getElementById('open-settings-btn').addEventListener('click', () => {
+        chrome.runtime.openOptionsPage()
+    })
+
+    // Tooltip functionality
+    const tooltipElement = document.createElement('div')
+    tooltipElement.className = 'tooltip'
+    document.body.appendChild(tooltipElement)
+
+    document.querySelectorAll('.info-icon').forEach(icon => {
+        icon.addEventListener('mouseenter', (e) => {
+            const text = e.target.getAttribute('data-tooltip')
+            if (!text) return
+
+            tooltipElement.textContent = text
+            tooltipElement.classList.add('show')
+
+            // Position tooltip
+            const rect = e.target.getBoundingClientRect()
+            const tooltipRect = tooltipElement.getBoundingClientRect()
+
+            let left = rect.left + (rect.width / 2) - (tooltipRect.width / 2)
+            let top = rect.bottom + 8
+
+            // Keep tooltip within viewport
+            if (left < 10) left = 10
+            if (left + tooltipRect.width > window.innerWidth - 10) {
+                left = window.innerWidth - tooltipRect.width - 10
+            }
+
+            tooltipElement.style.left = left + 'px'
+            tooltipElement.style.top = top + 'px'
+        })
+
+        icon.addEventListener('mouseleave', () => {
+            tooltipElement.classList.remove('show')
+        })
+    })
 })
