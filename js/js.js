@@ -67,6 +67,8 @@ let targetWords = []
 let lastElementContext
 let phobiaBlockerEnabled = true
 let blurIsAlwaysOn = false
+let whitelistedSites = []
+let blacklistedSites = []
 
 // Debug logging function
 function debugLog(category, message, data) {
@@ -934,6 +936,53 @@ let expandTargetWords = (words) => {
 }
 
 /**
+ * Check if current site matches a pattern
+ * Supports: exact domains, wildcards (*.example.com), paths (example.com/path)
+ */
+function matchesSitePattern(currentUrl, pattern) {
+    try {
+        const url = new URL(currentUrl)
+        const hostname = url.hostname.toLowerCase()
+        const fullPath = (hostname + url.pathname).toLowerCase()
+        pattern = pattern.toLowerCase()
+
+        // Wildcard subdomain match: *.example.com
+        if (pattern.startsWith('*.')) {
+            const baseDomain = pattern.substring(2)
+            return hostname === baseDomain || hostname.endsWith('.' + baseDomain)
+        }
+
+        // Check if pattern includes path
+        if (pattern.includes('/')) {
+            return fullPath.startsWith(pattern) || fullPath === pattern.split('/')[0]
+        }
+
+        // Exact hostname match or subdomain match
+        // This makes "google.com" match "www.google.com", "mail.google.com", etc.
+        return hostname === pattern || hostname.endsWith('.' + pattern)
+    } catch (e) {
+        debugLog('SiteRules', 'Error matching pattern', { currentUrl, pattern, error: e.message })
+        return false
+    }
+}
+
+/**
+ * Check if current site is whitelisted
+ */
+function isWhitelisted() {
+    const currentUrl = window.location.href
+    return whitelistedSites.some(pattern => matchesSitePattern(currentUrl, pattern))
+}
+
+/**
+ * Check if current site is blacklisted
+ */
+function isBlacklisted() {
+    const currentUrl = window.location.href
+    return blacklistedSites.some(pattern => matchesSitePattern(currentUrl, pattern))
+}
+
+/**
  * Checks if target words are set, if target words are present in storage -> use those words
  * Target words are words defined by user in the extention
  */
@@ -945,7 +994,9 @@ let setSettings = () => {
                 'phobiaBlockerEnabled',
                 'blurIsAlwaysOn',
                 'blurValueAmount',
-                'debugMode'
+                'debugMode',
+                'whitelistedSites',
+                'blacklistedSites'
             ], (storage) => {
                 try {
                     if (chrome.runtime.lastError) {
@@ -995,11 +1046,21 @@ let setSettings = () => {
                         window.PHOBIABLOCKER_DEBUG = storage.debugMode
                     }
 
+                    // Load site rules
+                    if (storage.whitelistedSites && Array.isArray(storage.whitelistedSites)) {
+                        whitelistedSites = storage.whitelistedSites
+                    }
+                    if (storage.blacklistedSites && Array.isArray(storage.blacklistedSites)) {
+                        blacklistedSites = storage.blacklistedSites
+                    }
+
                     debugLog('Storage', 'Settings loaded', {
                         targetWordsCount: targetWords.length,
                         enabled: phobiaBlockerEnabled,
                         blurAlways: blurIsAlwaysOn,
-                        debugMode: window.PHOBIABLOCKER_DEBUG
+                        debugMode: window.PHOBIABLOCKER_DEBUG,
+                        whitelistCount: whitelistedSites.length,
+                        blacklistCount: blacklistedSites.length
                     })
 
                     return resolve()
@@ -1023,11 +1084,22 @@ let setSettings = () => {
 
 var controller = new Controller()
 
-// Check settings early to disable blur immediately if extension is off
+// Check settings early to disable blur immediately if extension is off or site is whitelisted
 setSettings().then(() => {
+    // Whitelist takes priority - completely disable extension
+    if (isWhitelisted()) {
+        debugLog('SiteRules', 'Site is whitelisted - disabling blur immediately', { url: window.location.href })
+        document.documentElement.style.setProperty('--blurValueAmount', '0px')
+        let earlyBlurStyle = document.getElementById('phobiablocker-early-blur')
+        if (earlyBlurStyle) {
+            earlyBlurStyle.remove()
+        }
+        return
+    }
+
+    // Extension disabled - remove blur
     if(!phobiaBlockerEnabled) {
-        document.documentElement.style.setProperty('--blurValueAmount', 0 + 'px')
-        // Remove early blur style if extension is disabled
+        document.documentElement.style.setProperty('--blurValueAmount', '0px')
         let earlyBlurStyle = document.getElementById('phobiablocker-early-blur')
         if (earlyBlurStyle) {
             earlyBlurStyle.remove()
@@ -1039,6 +1111,21 @@ let main = async () => {
     try {
         await setSettings()
 
+        // Check site rules (blacklist takes precedence over whitelist)
+        if (isBlacklisted()) {
+            debugLog('SiteRules', 'Site is blacklisted - forcing blur all', { url: window.location.href })
+            controller.onLoadBlurAll()
+            return
+        }
+
+        if (isWhitelisted()) {
+            debugLog('SiteRules', 'Site is whitelisted - disabling extension', { url: window.location.href })
+            document.documentElement.style.setProperty('--blurValueAmount', 0 + 'px')
+            controller._removeEarlyBlurStyle()
+            return
+        }
+
+        // Normal operation based on user settings
         if(blurIsAlwaysOn){
             controller.onLoadBlurAll()
         }
@@ -1101,6 +1188,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         controller.unBlurAll()
         break
     case 'setBlurAmount':
+        // Check if site is whitelisted - if so, keep blur at 0
+        if (isWhitelisted()) {
+            debugLog('SiteRules', 'Site is whitelisted - ignoring blur amount change', { url: window.location.href })
+            document.documentElement.style.setProperty('--blurValueAmount', '0px')
+            return
+        }
         let blurValueAmount = message.value
         if (blurValueAmount != undefined) {
             // Value provided in message (real-time update while dragging)
@@ -1172,6 +1265,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             controller._removeEarlyBlurStyle()
         }
         else {
+            // Check site rules before enabling
+            if (isWhitelisted()) {
+                debugLog('SiteRules', 'Site is whitelisted - not enabling extension', { url: window.location.href })
+                return
+            }
+            if (isBlacklisted()) {
+                debugLog('SiteRules', 'Site is blacklisted - forcing blur all', { url: window.location.href })
+                controller.onLoadBlurAll()
+                return
+            }
+            // Normal operation
             if(blurIsAlwaysOn){
                 controller.onLoadBlurAll()
             } else {
@@ -1181,7 +1285,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break
     case 'blurIsAlwaysOn':
         blurIsAlwaysOn = message.value
+        // Check site rules first
+        if (isWhitelisted()) {
+            debugLog('SiteRules', 'Site is whitelisted - ignoring blurIsAlwaysOn change', { url: window.location.href })
+            return
+        }
         if(blurIsAlwaysOn){
+            // Blacklist or normal operation: blur everything
             // Check if user has set blur amount before, if not use maximum
             chrome.storage.sync.get('blurValueAmount', (storage) => {
                 if (storage.blurValueAmount != undefined) {
@@ -1210,6 +1320,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             })
         }
         else {
+            // Disabling blurIsAlwaysOn
+            if (isBlacklisted()) {
+                debugLog('SiteRules', 'Site is blacklisted - keeping blur despite blurIsAlwaysOn=false', { url: window.location.href })
+                return
+            }
+            // Normal operation: re-analyze
             if (controller.observer) {
                 controller.observer.disconnect()
             }
@@ -1226,11 +1342,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break
     case 'targetWordsChanged':
         // Target words changed - reload and re-analyze
+        // Check site rules first
+        if (isWhitelisted()) {
+            debugLog('SiteRules', 'Site is whitelisted - ignoring target words change', { url: window.location.href })
+            return
+        }
         chrome.storage.sync.get('targetWords', (storage) => {
             if (storage.targetWords) {
                 targetWords = expandTargetWords(storage.targetWords)
             } else {
                 targetWords = []
+            }
+            // If blacklisted, keep everything blurred regardless of words
+            if (isBlacklisted()) {
+                debugLog('SiteRules', 'Site is blacklisted - keeping all content blurred', { url: window.location.href })
+                return
             }
             // Clear all noblur classes except permamentUnblur
             const noblurElements = document.querySelectorAll('.noblur:not(.permamentUnblur)')
@@ -1255,6 +1381,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // Debug mode changed from settings page
         window.PHOBIABLOCKER_DEBUG = message.value
         debugLog('MessagePassing', 'Debug mode changed', { debugMode: message.value })
+        break
+    case 'siteRulesChanged':
+        // Site rules changed from settings page - reload page to apply new rules
+        debugLog('MessagePassing', 'Site rules changed - reloading page', { url: window.location.href })
+        window.location.reload()
         break
     }
 })

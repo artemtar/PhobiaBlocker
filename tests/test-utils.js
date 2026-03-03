@@ -62,9 +62,9 @@ async function getExtensionServiceWorker(browser, timeout = 10000) {
  * @param {number} retries - Number of retries
  * @returns {Promise<string>} The extension ID
  */
-async function getExtensionId(browser, retries = 3) {
+async function getExtensionId(browser, retries = 5) {
     for (let i = 0; i < retries; i++) {
-        const serviceWorkerTarget = await getExtensionServiceWorker(browser, 15000)
+        const serviceWorkerTarget = await getExtensionServiceWorker(browser, 20000)
         if (serviceWorkerTarget) {
             const extensionUrl = serviceWorkerTarget.url()
             const match = extensionUrl.match(/chrome-extension:\/\/([a-z]+)/)
@@ -74,7 +74,7 @@ async function getExtensionId(browser, retries = 3) {
         // If not found and we have retries left, wait and try again
         if (i < retries - 1) {
             console.log(`Service worker not found, retrying ${i + 1}/${retries}...`)
-            await new Promise(resolve => setTimeout(resolve, 2000))
+            await new Promise(resolve => setTimeout(resolve, 3000))
         }
     }
 
@@ -393,6 +393,86 @@ async function getAllVisualElements(page) {
     })
 }
 
+/**
+ * Set whitelisted sites
+ * @param {Browser} browser - Puppeteer browser instance
+ * @param {Array<string>} sites - Array of site patterns
+ */
+async function setWhitelistedSites(browser, sites) {
+    const extPage = await getExtensionPage(browser)
+
+    await extPage.evaluate((sites) => {
+        return new Promise((resolve) => {
+            chrome.storage.sync.set({ whitelistedSites: sites }, resolve)
+        })
+    }, sites)
+
+    await extPage.close()
+
+    // Wait for content script to react
+    await new Promise(resolve => setTimeout(resolve, 300))
+}
+
+/**
+ * Set blacklisted sites
+ * @param {Browser} browser - Puppeteer browser instance
+ * @param {Array<string>} sites - Array of site patterns
+ */
+async function setBlacklistedSites(browser, sites) {
+    const extPage = await getExtensionPage(browser)
+
+    await extPage.evaluate((sites) => {
+        return new Promise((resolve) => {
+            chrome.storage.sync.set({ blacklistedSites: sites }, resolve)
+        })
+    }, sites)
+
+    await extPage.close()
+
+    // Wait for content script to react
+    await new Promise(resolve => setTimeout(resolve, 300))
+}
+
+/**
+ * Get whitelisted sites from storage
+ * @param {Browser} browser - Puppeteer browser instance
+ * @returns {Promise<Array<string>>} Array of whitelisted sites
+ */
+async function getWhitelistedSites(browser) {
+    const extPage = await getExtensionPage(browser)
+
+    const sites = await extPage.evaluate(() => {
+        return new Promise((resolve) => {
+            chrome.storage.sync.get(['whitelistedSites'], (result) => {
+                resolve(result.whitelistedSites || [])
+            })
+        })
+    })
+
+    await extPage.close()
+    return sites
+}
+
+/**
+ * Get blacklisted sites from storage
+ * @param {Browser} browser - Puppeteer browser instance
+ * @returns {Promise<Array<string>>} Array of blacklisted sites
+ */
+async function getBlacklistedSites(browser) {
+    const extPage = await getExtensionPage(browser)
+
+    const sites = await extPage.evaluate(() => {
+        return new Promise((resolve) => {
+            chrome.storage.sync.get(['blacklistedSites'], (result) => {
+                resolve(result.blacklistedSites || [])
+            })
+        })
+    })
+
+    await extPage.close()
+    return sites
+}
+
 module.exports = {
     launchBrowserWithExtension,
     getExtensionServiceWorker,
@@ -411,5 +491,9 @@ module.exports = {
     clearExtensionStorage,
     sendMessageToContentScript,
     countBlurredImages,
-    getAllVisualElements
+    getAllVisualElements,
+    setWhitelistedSites,
+    setBlacklistedSites,
+    getWhitelistedSites,
+    getBlacklistedSites
 }

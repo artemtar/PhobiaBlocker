@@ -46,15 +46,15 @@
     "commands": {
         "blur-all": {
             "suggested_key": {
-                "default": "Alt+Shift+B",
-                "mac": "Alt+Shift+B"
+                "default": "Ctrl+B",
+                "mac": "Ctrl+B"
             },
             "description": "Blur all images on the page"
         },
         "unblur-all": {
             "suggested_key": {
-                "default": "Alt+Shift+U",
-                "mac": "Alt+Shift+U"
+                "default": "Ctrl+U",
+                "mac": "Ctrl+U"
             },
             "description": "Unblur all images on the page"
         }
