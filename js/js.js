@@ -81,6 +81,8 @@ function debugLog(category, message, data) {
 // Initialize debug mode from storage
 window.PHOBIABLOCKER_DEBUG = false
 
+// Metrics Collection Module (DEV ONLY)
+
 class ImageNode {
     constructor(imageNode) {
         if (this.constructor == ImageNode) {
@@ -166,14 +168,14 @@ class TagImageNode extends ImageNode {
     blur() {
         if (!this._isNodeValid()) return
         if (!this._imageNode.classList.contains('permamentUnblur')){
-            this._imageNode.classList.remove('noblur')
+this._imageNode.classList.remove('noblur')
             this._imageNode.classList.add('blur')
         }
     }
 
     unblur() {
         if (!this._isNodeValid()) return
-        this._imageNode.classList.add('noblur')
+this._imageNode.classList.add('noblur')
         this._imageNode.classList.remove('blur')
     }
 }
@@ -186,7 +188,7 @@ class BgImageNode extends ImageNode {
     blur() {
         if (!this._isNodeValid()) return
         if (!this._imageNode.classList.contains('permamentUnblur')){
-            this._imageNode.classList.remove('noblur')
+this._imageNode.classList.remove('noblur')
             this._imageNode.classList.add('blur')
             this._imageNode.style.filter = 'blur(10px)'
         }
@@ -194,7 +196,7 @@ class BgImageNode extends ImageNode {
 
     unblur() {
         if (!this._isNodeValid()) return
-        this._imageNode.classList.add('noblur')
+this._imageNode.classList.add('noblur')
         this._imageNode.classList.remove('blur')
         this._imageNode.style.filter = 'blur(0px)'
     }
@@ -211,16 +213,15 @@ class VideoNode extends ImageNode {
 
     blur() {
         if (!this._isNodeValid()) return
-        // Use native classList API
         if (!this._imageNode.classList.contains('permamentUnblur')){
-            this._imageNode.classList.remove('noblur')
+this._imageNode.classList.remove('noblur')
             this._imageNode.classList.add('blur')
         }
     }
 
     unblur() {
         if (!this._isNodeValid()) return
-        this._imageNode.classList.add('noblur')
+this._imageNode.classList.add('noblur')
         this._imageNode.classList.remove('blur')
     }
 }
@@ -237,14 +238,14 @@ class IframeNode extends ImageNode {
     blur() {
         if (!this._isNodeValid()) return
         if (!this._imageNode.classList.contains('permamentUnblur')){
-            this._imageNode.classList.remove('noblur')
+this._imageNode.classList.remove('noblur')
             this._imageNode.classList.add('blur')
         }
     }
 
     unblur() {
         if (!this._isNodeValid()) return
-        this._imageNode.classList.add('noblur')
+this._imageNode.classList.add('noblur')
         this._imageNode.classList.remove('blur')
     }
 }
@@ -376,6 +377,7 @@ class TextAnalizer {
                 imageNode.updateBlurStatus(analysisResult)
                 imageNode.textProcessingFinished()
             })
+
         } catch (error) {
             console.error('Error in startAnalysis:', error)
             // If analysis fails, mark images as finished processing so they can unveil
@@ -1159,7 +1161,7 @@ if (document.readyState === 'loading') {
 
 document.addEventListener('contextmenu', (event) => {lastElementContext = event.target}, true)
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender) => {
     switch (message.type) {
     case 'blurAll':
         // Check if user has set blur amount before, if not use maximum

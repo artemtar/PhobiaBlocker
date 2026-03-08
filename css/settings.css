@@ -731,3 +731,15 @@ input:checked + .slider:before {
 html {
     scroll-behavior: smooth;
 }
+
+
+.action-btn.secondary {
+    background: white;
+    color: var(--primary-blue);
+    border: 2px solid var(--primary-blue);
+    margin-left: 8px;
+}
+
+.action-btn.secondary:hover {
+    background: var(--light-blue);
+}

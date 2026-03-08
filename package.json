@@ -8,7 +8,9 @@
     "test:site-rules": "node --test tests/site-rules.test.js",
     "test:basic": "node --test tests/basic-functionality.test.js",
     "test:nlp": "node --test tests/nlp-analysis.test.js",
-    "test:visual": "node --test tests/visual-content.test.js"
+    "test:visual": "node --test tests/visual-content.test.js",
+    "dev": "bash pack-dev.sh",
+    "prod": "bash pack.sh"
   },
   "repository": {
     "type": "git",

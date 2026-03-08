@@ -1,2 +1,7 @@
 node_modules
 package-lock.json
+
+# Build outputs
+build/
+*.zip
+manifest.json.backup
