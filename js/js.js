@@ -81,8 +81,6 @@ function debugLog(category, message, data) {
 // Initialize debug mode from storage
 window.PHOBIABLOCKER_DEBUG = false
 
-// Metrics Collection Module (DEV ONLY)
-
 class ImageNode {
     constructor(imageNode) {
         if (this.constructor == ImageNode) {
@@ -168,14 +166,14 @@ class TagImageNode extends ImageNode {
     blur() {
         if (!this._isNodeValid()) return
         if (!this._imageNode.classList.contains('permamentUnblur')){
-this._imageNode.classList.remove('noblur')
-            this._imageNode.classList.add('blur')
+        this._imageNode.classList.remove('noblur')
+        this._imageNode.classList.add('blur')
         }
     }
 
     unblur() {
         if (!this._isNodeValid()) return
-this._imageNode.classList.add('noblur')
+        this._imageNode.classList.add('noblur')
         this._imageNode.classList.remove('blur')
     }
 }
@@ -188,15 +186,15 @@ class BgImageNode extends ImageNode {
     blur() {
         if (!this._isNodeValid()) return
         if (!this._imageNode.classList.contains('permamentUnblur')){
-this._imageNode.classList.remove('noblur')
-            this._imageNode.classList.add('blur')
-            this._imageNode.style.filter = 'blur(10px)'
+        this._imageNode.classList.remove('noblur')
+        this._imageNode.classList.add('blur')
+        this._imageNode.style.filter = 'blur(10px)'
         }
     }
 
     unblur() {
         if (!this._isNodeValid()) return
-this._imageNode.classList.add('noblur')
+        this._imageNode.classList.add('noblur')
         this._imageNode.classList.remove('blur')
         this._imageNode.style.filter = 'blur(0px)'
     }
@@ -214,14 +212,14 @@ class VideoNode extends ImageNode {
     blur() {
         if (!this._isNodeValid()) return
         if (!this._imageNode.classList.contains('permamentUnblur')){
-this._imageNode.classList.remove('noblur')
-            this._imageNode.classList.add('blur')
+        this._imageNode.classList.remove('noblur')
+        this._imageNode.classList.add('blur')
         }
     }
 
     unblur() {
         if (!this._isNodeValid()) return
-this._imageNode.classList.add('noblur')
+        this._imageNode.classList.add('noblur')
         this._imageNode.classList.remove('blur')
     }
 }
@@ -238,14 +236,14 @@ class IframeNode extends ImageNode {
     blur() {
         if (!this._isNodeValid()) return
         if (!this._imageNode.classList.contains('permamentUnblur')){
-this._imageNode.classList.remove('noblur')
-            this._imageNode.classList.add('blur')
+        this._imageNode.classList.remove('noblur')
+        this._imageNode.classList.add('blur')
         }
     }
 
     unblur() {
         if (!this._isNodeValid()) return
-this._imageNode.classList.add('noblur')
+        this._imageNode.classList.add('noblur')
         this._imageNode.classList.remove('blur')
     }
 }
