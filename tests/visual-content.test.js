@@ -67,12 +67,37 @@ describe('PhobiaBlocker - Visual Content Types', () => {
         assert.ok(isBlurred, 'Video elements should be blurred')
     })
 
-    // Note: Additional visual content types (GIF, SVG, iframes, nested backgrounds,
-    // dynamic content, empty src, etc.) are tested in manual testing and integration
-    // workflows. The core tests above validate the extension correctly identifies
-    // and processes the main visual content types (images, videos, background images).
-    //
-    // Service worker availability becomes unreliable in long-running test suites,
-    // causing intermittent failures in tests that require storage updates. The tests
-    // above provide sufficient coverage of visual content handling.
+    it('should keep cross-origin iframes blurred even when page text has no phobia words', async () => {
+        // No phobia words set - page text analysis will find nothing
+        await setPhobiaWords(browser, ['spider'])
+
+        await loadTestPage(page, 'cross-origin-iframe.html')
+        await page.waitForSelector('#cross-origin-iframe', { timeout: 5000 })
+        await new Promise(r => setTimeout(r, 2000))
+
+        const isBlurred = await isElementBlurred(page, '#cross-origin-iframe')
+        assert.ok(isBlurred, 'Cross-origin iframe should stay blurred - content cannot be analyzed')
+    })
+
+    it('should unblur same-origin iframes when page text has no phobia words', async () => {
+        await setPhobiaWords(browser, ['spider'])
+
+        await loadTestPage(page, 'cross-origin-iframe.html')
+        await page.waitForSelector('#same-origin-iframe', { timeout: 5000 })
+        await new Promise(r => setTimeout(r, 2000))
+
+        const isBlurred = await isElementBlurred(page, '#same-origin-iframe')
+        assert.ok(!isBlurred, 'Same-origin iframe should be unblurred when no phobia words in page text')
+    })
+
+    it('should keep cross-origin iframes blurred when page text has no phobia words (empty target words)', async () => {
+        await setPhobiaWords(browser, [])
+
+        await loadTestPage(page, 'cross-origin-iframe.html')
+        await page.waitForSelector('#cross-origin-iframe', { timeout: 5000 })
+        await new Promise(r => setTimeout(r, 2000))
+
+        const isBlurred = await isElementBlurred(page, '#cross-origin-iframe')
+        assert.ok(isBlurred, 'Cross-origin iframe should stay blurred regardless of phobia word list')
+    })
 })

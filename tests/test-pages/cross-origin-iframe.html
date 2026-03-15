@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Page - Cross-Origin Iframe</title>
+</head>
+<body>
+    <h1>Cross-Origin Iframe Test Page</h1>
+    <p>This page contains no phobia-related words in its text.</p>
+
+    <div class="test-content">
+        <h2>Cross-origin iframe (external URL)</h2>
+        <p>This iframe loads content from an external origin.</p>
+        <iframe id="cross-origin-iframe" width="400" height="300" src="https://www.example.com"></iframe>
+    </div>
+
+    <div class="test-content" style="margin-top: 50px;">
+        <h2>Same-origin iframe (about:blank)</h2>
+        <p>This iframe loads blank content from the same origin.</p>
+        <iframe id="same-origin-iframe" width="400" height="300" src="about:blank"></iframe>
+    </div>
+</body>
+</html>

@@ -8,12 +8,42 @@ let blacklistedSites = []
 // Initialize on DOM load
 document.addEventListener('DOMContentLoaded', () => {
     loadDebugMode()
+    loadPreviewSettings()
     loadSiteRules()
     loadKeyboardShortcuts()
     initializeEventListeners()
     initializeNavigation()
     displayVersion()
 })
+
+// Update the live preview demo box and slider fill to reflect the given blur strength
+function updatePreviewBlurDemo(strength) {
+    const demo = document.getElementById('preview-blur-demo')
+    if (demo) demo.style.filter = `blur(${strength}px)`
+
+    const slider = document.getElementById('preview-strength-slider')
+    if (slider) {
+        const pct = (strength / parseInt(slider.max)) * 100
+        slider.style.background = `linear-gradient(to right, #1976d2 ${pct}%, #e0e0e0 ${pct}%)`
+    }
+}
+
+// Load preview settings
+function loadPreviewSettings() {
+    chrome.storage.sync.get(['previewEnabled', 'previewBlurStrength'], (storage) => {
+        const previewSwitch = document.getElementById('preview-switch')
+        const previewSlider = document.getElementById('preview-strength-slider')
+        const previewStrengthItem = document.getElementById('preview-strength-item')
+
+        const enabled = storage.previewEnabled !== undefined ? storage.previewEnabled : true
+        const strength = storage.previewBlurStrength !== undefined ? storage.previewBlurStrength : 10
+
+        previewSwitch.checked = enabled
+        previewSlider.value = strength
+        previewStrengthItem.style.display = enabled ? '' : 'none'
+        updatePreviewBlurDemo(strength)
+    })
+}
 
 // Load debug mode setting
 function loadDebugMode() {
@@ -42,6 +72,23 @@ function initializeEventListeners() {
                 })
             })
         })
+    })
+
+    // Preview toggle switch
+    document.getElementById('preview-switch').addEventListener('change', (e) => {
+        const previewEnabled = e.target.checked
+        const previewStrengthItem = document.getElementById('preview-strength-item')
+        previewStrengthItem.style.display = previewEnabled ? '' : 'none'
+        chrome.storage.sync.set({ previewEnabled })
+        notifyPreviewSettingsChanged()
+    })
+
+    // Preview blur strength slider
+    document.getElementById('preview-strength-slider').addEventListener('input', (e) => {
+        const strength = parseInt(e.target.value, 10)
+        updatePreviewBlurDemo(strength)
+        chrome.storage.sync.set({ previewBlurStrength: strength })
+        notifyPreviewSettingsChanged()
     })
 
     // Configure shortcuts button
@@ -331,6 +378,23 @@ function isValidSitePattern(pattern) {
     return domainRegex.test(pattern)
 }
 
+// Notify all tabs that preview settings changed
+function notifyPreviewSettingsChanged() {
+    chrome.storage.sync.get(['previewEnabled', 'previewBlurStrength'], (storage) => {
+        chrome.tabs.query({}, (tabs) => {
+            tabs.forEach(tab => {
+                chrome.tabs.sendMessage(tab.id, {
+                    type: 'previewSettingsChanged',
+                    previewEnabled: storage.previewEnabled !== undefined ? storage.previewEnabled : true,
+                    previewBlurStrength: storage.previewBlurStrength !== undefined ? storage.previewBlurStrength : 10
+                }, () => {
+                    if (chrome.runtime.lastError) {}
+                })
+            })
+        })
+    })
+}
+
 // Notify all tabs to reload/recheck site rules
 function notifyTabsToReload() {
     chrome.tabs.query({}, (tabs) => {
@@ -349,6 +413,16 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
     if (namespace === 'sync') {
         if (changes.debugMode) {
             document.getElementById('debug-switch').checked = changes.debugMode.newValue || false
+        }
+        if (changes.previewEnabled !== undefined) {
+            const enabled = changes.previewEnabled.newValue !== undefined ? changes.previewEnabled.newValue : true
+            document.getElementById('preview-switch').checked = enabled
+            document.getElementById('preview-strength-item').style.display = enabled ? '' : 'none'
+        }
+        if (changes.previewBlurStrength !== undefined) {
+            const strength = changes.previewBlurStrength.newValue !== undefined ? changes.previewBlurStrength.newValue : 5
+            document.getElementById('preview-strength-slider').value = strength
+            updatePreviewBlurDemo(strength)
         }
         if (changes.whitelistedSites) {
             whitelistedSites = changes.whitelistedSites.newValue || []

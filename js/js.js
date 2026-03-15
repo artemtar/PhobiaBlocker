@@ -12,19 +12,45 @@
             const style = document.createElement('style')
             style.id = 'phobiablocker-early-blur'
             style.textContent = `
-                /* CRITICAL: Blur ALL visual content immediately to prevent flash */
-                /* Covers both unprocessed images AND images with .blur class */
-                /* This ensures no gap in coverage while manifest CSS loads */
-                img:not(.noblur):not(.permamentUnblur),
-                img.blur:not(.permamentUnblur),
-                video:not(.noblur):not(.permamentUnblur),
-                video.blur:not(.permamentUnblur),
-                iframe:not(.noblur):not(.permamentUnblur),
-                iframe.blur:not(.permamentUnblur) {
+                /* CRITICAL: Blur ALL unprocessed visual content immediately to prevent flash */
+                img:not(.noblur):not(.permamentUnblur):not(.blur),
+                video:not(.noblur):not(.permamentUnblur):not(.blur),
+                iframe:not(.noblur):not(.permamentUnblur):not(.blur) {
                     filter: blur(var(--blurValueAmount, 40px)) !important;
                     -webkit-filter: blur(var(--blurValueAmount, 40px)) !important;
                     pointer-events: none !important;
                     cursor: default !important;
+                }
+                /* Blur class elements - pointer-events enabled for hover interaction */
+                img.blur:not(.permamentUnblur),
+                video.blur:not(.permamentUnblur),
+                iframe.blur:not(.permamentUnblur) {
+                    filter: blur(var(--blurValueAmount, 40px)) !important;
+                    -webkit-filter: blur(var(--blurValueAmount, 40px)) !important;
+                    pointer-events: auto !important;
+                    cursor: pointer !important;
+                    transition: filter 0.2s ease !important;
+                }
+                /* Hover preview - higher specificity wins over base .blur rule */
+                img.blur:not(.permamentUnblur):hover,
+                video.blur:not(.permamentUnblur):hover,
+                iframe.blur:not(.permamentUnblur):hover {
+                    filter: blur(var(--previewBlurAmount, 4px)) !important;
+                    -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
+                }
+                /* Sibling overlay hover — fires only when an element that sits NEXT TO the
+                   image (e.g. a lightbox <a> next to <picture>) is hovered, not the whole
+                   container. Much more precise than a container-level :hover rule. */
+                img.blur:not(.permamentUnblur):has(~ *:hover),
+                video.blur:not(.permamentUnblur):has(~ *:hover),
+                iframe.blur:not(.permamentUnblur):has(~ *:hover) {
+                    filter: blur(var(--previewBlurAmount, 4px)) !important;
+                    -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
+                }
+                /* <picture>-wrapped image when a sibling overlay of <picture> is hovered */
+                picture:has(> img.blur:not(.permamentUnblur)):has(~ *:hover) > img.blur:not(.permamentUnblur) {
+                    filter: blur(var(--previewBlurAmount, 4px)) !important;
+                    -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
                 }
             `
 
@@ -69,6 +95,8 @@ let phobiaBlockerEnabled = true
 let blurIsAlwaysOn = false
 let whitelistedSites = []
 let blacklistedSites = []
+let previewEnabled = true
+let previewBlurStrength = 5
 
 // Debug logging function
 function debugLog(category, message, data) {
@@ -166,15 +194,15 @@ class TagImageNode extends ImageNode {
     blur() {
         if (!this._isNodeValid()) return
         if (!this._imageNode.classList.contains('permamentUnblur')){
-        this._imageNode.classList.remove('noblur')
-        this._imageNode.classList.add('blur')
+            this._imageNode.classList.remove('noblur')
+            this._imageNode.classList.add('blur')
         }
     }
 
     unblur() {
         if (!this._isNodeValid()) return
-        this._imageNode.classList.add('noblur')
         this._imageNode.classList.remove('blur')
+        this._imageNode.classList.add('noblur')
     }
 }
 
@@ -186,16 +214,16 @@ class BgImageNode extends ImageNode {
     blur() {
         if (!this._isNodeValid()) return
         if (!this._imageNode.classList.contains('permamentUnblur')){
-        this._imageNode.classList.remove('noblur')
-        this._imageNode.classList.add('blur')
-        this._imageNode.style.filter = 'blur(10px)'
+            this._imageNode.classList.remove('noblur')
+            this._imageNode.classList.add('blur')
+            this._imageNode.style.filter = 'blur(10px)'
         }
     }
 
     unblur() {
         if (!this._isNodeValid()) return
-        this._imageNode.classList.add('noblur')
         this._imageNode.classList.remove('blur')
+        this._imageNode.classList.add('noblur')
         this._imageNode.style.filter = 'blur(0px)'
     }
 }
@@ -212,15 +240,15 @@ class VideoNode extends ImageNode {
     blur() {
         if (!this._isNodeValid()) return
         if (!this._imageNode.classList.contains('permamentUnblur')){
-        this._imageNode.classList.remove('noblur')
-        this._imageNode.classList.add('blur')
+            this._imageNode.classList.remove('noblur')
+            this._imageNode.classList.add('blur')
         }
     }
 
     unblur() {
         if (!this._isNodeValid()) return
-        this._imageNode.classList.add('noblur')
         this._imageNode.classList.remove('blur')
+        this._imageNode.classList.add('noblur')
     }
 }
 
@@ -233,18 +261,54 @@ class IframeNode extends ImageNode {
         super(imageNode)
     }
 
+    _isCrossOrigin() {
+        const src = this._imageNode.getAttribute('src') || ''
+        // about:blank and empty src are always same-origin
+        if (!src || src === 'about:blank') return false
+        // Check src URL origin before the iframe finishes loading (before navigation
+        // completes, contentDocument may still be the initial about:blank and would
+        // appear accessible even for a cross-origin src).
+        try {
+            const frameOrigin = new URL(src).origin
+            if (frameOrigin !== 'null' && frameOrigin !== window.location.origin) return true
+        } catch (_) {
+            // Relative URL — same origin, fall through
+        }
+        // Fallback: try contentDocument access (throws SecurityError for cross-origin)
+        try {
+            const doc = this._imageNode.contentDocument
+            if (doc === null) return true
+            return false
+        } catch (e) {
+            return true
+        }
+    }
+
+    textProcessingFinished() {
+        this.runningTextProcessing -= 1
+        // Cross-origin iframe content can't be analyzed - keep blurred as safe default
+        if (this._isCrossOrigin()) return
+        if (this.runningTextProcessing <= 0 && !this.isBlured && !blurIsAlwaysOn) {
+            try {
+                this.unblur()
+            } catch (unblurError) {
+                console.error('PhobiaBlocker: Failed to unblur iframe, keeping blurred for safety', unblurError)
+            }
+        }
+    }
+
     blur() {
         if (!this._isNodeValid()) return
         if (!this._imageNode.classList.contains('permamentUnblur')){
-        this._imageNode.classList.remove('noblur')
-        this._imageNode.classList.add('blur')
+            this._imageNode.classList.remove('noblur')
+            this._imageNode.classList.add('blur')
         }
     }
 
     unblur() {
         if (!this._isNodeValid()) return
-        this._imageNode.classList.add('noblur')
         this._imageNode.classList.remove('blur')
+        this._imageNode.classList.add('noblur')
     }
 }
 
@@ -996,7 +1060,9 @@ let setSettings = () => {
                 'blurValueAmount',
                 'debugMode',
                 'whitelistedSites',
-                'blacklistedSites'
+                'blacklistedSites',
+                'previewEnabled',
+                'previewBlurStrength'
             ], (storage) => {
                 try {
                     if (chrome.runtime.lastError) {
@@ -1053,6 +1119,15 @@ let setSettings = () => {
                     if (storage.blacklistedSites && Array.isArray(storage.blacklistedSites)) {
                         blacklistedSites = storage.blacklistedSites
                     }
+
+                    // Load preview settings
+                    if (storage.previewEnabled != undefined) {
+                        previewEnabled = storage.previewEnabled
+                    }
+                    if (storage.previewBlurStrength != undefined) {
+                        previewBlurStrength = storage.previewBlurStrength
+                    }
+                    applyPreviewCssVar()
 
                     debugLog('Storage', 'Settings loaded', {
                         targetWordsCount: targetWords.length,
@@ -1146,6 +1221,16 @@ let main = async () => {
             // Last resort: CSS blur is already applied from early injection
             console.error('PhobiaBlocker: Could not activate blur-all mode, relying on CSS', blurError)
         }
+    }
+}
+
+// Apply --previewBlurAmount CSS variable based on current preview settings
+function applyPreviewCssVar() {
+    if (previewEnabled) {
+        document.documentElement.style.setProperty('--previewBlurAmount', previewBlurStrength + 'px')
+    } else {
+        // When disabled, set preview amount equal to full blur so hover has no visible effect
+        document.documentElement.style.setProperty('--previewBlurAmount', 'var(--blurValueAmount, 40px)')
     }
 }
 
@@ -1386,6 +1471,12 @@ chrome.runtime.onMessage.addListener((message, sender) => {
         // Site rules changed from settings page - reload page to apply new rules
         debugLog('MessagePassing', 'Site rules changed - reloading page', { url: window.location.href })
         window.location.reload()
+        break
+    case 'previewSettingsChanged':
+        if (message.previewEnabled != undefined) previewEnabled = message.previewEnabled
+        if (message.previewBlurStrength != undefined) previewBlurStrength = message.previewBlurStrength
+        applyPreviewCssVar()
+        debugLog('MessagePassing', 'Preview settings changed', { previewEnabled, previewBlurStrength })
         break
     }
 })

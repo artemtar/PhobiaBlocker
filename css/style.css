@@ -18,8 +18,15 @@ img.blur {
     filter: var(--filterStrength) !important;
     -webkit-filter: var(--filterStrength) !important;
     -ms-filter: var(--filterStrength) !important;
-    pointer-events: none;
-    cursor: default;
+    pointer-events: auto !important;
+    cursor: pointer !important;
+    transition: filter 0.2s ease;
+}
+
+img.blur:hover {
+    filter: blur(var(--previewBlurAmount, 4px)) !important;
+    -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
+    -ms-filter: blur(var(--previewBlurAmount, 4px)) !important;
 }
 
 img.noblur {
@@ -42,8 +49,15 @@ video.blur {
     filter: var(--filterStrength) !important;
     -webkit-filter: var(--filterStrength) !important;
     -ms-filter: var(--filterStrength) !important;
-    pointer-events: none;
-    cursor: default;
+    pointer-events: auto !important;
+    cursor: pointer !important;
+    transition: filter 0.2s ease;
+}
+
+video.blur:hover {
+    filter: blur(var(--previewBlurAmount, 4px)) !important;
+    -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
+    -ms-filter: blur(var(--previewBlurAmount, 4px)) !important;
 }
 
 video.noblur {
@@ -66,12 +80,38 @@ iframe.blur {
     filter: var(--filterStrength) !important;
     -webkit-filter: var(--filterStrength) !important;
     -ms-filter: var(--filterStrength) !important;
-    pointer-events: none;
-    cursor: default;
+    pointer-events: auto !important;
+    cursor: pointer !important;
+    transition: filter 0.2s ease;
+}
+
+iframe.blur:hover {
+    filter: blur(var(--previewBlurAmount, 4px)) !important;
+    -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
+    -ms-filter: blur(var(--previewBlurAmount, 4px)) !important;
 }
 
 iframe.noblur {
     filter: none !important;
     -webkit-filter: none !important;
     -ms-filter: none !important;
+}
+
+/* Sibling overlay hover — fires only when an element sitting NEXT TO the image
+   (e.g. a lightbox <a> beside <picture>) is hovered, not the whole container.
+   This avoids the too-broad container :hover that triggered preview blur on every
+   image whenever the mouse was anywhere inside a large product card, etc. */
+img.blur:not(.permamentUnblur):has(~ *:hover),
+video.blur:not(.permamentUnblur):has(~ *:hover),
+iframe.blur:not(.permamentUnblur):has(~ *:hover) {
+    filter: blur(var(--previewBlurAmount, 4px)) !important;
+    -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
+    -ms-filter: blur(var(--previewBlurAmount, 4px)) !important;
+}
+
+/* <picture>-wrapped image when a following sibling of <picture> is hovered */
+picture:has(> img.blur:not(.permamentUnblur)):has(~ *:hover) > img.blur:not(.permamentUnblur) {
+    filter: blur(var(--previewBlurAmount, 4px)) !important;
+    -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
+    -ms-filter: blur(var(--previewBlurAmount, 4px)) !important;
 }

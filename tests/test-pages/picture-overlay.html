@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Page - Picture with Sibling Overlay</title>
+    <style>
+        .media-wrapper {
+            position: relative;
+            display: inline-block;
+        }
+        .lightbox-overlay {
+            position: absolute;
+            inset: 0;
+            display: block;
+            z-index: 1;
+        }
+    </style>
+</head>
+<body>
+    <h1>Picture + Sibling Overlay Test</h1>
+
+    <!-- Guardian-style: <picture> + sibling <a> overlay inside a wrapper div -->
+    <div class="test-content">
+        <h2>Spider image in picture element with lightbox overlay</h2>
+        <p>This page contains a spider in a picture element. Spiders are arachnids.</p>
+        <div class="media-wrapper" id="picture-wrapper">
+            <picture id="spider-picture">
+                <img id="picture-spider-image"
+                     width="300" height="200"
+                     src="https://via.placeholder.com/300x200/ff0000/ffffff?text=Spider"
+                     alt="Spider">
+            </picture>
+            <!-- Sibling of <picture> — intercepts pointer events like a lightbox overlay -->
+            <a id="lightbox-overlay" class="lightbox-overlay" href="#" aria-label="Open lightbox"></a>
+        </div>
+        <p>More text about spiders and their webs.</p>
+    </div>
+
+    <!-- Direct sibling overlay (no picture wrapper) -->
+    <div class="test-content" style="margin-top: 50px;">
+        <h2>Spider image with direct sibling overlay (no picture element)</h2>
+        <p>This section also mentions spiders lurking around.</p>
+        <div class="media-wrapper" id="direct-wrapper" style="display: inline-block; position: relative;">
+            <img id="direct-spider-image"
+                 width="300" height="200"
+                 src="https://via.placeholder.com/300x200/880000/ffffff?text=Spider2"
+                 alt="Spider 2">
+            <a id="direct-overlay" class="lightbox-overlay" href="#" aria-label="Open lightbox"></a>
+        </div>
+    </div>
+</body>
+</html>

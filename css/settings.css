@@ -381,14 +381,6 @@ input:checked + .slider:before {
     transform: scale(1.05);
 }
 
-.blur-value-display {
-    text-align: center;
-    margin-top: 8px;
-    font-weight: 600;
-    color: var(--primary-blue);
-    font-size: 1.2em;
-}
-
 .blur-preview {
     margin-top: var(--spacing-medium);
 }
@@ -407,6 +399,23 @@ input:checked + .slider:before {
     font-size: 1.2em;
     font-weight: 600;
     transition: filter var(--transition-speed) ease;
+}
+
+/* Hover Preview Demo Box */
+.preview-blur-demo {
+    width: 110px;
+    height: 90px;
+    border-radius: var(--border-radius-small);
+    /* Diagonal stripes: high-frequency pattern makes blur clearly visible */
+    background: repeating-linear-gradient(
+        45deg,
+        #667eea,
+        #667eea 8px,
+        #764ba2 8px,
+        #764ba2 16px
+    );
+    flex-shrink: 0;
+    transition: filter 0.15s ease;
 }
 
 /* Shortcuts List */

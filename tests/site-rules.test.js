@@ -169,12 +169,13 @@ describe('PhobiaBlocker - Site Rules (Whitelist/Blacklist)', () => {
 
     describe('Blacklist Functionality', () => {
         it('should blur all content on blacklisted sites regardless of settings', async () => {
+            // Disable extension BEFORE loading the page so the content script
+            // reads phobiaBlockerEnabled=false on startup (no message needed).
+            await setExtensionEnabled(browser, false)
+            await wait(200)
+
             await loadTestPage(page, 'basic-images.html')
             await wait(1000)
-
-            // Disable extension
-            await setExtensionEnabled(browser, false)
-            await wait(500)
 
             // Verify nothing is blurred when extension is disabled
             let blurredCount = await countBlurredImages(page)
@@ -189,10 +190,12 @@ describe('PhobiaBlocker - Site Rules (Whitelist/Blacklist)', () => {
         })
 
         it('should keep content blurred on blacklist even without phobia words', async () => {
-            await loadTestPage(page, 'basic-images.html')
-
-            // Clear phobia words
+            // Clear phobia words BEFORE loading the page so the content script
+            // starts with empty targetWords (storage change has no effect after load).
             await setPhobiaWords(browser, [])
+            await wait(200)
+
+            await loadTestPage(page, 'basic-images.html')
             await wait(1000)
 
             // Without phobia words and no blacklist, nothing should blur

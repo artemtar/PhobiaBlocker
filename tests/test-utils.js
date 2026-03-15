@@ -1,9 +1,104 @@
 const puppeteer = require('puppeteer')
 const path = require('path')
 const fs = require('fs')
+const os = require('os')
 
 const EXTENSION_PATH = path.resolve(__dirname, '..')
 const TEST_PAGES_PATH = path.resolve(__dirname, 'test-pages')
+// Per-process Chrome profile dir — each test file (Node.js process) gets its own
+// fresh profile, avoiding cross-test-file profile locking and stale-state issues.
+// The profile is created on first Chrome launch and its Extensions/ directory is
+// then available for the filesystem ID discovery fallback.
+const TEST_USER_DATA_DIR = path.join(os.tmpdir(), `phobiablocker-test-${process.pid}`)
+
+// Cached extension ID - MV3 service workers get killed between tests,
+// so we cache the ID to avoid re-discovering it on every storage call
+let _cachedExtensionId = null
+
+/**
+ * Read the extension ID from Chrome's user data directory on the filesystem.
+ * When the MV3 service worker starts and dies before Puppeteer can observe it,
+ * this is the fallback ID source.
+ */
+function findExtensionIdFromFilesystem(userDataDir) {
+    // Strategy A: Default/Preferences JSON
+    // Chrome registers --load-extension (unpacked) extensions in Preferences, NOT in
+    // Default/Extensions/. Each entry has a "path" field pointing to the extension dir
+    // and optionally a "manifest" dict. Match by path first (always present for
+    // --load-extension), then fall back to manifest.name.
+    const prefsPath = path.join(userDataDir, 'Default', 'Preferences')
+    if (fs.existsSync(prefsPath)) {
+        try {
+            const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'))
+            const settings = prefs && prefs.extensions && prefs.extensions.settings
+            if (settings) {
+                for (const [id, ext] of Object.entries(settings)) {
+                    if (!/^[a-z]{32}$/.test(id)) continue
+                    if (ext && ext.path) {
+                        // Read manifest.json directly from the path Chrome stored.
+                        // More reliable than string comparison (avoids symlink, casing,
+                        // and trailing-slash mismatches between our path and Chrome's).
+                        try {
+                            const m = JSON.parse(
+                                fs.readFileSync(path.join(ext.path, 'manifest.json'), 'utf8')
+                            )
+                            if (m.name === 'PhobiaBlocker') return id
+                        } catch (_) { /* path not accessible or not JSON */ }
+                    }
+                    // Fallback: manifest fields cached inside Preferences
+                    if (ext && ext.manifest && ext.manifest.name === 'PhobiaBlocker') return id
+                }
+            }
+        } catch (_) { /* file may still be written or contain invalid JSON */ }
+    }
+
+    // Strategy B: Sync Extension Settings directory
+    // Chrome stores chrome.storage.sync data in Default/Sync Extension Settings/<id>/.
+    // background.js writes to chrome.storage.sync on install, so this directory is
+    // created on first run of a fresh profile — even when Preferences is never written.
+    // Since we launch with --disable-extensions-except, the only user extension running
+    // is PhobiaBlocker, so the only 32-letter entry here is ours.
+    const syncDir = path.join(userDataDir, 'Default', 'Sync Extension Settings')
+    if (fs.existsSync(syncDir)) {
+        try {
+            const ids = fs.readdirSync(syncDir).filter(d => /^[a-z]{32}$/.test(d))
+            if (ids.length === 1) return ids[0]
+            // Multiple entries: verify by reading the manifest from the stored ext path
+            // (fall through to further strategies if needed)
+        } catch (_) { /* skip if unreadable */ }
+    }
+
+    // Strategy C: Local Extension Settings / Extension State directory
+    // Fallback: check other per-extension storage directories for 32-letter IDs.
+    for (const dirName of ['Local Extension Settings', 'Extension State']) {
+        const stateDir = path.join(userDataDir, 'Default', dirName)
+        if (!fs.existsSync(stateDir)) continue
+        try {
+            const ids = fs.readdirSync(stateDir).filter(d => /^[a-z]{32}$/.test(d))
+            if (ids.length === 1) return ids[0]
+        } catch (_) { /* skip */ }
+    }
+
+    // Strategy D: Default/Extensions/ directory (packed/installed extensions)
+    const extDir = path.join(userDataDir, 'Default', 'Extensions')
+    if (!fs.existsSync(extDir)) return null
+    try {
+        for (const id of fs.readdirSync(extDir)) {
+            // Extension IDs are exactly 32 lowercase letters
+            if (!/^[a-z]{32}$/.test(id)) continue
+            const idPath = path.join(extDir, id)
+            for (const ver of fs.readdirSync(idPath)) {
+                const manifestPath = path.join(idPath, ver, 'manifest.json')
+                if (!fs.existsSync(manifestPath)) continue
+                try {
+                    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+                    if (manifest.name === 'PhobiaBlocker') return id
+                } catch (_) { /* skip unreadable manifest */ }
+            }
+        }
+    } catch (_) { /* skip if directory structure is unexpected */ }
+    return null
+}
 
 /**
  * Launch Chrome with the PhobiaBlocker extension loaded
@@ -11,20 +106,102 @@ const TEST_PAGES_PATH = path.resolve(__dirname, 'test-pages')
  * @returns {Promise<Browser>} Puppeteer browser instance
  */
 async function launchBrowserWithExtension(options = {}) {
+    // Extract args/userDataDir separately so we can merge them safely without
+    // options.args overwriting our required extension flags.
+    const { args: extraArgs, userDataDir: optUserDataDir, ...restOptions } = options
+    const userDataDir = optUserDataDir || TEST_USER_DATA_DIR
+
     const browser = await puppeteer.launch({
         headless: false, // Extensions don't work in headless mode
+        userDataDir,
         args: [
             `--disable-extensions-except=${EXTENSION_PATH}`,
             `--load-extension=${EXTENSION_PATH}`,
             '--no-sandbox',
             '--disable-setuid-sandbox',
-            ...( options.args || [])
+            '--no-first-run',
+            '--disable-default-apps',
+            ...(extraArgs || [])
         ],
-        ...options
+        ...restOptions
     })
 
-    // Wait for extension to load (service worker takes a moment to initialize)
-    await new Promise(resolve => setTimeout(resolve, 3000))
+    // Strategy 1: scan targets that exist RIGHT NOW.
+    // The MV3 service worker may have started and already been killed by Chrome's
+    // 5-second idle timer before puppeteer.launch() returned, so waitForTarget()
+    // (which only catches *new* target events) would miss it entirely.
+    const immediateExt = browser.targets().find(t => {
+        const url = t.url()
+        return url.startsWith('chrome-extension://') && url.length > 30
+    })
+    if (immediateExt) {
+        const m = immediateExt.url().match(/chrome-extension:\/\/([a-z]+)/)
+        if (m) _cachedExtensionId = m[1]
+        return browser
+    }
+
+    // Strategy 2: wait a short time for a new target event (e.g. Chrome is still
+    // finishing its startup and the SW fires just after we checked).
+    try {
+        const target = await browser.waitForTarget(
+            t => t.url().startsWith('chrome-extension://') && t.url().length > 30,
+            { timeout: 3000 }
+        )
+        const m = target.url().match(/chrome-extension:\/\/([a-z]+)/)
+        if (m) _cachedExtensionId = m[1]
+        return browser
+    } catch (_) { /* SW already dead — fall through to filesystem */ }
+
+    // Strategy 3: read the extension ID from Chrome's user data directory.
+    // For --load-extension (unpacked) extensions, Chrome writes the ID into
+    // Default/Preferences rather than Default/Extensions/. Poll with retries
+    // because Chrome may still be writing the file when we first check.
+    let fsId = null
+    for (let attempt = 0; attempt < 6 && !fsId; attempt++) {
+        if (attempt > 0) await new Promise(r => setTimeout(r, 500))
+        fsId = findExtensionIdFromFilesystem(userDataDir)
+    }
+    if (fsId) {
+        _cachedExtensionId = fsId
+    } else {
+        // Log what Preferences actually contains to diagnose the failure
+        try {
+            const dirExists = fs.existsSync(userDataDir)
+            const defaultExists = fs.existsSync(path.join(userDataDir, 'Default'))
+            console.warn('[extId debug] userDataDir:', userDataDir)
+            console.warn('[extId debug] userDataDir exists:', dirExists)
+            console.warn('[extId debug] Default/ exists:', defaultExists)
+            // Show extension-related directory contents to identify the correct ID source
+            for (const d of ['Sync Extension Settings', 'Local Extension Settings',
+                'Extension State', 'Extension Scripts', 'Extension Rules']) {
+                const dp = path.join(userDataDir, 'Default', d)
+                if (fs.existsSync(dp)) {
+                    try {
+                        console.warn(`[extId debug] Default/${d}:`,
+                            fs.readdirSync(dp).filter(f => /^[a-z]{32}$/.test(f)))
+                    } catch (e) { console.warn(`[extId debug] Default/${d} error:`, e.message) }
+                }
+            }
+            const prefsPath = path.join(userDataDir, 'Default', 'Preferences')
+            if (fs.existsSync(prefsPath)) {
+                const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'))
+                const settings = prefs && prefs.extensions && prefs.extensions.settings
+                const entries = settings
+                    ? Object.keys(settings).filter(k => /^[a-z]{32}$/.test(k)).map(k => ({
+                        id: k,
+                        path: settings[k] && settings[k].path,
+                        manifestName: settings[k] && settings[k].manifest && settings[k].manifest.name
+                    }))
+                    : '(extensions.settings missing)'
+                console.warn('[extId debug] Preferences entries:', JSON.stringify(entries))
+            } else {
+                console.warn('[extId debug] Preferences file missing')
+            }
+        } catch (e) {
+            console.warn('[extId debug] error:', e.message)
+        }
+        console.warn('Warning: Could not determine extension ID from targets or filesystem')
+    }
 
     return browser
 }
@@ -36,49 +213,65 @@ async function launchBrowserWithExtension(options = {}) {
  * @returns {Promise<Target>} The service worker target
  */
 async function getExtensionServiceWorker(browser, timeout = 10000) {
-    const startTime = Date.now()
+    // Check if already active
+    const existing = browser.targets().find(target =>
+        target.type() === 'service_worker' &&
+        target.url().includes('chrome-extension://')
+    )
+    if (existing) return existing
 
-    while (Date.now() - startTime < timeout) {
-        const targets = await browser.targets()
-        const extensionTarget = targets.find(target =>
-            target.type() === 'service_worker' &&
-            target.url().includes('chrome-extension://')
-        )
-
-        if (extensionTarget) {
-            return extensionTarget
+    // If we have no cached ID, try extracting one from any visible extension target
+    // (e.g. a popup page that was opened earlier) before attempting wakeup.
+    if (!_cachedExtensionId) {
+        const anyExt = browser.targets().find(t => /chrome-extension:\/\/([a-z]+)/.test(t.url()))
+        if (anyExt) {
+            const m = anyExt.url().match(/chrome-extension:\/\/([a-z]+)/)
+            if (m) _cachedExtensionId = m[1]
         }
-
-        // Wait a bit before trying again
-        await new Promise(resolve => setTimeout(resolve, 200))
     }
 
-    return null
+    // MV3 service workers get killed by Chrome when idle.
+    // Start listening FIRST (before waking), so we don't miss the target
+    // creation event if the service worker restarts between the check above
+    // and the wakeup below.
+    const waitPromise = browser.waitForTarget(
+        target => target.type() === 'service_worker' && target.url().includes('chrome-extension://'),
+        { timeout }
+    ).catch(() => null)
+
+    // Now wake the service worker by opening the popup
+    if (_cachedExtensionId) {
+        const wakeupPage = await browser.newPage()
+        try {
+            await wakeupPage.goto(`chrome-extension://${_cachedExtensionId}/popup.html`, {
+                waitUntil: 'domcontentloaded',
+                timeout: 5000
+            })
+        } catch (_) { /* ignore */ }
+        await wakeupPage.close()
+    }
+
+    return await waitPromise
 }
 
 /**
- * Get the extension ID
+ * Get the extension ID (cached after first lookup)
  * @param {Browser} browser - Puppeteer browser instance
- * @param {number} retries - Number of retries
  * @returns {Promise<string>} The extension ID
  */
-async function getExtensionId(browser, retries = 5) {
-    for (let i = 0; i < retries; i++) {
-        const serviceWorkerTarget = await getExtensionServiceWorker(browser, 20000)
-        if (serviceWorkerTarget) {
-            const extensionUrl = serviceWorkerTarget.url()
-            const match = extensionUrl.match(/chrome-extension:\/\/([a-z]+)/)
-            if (match) return match[1]
-        }
+async function getExtensionId(browser) {
+    if (_cachedExtensionId) return _cachedExtensionId
 
-        // If not found and we have retries left, wait and try again
-        if (i < retries - 1) {
-            console.log(`Service worker not found, retrying ${i + 1}/${retries}...`)
-            await new Promise(resolve => setTimeout(resolve, 3000))
-        }
+    const serviceWorkerTarget = await getExtensionServiceWorker(browser)
+    if (!serviceWorkerTarget) {
+        throw new Error('Extension service worker not found')
     }
-
-    throw new Error('Extension service worker not found after retries')
+    const match = serviceWorkerTarget.url().match(/chrome-extension:\/\/([a-z]+)/)
+    if (!match) {
+        throw new Error('Could not parse extension ID from service worker URL')
+    }
+    _cachedExtensionId = match[1]
+    return _cachedExtensionId
 }
 
 /**
@@ -108,7 +301,18 @@ async function getExtensionPage(browser) {
     const extensionId = await getExtensionId(browser)
     const popupUrl = `chrome-extension://${extensionId}/popup.html`
 
-    const extPage = await browser.newPage()
+    // browser.newPage() can throw ProtocolError ("Session with given id not found")
+    // if Chrome's CDP session is momentarily stale. Retry with backoff before giving up.
+    let extPage
+    for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+            extPage = await browser.newPage()
+            break
+        } catch (e) {
+            if (attempt === 2) throw e
+            await new Promise(r => setTimeout(r, 100 * (attempt + 1)))
+        }
+    }
     await extPage.goto(popupUrl, { waitUntil: 'networkidle0' })
 
     return extPage
@@ -224,7 +428,10 @@ async function isElementBlurred(page, selector) {
         if (!element) return false
 
         const filter = window.getComputedStyle(element).filter
-        return filter && filter.includes('blur')
+        // blur(0px) is visually transparent (extension disabled sets --blurValueAmount:0px)
+        // so only count filters with a non-zero radius as "blurred"
+        const m = filter && filter.match(/blur\(([\d.]+)px\)/)
+        return m ? parseFloat(m[1]) > 0 : false
     }, selector)
 }
 
@@ -313,25 +520,19 @@ async function sendMessageToContentScript(page, message) {
  */
 async function countBlurredImages(page) {
     return await page.evaluate(() => {
-        const images = document.querySelectorAll('img, video, iframe')
-        let count = 0
-
-        images.forEach(img => {
-            const filter = window.getComputedStyle(img).filter
-            if (filter && filter.includes('blur')) {
-                count++
-            }
-        })
-
-        // Check for background images with blur
-        const bgElements = document.querySelectorAll('[style*="background-image"]')
-        bgElements.forEach(el => {
+        function hasRealBlur(el) {
             const filter = window.getComputedStyle(el).filter
-            if (filter && filter.includes('blur')) {
-                count++
-            }
-        })
+            const m = filter && filter.match(/blur\(([\d.]+)px\)/)
+            return m ? parseFloat(m[1]) > 0 : false
+        }
 
+        let count = 0
+        document.querySelectorAll('img, video, iframe').forEach(el => {
+            if (hasRealBlur(el)) count++
+        })
+        document.querySelectorAll('[style*="background-image"]').forEach(el => {
+            if (hasRealBlur(el)) count++
+        })
         return count
     })
 }
@@ -343,48 +544,50 @@ async function countBlurredImages(page) {
  */
 async function getAllVisualElements(page) {
     return await page.evaluate(() => {
+        function hasRealBlur(el) {
+            const filter = window.getComputedStyle(el).filter
+            const m = filter && filter.match(/blur\(([\d.]+)px\)/)
+            return m ? parseFloat(m[1]) > 0 : false
+        }
+
         const elements = []
 
         // Regular images
         document.querySelectorAll('img').forEach((img, index) => {
-            const filter = window.getComputedStyle(img).filter
             elements.push({
                 type: 'img',
                 id: img.id || `img-${index}`,
-                isBlurred: filter && filter.includes('blur'),
+                isBlurred: hasRealBlur(img),
                 selector: img.id ? `#${img.id}` : null
             })
         })
 
         // Videos
         document.querySelectorAll('video').forEach((video, index) => {
-            const filter = window.getComputedStyle(video).filter
             elements.push({
                 type: 'video',
                 id: video.id || `video-${index}`,
-                isBlurred: filter && filter.includes('blur'),
+                isBlurred: hasRealBlur(video),
                 selector: video.id ? `#${video.id}` : null
             })
         })
 
         // Iframes
         document.querySelectorAll('iframe').forEach((iframe, index) => {
-            const filter = window.getComputedStyle(iframe).filter
             elements.push({
                 type: 'iframe',
                 id: iframe.id || `iframe-${index}`,
-                isBlurred: filter && filter.includes('blur'),
+                isBlurred: hasRealBlur(iframe),
                 selector: iframe.id ? `#${iframe.id}` : null
             })
         })
 
         // Background images
         document.querySelectorAll('[style*="background-image"]').forEach((el, index) => {
-            const filter = window.getComputedStyle(el).filter
             elements.push({
                 type: 'background',
                 id: el.id || `bg-${index}`,
-                isBlurred: filter && filter.includes('blur'),
+                isBlurred: hasRealBlur(el),
                 selector: el.id ? `#${el.id}` : null
             })
         })
@@ -473,6 +676,108 @@ async function getBlacklistedSites(browser) {
     return sites
 }
 
+/**
+ * Enable or disable hover preview
+ * @param {Browser} browser - Puppeteer browser instance
+ * @param {boolean} enabled - Whether hover preview is enabled
+ */
+async function setPreviewEnabled(browser, enabled) {
+    const extPage = await getExtensionPage(browser)
+
+    await extPage.evaluate((enabled) => {
+        return new Promise((resolve) => {
+            chrome.storage.sync.set({ previewEnabled: enabled }, () => {
+                // Send previewSettingsChanged to all tabs so the content script
+                // updates --previewBlurAmount live (without a page reload).
+                chrome.tabs.query({}, (tabs) => {
+                    for (const tab of tabs) {
+                        chrome.tabs.sendMessage(
+                            tab.id,
+                            { type: 'previewSettingsChanged', previewEnabled: enabled },
+                            () => { void chrome.runtime.lastError }
+                        )
+                    }
+                    resolve()
+                })
+            })
+        })
+    }, enabled)
+
+    await extPage.close()
+    await new Promise(resolve => setTimeout(resolve, 300))
+}
+
+/**
+ * Set hover preview blur strength
+ * @param {Browser} browser - Puppeteer browser instance
+ * @param {number} strength - Blur strength in px (0-20)
+ */
+async function setPreviewBlurStrength(browser, strength) {
+    const extPage = await getExtensionPage(browser)
+
+    await extPage.evaluate((strength) => {
+        return new Promise((resolve) => {
+            chrome.storage.sync.set({ previewBlurStrength: strength }, () => {
+                // Send previewSettingsChanged to all tabs so the content script
+                // updates --previewBlurAmount live (without a page reload).
+                chrome.tabs.query({}, (tabs) => {
+                    for (const tab of tabs) {
+                        chrome.tabs.sendMessage(
+                            tab.id,
+                            { type: 'previewSettingsChanged', previewBlurStrength: strength },
+                            () => { void chrome.runtime.lastError }
+                        )
+                    }
+                    resolve()
+                })
+            })
+        })
+    }, strength)
+
+    await extPage.close()
+    await new Promise(resolve => setTimeout(resolve, 300))
+}
+
+/**
+ * Get previewEnabled from storage (returns undefined if not set)
+ * @param {Browser} browser - Puppeteer browser instance
+ * @returns {Promise<boolean|undefined>}
+ */
+async function getPreviewEnabled(browser) {
+    const extPage = await getExtensionPage(browser)
+
+    const value = await extPage.evaluate(() => {
+        return new Promise((resolve) => {
+            chrome.storage.sync.get(['previewEnabled'], (result) => {
+                resolve(result.previewEnabled)
+            })
+        })
+    })
+
+    await extPage.close()
+    return value
+}
+
+/**
+ * Get previewBlurStrength from storage (returns undefined if not set)
+ * @param {Browser} browser - Puppeteer browser instance
+ * @returns {Promise<number|undefined>}
+ */
+async function getPreviewBlurStrength(browser) {
+    const extPage = await getExtensionPage(browser)
+
+    const value = await extPage.evaluate(() => {
+        return new Promise((resolve) => {
+            chrome.storage.sync.get(['previewBlurStrength'], (result) => {
+                resolve(result.previewBlurStrength)
+            })
+        })
+    })
+
+    await extPage.close()
+    return value
+}
+
 module.exports = {
     launchBrowserWithExtension,
     getExtensionServiceWorker,
@@ -495,5 +800,9 @@ module.exports = {
     setWhitelistedSites,
     setBlacklistedSites,
     getWhitelistedSites,
-    getBlacklistedSites
+    getBlacklistedSites,
+    setPreviewEnabled,
+    setPreviewBlurStrength,
+    getPreviewEnabled,
+    getPreviewBlurStrength
 }

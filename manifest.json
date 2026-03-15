@@ -65,6 +65,7 @@
     ],
     "host_permissions": [
         "https://*/*",
-        "http://*/*"
+        "http://*/*",
+        "file://*/*"
     ]
 }

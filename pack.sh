@@ -41,9 +41,19 @@ zip -r "$ZIP_FILE" . \
   -x "*.eslintrc.js" \
   -x "*.gitignore" \
   -x "*pack.sh" \
+  -x "*pack-dev.sh" \
   -x "*tests*" \
   -x "*icons/main_old.png" \
-  -x "*support_documents*"
+  -x "*support_documents*" \
+  -x "*package.json" \
+  -x "*package-lock.json" \
+  -x "*manifest.dev.json" \
+  -x "*todo" \
+  -x "*activity_comparison.png" \
+  -x "*build*" \
+  -x "*/.venv*" \
+  -x ".venv*" \
+  -x "*.claude*"
 
 echo "Package created: $ZIP_FILE"
 echo "Version bumped from $CURRENT_VERSION to $NEW_VERSION"

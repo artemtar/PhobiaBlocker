@@ -4,8 +4,9 @@
   "description": "Blocks unwanted images from chrome",
   "main": "index.js",
   "scripts": {
-    "test": "node --test tests/*.test.js",
+    "test": "node --test --test-concurrency=1 tests/*.test.js",
     "test:site-rules": "node --test tests/site-rules.test.js",
+    "test:hover-preview": "node --test tests/hover-preview.test.js",
     "test:basic": "node --test tests/basic-functionality.test.js",
     "test:nlp": "node --test tests/nlp-analysis.test.js",
     "test:visual": "node --test tests/visual-content.test.js",
