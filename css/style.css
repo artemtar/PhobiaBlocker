@@ -97,6 +97,18 @@ iframe.noblur {
     -ms-filter: none !important;
 }
 
+/* Completely disable all extension effects on whitelisted or disabled pages.
+   Selector specificity (0,2,2) beats the blur rules' (0,2,1), so !important wins here. */
+html.phobia-disabled img:not(.noblur),
+html.phobia-disabled video:not(.noblur),
+html.phobia-disabled iframe:not(.noblur) {
+    filter: none !important;
+    -webkit-filter: none !important;
+    pointer-events: auto !important;
+    cursor: auto !important;
+    transition: none !important;
+}
+
 /* Sibling overlay hover — fires only when an element sitting NEXT TO the image
    (e.g. a lightbox <a> beside <picture>) is hovered, not the whole container.
    This avoids the too-broad container :hover that triggered preview blur on every

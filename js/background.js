@@ -49,7 +49,9 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 // Pre-render all tinted icon variants at service worker startup.
 // Storing ImageData objects means the message handler can call setIcon synchronously
 // without any async work (which risks the service worker being killed mid-operation).
-const _tintedIcons = {}   // keyed as "status_size", e.g. "processing_16"
+// Exposed on globalThis so tests can inspect preloaded ImageData via swWorker.evaluate()
+globalThis._tintedIcons = {}
+const _tintedIcons = globalThis._tintedIcons   // local alias for all code below
 
 async function _preloadTintedIcons() {
     const VARIANTS = [

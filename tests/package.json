@@ -9,6 +9,7 @@
     "test:basic": "node basic-functionality.test.js",
     "test:nlp": "node nlp-analysis.test.js",
     "test:visual": "node visual-content.test.js",
+    "test:icon": "node icon-status.test.js",
     "test:all": "node --test *.test.js"
   },
   "keywords": [

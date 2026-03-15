@@ -32,6 +32,9 @@ Tests that visual content is blurred immediately on page load before JS runs (CS
 ### `framework-compatibility.test.js`
 Verifies the extension works correctly alongside common front-end frameworks.
 
+### `icon-status.test.js`
+Tests toolbar icon color changes: all nine icon variants (idle/processing/detected × 16/48/128px) are preloaded in the service worker, pixel-level color assertions (yellow tint for processing, red tint for detected, idle is visually distinct), and status message flow (processing→idle on clean pages, processing→detected on phobia pages, idle-only when disabled, detected-only when blurIsAlwaysOn).
+
 ### `hover-preview.test.js`
 Tests the hover-preview feature: reduced blur on hover, CSS variable `--previewBlurAmount`, pointer-events on blurred elements, and live settings updates.
 
@@ -63,6 +66,7 @@ This runs all test files using Node.js built-in test runner.
 npm run test:basic    # basic-functionality.test.js
 npm run test:nlp      # nlp-analysis.test.js
 npm run test:visual   # visual-content.test.js
+npm run test:icon     # icon-status.test.js
 ```
 
 Or run any file directly:

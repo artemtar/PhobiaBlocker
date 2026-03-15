@@ -548,7 +548,6 @@ class Controller {
         // Find elements with background images
         // This is slower but necessary - use querySelectorAll with a more specific selector
         // Only check divs, spans, sections, articles, and common containers
-        let r_bgUrl = /url/gi
         let potentialBgElements = nodeToCheck.querySelectorAll('div, span, section, article, aside, header, footer, main, figure')
         for (let i = 0; i < potentialBgElements.length; i++) {
             let element = potentialBgElements[i]
@@ -559,7 +558,7 @@ class Controller {
                 if (!computedStyle) continue
 
                 let bgImage = computedStyle.backgroundImage
-                if (bgImage && bgImage !== 'none' && r_bgUrl.test(bgImage)) {
+                if (bgImage && bgImage !== 'none' && bgImage.includes('url(')) {
                     checkAndUpdate(BgImageNode, element)
                 }
             } catch (styleError) {
@@ -844,8 +843,8 @@ class Controller {
     _processMutationBatch(){
         if (this._mutationBatch.length === 0) return
 
-        // If blurIsAlwaysOn mode, just find and blur new images without text analysis
-        if (blurIsAlwaysOn) {
+        // If blurIsAlwaysOn or blacklisted, just find and blur new images without text analysis
+        if (blurIsAlwaysOn || isBlacklisted()) {
             this._mutationBatch.forEach((mutation) => {
                 this.updateImageList(mutation.target)
                 // New images are already blurred by their _init() method when blurIsAlwaysOn is true
@@ -951,6 +950,13 @@ class Controller {
             } catch (observerError) {
                 // Log but don't break the page
                 console.error('PhobiaBlocker: MutationObserver error', observerError)
+            }
+
+            // Process immediately on blacklisted sites (no NLP needed, prevents background-image flash)
+            if (isBlacklisted()) {
+                clearTimeout(this._batchTimer)
+                this._processMutationBatch()
+                return
             }
 
             // Process immediately if batch is large (for infinite scroll)
@@ -1234,6 +1240,7 @@ let main = async () => {
 
         if (isWhitelisted()) {
             debugLog('SiteRules', 'Site is whitelisted - disabling extension', { url: window.location.href })
+            document.documentElement.classList.add('phobia-disabled')
             document.documentElement.style.setProperty('--blurValueAmount', 0 + 'px')
             controller._removeEarlyBlurStyle()
             reportIconStatus('idle')
@@ -1248,6 +1255,7 @@ let main = async () => {
             controller.onLoad()
         }
         else if(!phobiaBlockerEnabled) {
+            document.documentElement.classList.add('phobia-disabled')
             document.documentElement.style.setProperty('--blurValueAmount', 0 + 'px')
             // Remove early blur style if extension is disabled
             controller._removeEarlyBlurStyle()
@@ -1386,11 +1394,13 @@ chrome.runtime.onMessage.addListener((message, sender) => {
     case 'phobiaBlockerEnabled':
         phobiaBlockerEnabled = message.value
         if(!phobiaBlockerEnabled){
+            document.documentElement.classList.add('phobia-disabled')
             controller.stop()
             // Remove early blur style when disabling extension
             controller._removeEarlyBlurStyle()
         }
         else {
+            document.documentElement.classList.remove('phobia-disabled')
             // Check site rules before enabling
             if (isWhitelisted()) {
                 debugLog('SiteRules', 'Site is whitelisted - not enabling extension', { url: window.location.href })
