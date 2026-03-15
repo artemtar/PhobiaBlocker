@@ -21,43 +21,31 @@ This will install Puppeteer and all required dependencies.
 
 ## Test Structure
 
-The test suite is organized into three main test files:
+The test suite is organized into the following test files:
 
-### 1. `basic-functionality.test.js`
-Tests core extension functionality:
-- Extension loading and initialization
-- Storing and retrieving phobia words
-- Blur/unblur functionality
-- Enable/disable toggle
-- "Always blur" mode
-- Manual blur/unblur commands
-- Blur amount settings
+### `basic-functionality.test.js`
+Tests core extension functionality: loading, phobia word storage, blur/unblur, enable/disable toggle, and "always blur" mode.
 
-### 2. `nlp-analysis.test.js`
-Tests Natural Language Processing and text analysis:
-- Singular/plural detection (spider/spiders)
-- Irregular plurals (mouse/mice)
-- Verb form detection (crawl/crawling)
-- Case insensitivity
-- Possessive forms (spider's)
-- Stop word filtering
-- Partial word match prevention
-- Title tag analysis
-- Multiple phobia words
-- Special character handling
+### `flash-prevention.test.js`
+Tests that visual content is blurred immediately on page load before JS runs (CSS applied first), with correct specificity.
 
-### 3. `visual-content.test.js`
-Tests different types of visual content:
-- Regular img elements
-- Background images
-- Video elements
-- Iframe elements
-- GIF images
-- SVG images
-- Dynamically added content (MutationObserver)
-- Multiple images on same page
-- Edge cases (empty src, no alt text, nested elements)
-- Performance with many images
+### `framework-compatibility.test.js`
+Verifies the extension works correctly alongside common front-end frameworks.
+
+### `hover-preview.test.js`
+Tests the hover-preview feature: reduced blur on hover, CSS variable `--previewBlurAmount`, pointer-events on blurred elements, and live settings updates.
+
+### `nlp-analysis.test.js`
+Tests NLP text analysis: plurals, irregular plurals (mouse/mice), verb forms, case insensitivity, possessives, partial-match prevention, and special characters.
+
+### `site-rules.test.js`
+Tests whitelist/blacklist functionality: storage, pattern matching (wildcards, subdomains, paths), precedence rules, and integration with other features.
+
+### `storage-persistence.test.js`
+Tests that extension settings persist correctly across sessions.
+
+### `visual-content.test.js`
+Tests blur behaviour for all visual content types: img, background images, video, and cross-origin vs same-origin iframes.
 
 ## Running Tests
 
@@ -72,22 +60,15 @@ This runs all test files using Node.js built-in test runner.
 ### Run Individual Test Files
 
 ```bash
-# Basic functionality tests
-npm run test:basic
-
-# NLP analysis tests
-npm run test:nlp
-
-# Visual content tests
-npm run test:visual
+npm run test:basic    # basic-functionality.test.js
+npm run test:nlp      # nlp-analysis.test.js
+npm run test:visual   # visual-content.test.js
 ```
 
-Or run individual files directly:
+Or run any file directly:
 
 ```bash
-node basic-functionality.test.js
-node nlp-analysis.test.js
-node visual-content.test.js
+node --test site-rules.test.js
 ```
 
 ### Watch Mode
@@ -100,13 +81,15 @@ npm run test:watch
 
 ## Test Pages
 
-The `test-pages/` directory contains HTML files used for testing:
+The `test-pages/` directory contains HTML files loaded via `file://` URLs during tests:
 
-- `simple-image.html` - Basic test page with images and background images
-- `video-iframe.html` - Test page with video and iframe elements
-- `dynamic-content.html` - Test page for testing dynamically added content
-
-These pages are loaded using `file://` URLs during tests.
+- `simple-image.html` — Images and background images
+- `video-iframe.html` — Video and iframe elements
+- `dynamic-content.html` — Dynamically added content
+- `cross-origin-iframe.html` — Cross-origin vs same-origin iframes
+- `picture-overlay.html` — `<picture>` element with sibling overlay
+- `basic-images.html` — Multiple image types and edge cases
+- `nlp-*.html` — NLP-specific test pages (plurals, verbs, possessives, etc.)
 
 ## How Tests Work
 

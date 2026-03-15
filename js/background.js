@@ -46,6 +46,62 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     }
 })
 
+// Pre-render all tinted icon variants at service worker startup.
+// Storing ImageData objects means the message handler can call setIcon synchronously
+// without any async work (which risks the service worker being killed mid-operation).
+const _tintedIcons = {}   // keyed as "status_size", e.g. "processing_16"
+
+async function _preloadTintedIcons() {
+    const VARIANTS = [
+        { status: 'processing', color: '#F5A623' },   // amber/yellow
+        { status: 'detected',   color: '#E53935' },   // red
+    ]
+    for (const size of [16, 48, 128]) {
+        const resp = await fetch(chrome.runtime.getURL(`icons/icon${size}.png`))
+        const blob = await resp.blob()
+        const bitmap = await createImageBitmap(blob)
+        // Store original icon as imageData for idle state (path-based setIcon fails in service workers)
+        const origCanvas = new OffscreenCanvas(size, size)
+        origCanvas.getContext('2d').drawImage(bitmap, 0, 0, size, size)
+        _tintedIcons[`idle_${size}`] = origCanvas.getContext('2d').getImageData(0, 0, size, size)
+        for (const { status, color } of VARIANTS) {
+            const canvas = new OffscreenCanvas(size, size)
+            const ctx = canvas.getContext('2d')
+            // Draw the original icon first
+            ctx.drawImage(bitmap, 0, 0, size, size)
+            // "color" blend: takes hue+saturation from fill, keeps luminosity from icon.
+            // This preserves the eye/shield detail as luminosity contrast while tinting the hue.
+            ctx.globalCompositeOperation = 'color'
+            ctx.fillStyle = color
+            ctx.beginPath()
+            ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2)
+            ctx.fill()
+            _tintedIcons[`${status}_${size}`] = ctx.getImageData(0, 0, size, size)
+        }
+    }
+}
+
+// Start preloading immediately — by the time real pages load and send messages,
+// the icons will already be ready.
+_preloadTintedIcons().catch(() => {})
+
+// Update the toolbar icon for the sending tab based on analysis status
+chrome.runtime.onMessage.addListener((message, sender) => {
+    if (message.type !== 'iconStatus') return
+    const tabId = sender.tab?.id
+    if (!tabId) return
+
+    const i16  = _tintedIcons[`${message.status}_16`]
+    const i48  = _tintedIcons[`${message.status}_48`]
+    const i128 = _tintedIcons[`${message.status}_128`]
+    if (!i16) return   // preload not done yet (service worker just restarted); skip this update
+
+    chrome.action.setIcon({
+        imageData: { 16: i16, 48: i48, 128: i128 },
+        tabId
+    }).catch(() => {})
+})
+
 // Handle keyboard shortcuts
 chrome.commands.onCommand.addListener((command) => {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {

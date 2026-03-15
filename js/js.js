@@ -98,6 +98,23 @@ let blacklistedSites = []
 let previewEnabled = true
 let previewBlurStrength = 5
 
+let _iconStatusTimer = null
+function reportIconStatus(status) {
+    if (status === 'processing') {
+        // Show immediately — cancel any pending idle/detected so it doesn't fire after us
+        clearTimeout(_iconStatusTimer)
+        _iconStatusTimer = null
+        try { chrome.runtime.sendMessage({ type: 'iconStatus', status }).catch(() => {}) } catch (_) {}
+    } else {
+        // Debounce idle/detected: only fire after 800 ms with no new processing cycle.
+        // Prevents rapid yellow→normal→yellow flicker from repeated MutationObserver batches.
+        clearTimeout(_iconStatusTimer)
+        _iconStatusTimer = setTimeout(() => {
+            try { chrome.runtime.sendMessage({ type: 'iconStatus', status }).catch(() => {}) } catch (_) {}
+        }, 800)
+    }
+}
+
 // Debug logging function
 function debugLog(category, message, data) {
     if (window.PHOBIABLOCKER_DEBUG) {
@@ -467,6 +484,20 @@ class Controller {
         this._batchProcessInterval = 500 // Process batch every 500ms
         this._maxBatchSize = 10 // Or when we collect 10 mutations
         this._editorContainerCache = new WeakSet() // Cache known editor containers for fast lookup
+        this._runningAnalyses = 0
+    }
+
+    _analysisStarted() {
+        this._runningAnalyses++
+        if (this._runningAnalyses === 1) reportIconStatus('processing')
+    }
+
+    _analysisFinished() {
+        this._runningAnalyses = Math.max(0, this._runningAnalyses - 1)
+        if (this._runningAnalyses === 0) {
+            const hasDetections = this._imageNodeList.getAllImages().some(img => img.isBlured)
+            reportIconStatus(hasDetections ? 'detected' : 'idle')
+        }
     }
 
     updateImageList(nodeToCheck){
@@ -548,12 +579,15 @@ class Controller {
             // Use native textContent for much faster text extraction (10-50x faster than jQuery)
             textAnalizer.addText(document.body.textContent)
             textAnalizer.addText(document.title)
+            const hasImages = newImages.length > 0
+            if (hasImages) this._analysisStarted()
             textAnalizer.startAnalysis(newImages).catch(err => {
                 // FAIL-SAFE: If text analysis fails, images stay blurred (safe default)
                 console.error('PhobiaBlocker: Text analysis failed, images remain blurred', err)
             }).finally(() => {
                 // Remove early blur style after initial analysis completes
                 this._removeEarlyBlurStyle()
+                if (hasImages) this._analysisFinished()
             })
             this._observerInit()
         } catch (loadError) {
@@ -567,7 +601,7 @@ class Controller {
             this.updateImageList(document)
             this.blurAll()
             this._observerInit()
-            // Early blur style can stay since we're blurring everything anyway
+            reportIconStatus('detected')
         } catch (blurAllError) {
             // FAIL-SAFE: If blur-all mode fails, CSS blur is still active
             console.error('PhobiaBlocker: onLoadBlurAll failed, relying on CSS blur', blurAllError)
@@ -847,7 +881,10 @@ class Controller {
         // Check which existing images haven't been analyzed yet
         unanalyzedExistingImages = allExistingImages.filter(img => !img.hasBeenAnalyzed)
 
-        // Analyze NEW images AND existing images that haven't been analyzed yet
+        // Analyze NEW images AND existing images that haven't been analyzed yet.
+        // Don't touch the icon here — mutation batches run continuously during page load
+        // (lazy images, ads, framework re-renders) and would keep resetting the debounce
+        // timer, holding the icon yellow indefinitely. Icon state is owned by onLoad().
         let imagesToAnalyze = allNewImages.concat(unanalyzedExistingImages)
         textAnalizer.startAnalysis(imagesToAnalyze).catch(err => {
             console.error('Error in mutation batch text analysis:', err)
@@ -936,7 +973,9 @@ class Controller {
         this.observer.disconnect()
         clearTimeout(this._batchTimer)
         this._mutationBatch = []
+        this._runningAnalyses = 0
         this.unBlurAll()
+        reportIconStatus('idle')
     }
 
     resetImageNodeList(){
@@ -1197,6 +1236,7 @@ let main = async () => {
             debugLog('SiteRules', 'Site is whitelisted - disabling extension', { url: window.location.href })
             document.documentElement.style.setProperty('--blurValueAmount', 0 + 'px')
             controller._removeEarlyBlurStyle()
+            reportIconStatus('idle')
             return
         }
 
@@ -1211,6 +1251,7 @@ let main = async () => {
             document.documentElement.style.setProperty('--blurValueAmount', 0 + 'px')
             // Remove early blur style if extension is disabled
             controller._removeEarlyBlurStyle()
+            reportIconStatus('idle')
         }
     } catch (mainError) {
         // FAIL-SAFE: If main execution fails, blur everything
