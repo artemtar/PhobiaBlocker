@@ -24,7 +24,8 @@ const {
     setPreviewEnabled,
     setPreviewBlurStrength,
     getPreviewEnabled,
-    getPreviewBlurStrength
+    getPreviewBlurStrength,
+    sendMessageToAllContentScripts
 } = require('./test-utils')
 
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms))
@@ -632,6 +633,75 @@ describe('PhobiaBlocker - Hover Preview', () => {
                 blurDuring < blurBefore,
                 `Hovering direct overlay (${blurDuring}px) should show less blur than full blur (${blurBefore}px)`
             )
+        })
+    })
+
+    describe('Hover After Unblur All', () => {
+        it('images should have permamentUnblur class after unblurAll', async () => {
+            await setExtensionEnabled(browser, true)
+            await setBlurAmount(browser, 60)
+            await setPreviewEnabled(browser, true)
+            await setPreviewBlurStrength(browser, 4)
+            await setPhobiaWords(browser, ['spider'])
+
+            await loadTestPage(page, 'simple-image.html')
+            await page.bringToFront()
+            await page.waitForSelector('#spider-image', { timeout: 5000 })
+            await wait(3000)
+
+            // Confirm image is blurred before unblurAll
+            const hasBluBefore = await page.evaluate(() =>
+                document.querySelector('#spider-image').classList.contains('blur')
+            )
+            assert.ok(hasBluBefore, '#spider-image should have .blur class before unblurAll')
+
+            await sendMessageToAllContentScripts(browser, { type: 'unblurAll' })
+            await wait(500)
+
+            const result = await page.evaluate(() => {
+                const img = document.querySelector('#spider-image')
+                return {
+                    hasBlur: img.classList.contains('blur'),
+                    hasNoblur: img.classList.contains('noblur'),
+                    hasPermament: img.classList.contains('permamentUnblur')
+                }
+            })
+
+            assert.ok(!result.hasBlur, 'image should not have .blur class after unblurAll')
+            assert.ok(result.hasNoblur, 'image should have .noblur class after unblurAll')
+            assert.ok(result.hasPermament, 'image should have .permamentUnblur class after unblurAll')
+        })
+
+        it('hovering after unblurAll should not re-blur the image', async () => {
+            await setExtensionEnabled(browser, true)
+            await setBlurAmount(browser, 60)
+            await setPreviewEnabled(browser, true)
+            await setPreviewBlurStrength(browser, 4)
+            await setPhobiaWords(browser, ['spider'])
+
+            await loadTestPage(page, 'simple-image.html')
+            await page.bringToFront()
+            await page.waitForSelector('#spider-image', { timeout: 5000 })
+            await wait(3000)
+
+            await sendMessageToAllContentScripts(browser, { type: 'unblurAll' })
+            await wait(500)
+
+            // Image should be clear after unblurAll
+            const blurBefore = extractBlurPx(
+                await page.evaluate(() => window.getComputedStyle(document.querySelector('#spider-image')).filter)
+            )
+            assert.strictEqual(blurBefore, 0, `image should be unblurred after unblurAll, got ${blurBefore}px`)
+
+            // Hover should not re-blur it
+            await hoverElement(page, '#spider-image')
+            await wait(300)
+
+            const blurDuring = extractBlurPx(
+                await page.evaluate(() => window.getComputedStyle(document.querySelector('#spider-image')).filter)
+            )
+            assert.strictEqual(blurDuring, 0,
+                `hovering after unblurAll should not blur the image (got ${blurDuring}px)`)
         })
     })
 

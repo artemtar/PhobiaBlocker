@@ -1,3 +1,5 @@
+const DEFAULT_BLUR_SLIDER_VALUE = 50 // Matches js.js DEFAULT_BLUR_SLIDER_VALUE
+
 document.addEventListener('DOMContentLoaded', () => {
     let targetWords = []
 
@@ -148,7 +150,7 @@ document.addEventListener('DOMContentLoaded', () => {
     })
 
     chrome.storage.sync.get('blurValueAmount', (storage) => {
-        let blurValue = storage.blurValueAmount || 50
+        let blurValue = storage.blurValueAmount || DEFAULT_BLUR_SLIDER_VALUE
         document.getElementById('blurRange').value = blurValue
         // Sync blur amount with all tabs on popup open
         chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {

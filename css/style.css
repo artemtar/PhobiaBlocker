@@ -13,17 +13,22 @@ img:not(.noblur):not(.permamentUnblur) {
     cursor: default;
 }
 
-/* Blur images with .blur class (JS-added) */
+/* Blur images with .blur class (JS-added) — filter only.
+   pointer-events and hover rules use [data-phobia-blur] instead to avoid matching
+   sites that use "blur" as their own CSS class (e.g. IMDB ipc-image blur). */
 img.blur {
     filter: var(--filterStrength) !important;
     -webkit-filter: var(--filterStrength) !important;
     -ms-filter: var(--filterStrength) !important;
+}
+
+img[data-phobia-blur]:not(.permamentUnblur) {
     pointer-events: auto !important;
     cursor: pointer !important;
     transition: filter 0.2s ease;
 }
 
-img.blur:hover {
+img[data-phobia-blur]:not(.permamentUnblur):hover {
     filter: blur(var(--previewBlurAmount, 4px)) !important;
     -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
     -ms-filter: blur(var(--previewBlurAmount, 4px)) !important;
@@ -44,17 +49,20 @@ video:not(.noblur):not(.permamentUnblur) {
     cursor: default;
 }
 
-/* Blur videos with .blur class (JS-added) */
+/* Blur videos with .blur class (JS-added) — filter only */
 video.blur {
     filter: var(--filterStrength) !important;
     -webkit-filter: var(--filterStrength) !important;
     -ms-filter: var(--filterStrength) !important;
+}
+
+video[data-phobia-blur]:not(.permamentUnblur) {
     pointer-events: auto !important;
     cursor: pointer !important;
     transition: filter 0.2s ease;
 }
 
-video.blur:hover {
+video[data-phobia-blur]:not(.permamentUnblur):hover {
     filter: blur(var(--previewBlurAmount, 4px)) !important;
     -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
     -ms-filter: blur(var(--previewBlurAmount, 4px)) !important;
@@ -75,17 +83,20 @@ iframe:not(.noblur):not(.permamentUnblur) {
     cursor: default;
 }
 
-/* Blur iframes with .blur class (JS-added) */
+/* Blur iframes with .blur class (JS-added) — filter only */
 iframe.blur {
     filter: var(--filterStrength) !important;
     -webkit-filter: var(--filterStrength) !important;
     -ms-filter: var(--filterStrength) !important;
+}
+
+iframe[data-phobia-blur]:not(.permamentUnblur) {
     pointer-events: auto !important;
     cursor: pointer !important;
     transition: filter 0.2s ease;
 }
 
-iframe.blur:hover {
+iframe[data-phobia-blur]:not(.permamentUnblur):hover {
     filter: blur(var(--previewBlurAmount, 4px)) !important;
     -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
     -ms-filter: blur(var(--previewBlurAmount, 4px)) !important;
@@ -95,6 +106,16 @@ iframe.noblur {
     filter: none !important;
     -webkit-filter: none !important;
     -ms-filter: none !important;
+}
+
+/* Background-image container elements (BgImageNode) — unblur via class.
+   "blur" is a common site class name so we don't use it in CSS (avoids false positives).
+   Blur is applied exclusively via JS setProperty(..., 'important') inline style.
+   "noblur" is the extension's own class, safe to use: ensures site animation JS
+   (e.g. inline style.filter set by Angular/React) cannot re-blur the element. */
+div.noblur, span.noblur, section.noblur, article.noblur, aside.noblur, header.noblur, footer.noblur, main.noblur, figure.noblur {
+    filter: none !important;
+    -webkit-filter: none !important;
 }
 
 /* Completely disable all extension effects on whitelisted or disabled pages.
@@ -123,6 +144,18 @@ iframe.blur:not(.permamentUnblur):has(~ *:hover) {
 
 /* <picture>-wrapped image when a following sibling of <picture> is hovered */
 picture:has(> img.blur:not(.permamentUnblur)):has(~ *:hover) > img.blur:not(.permamentUnblur) {
+    filter: blur(var(--previewBlurAmount, 4px)) !important;
+    -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
+    -ms-filter: blur(var(--previewBlurAmount, 4px)) !important;
+}
+
+/* Positioned-container hover — JS marks the nearest positioned ancestor of each
+   blurred element with [data-phobia-container]. Absolutely-positioned overlays
+   always share this same containing block, so hovering the overlay (or anything
+   else inside the container) reliably triggers the preview at any DOM depth. */
+[data-phobia-container]:hover img.blur:not(.permamentUnblur),
+[data-phobia-container]:hover video.blur:not(.permamentUnblur),
+[data-phobia-container]:hover iframe.blur:not(.permamentUnblur) {
     filter: blur(var(--previewBlurAmount, 4px)) !important;
     -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
     -ms-filter: blur(var(--previewBlurAmount, 4px)) !important;

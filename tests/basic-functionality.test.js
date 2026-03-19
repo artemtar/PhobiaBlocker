@@ -10,7 +10,9 @@ const {
     isElementBlurred,
     countBlurredImages,
     setBlurAmount,
-    setBlurAlwaysOn
+    setBlurAlwaysOn,
+    sendMessageToAllContentScripts,
+    sendMessageViaServiceWorker
 } = require('./test-utils')
 
 describe('PhobiaBlocker - Basic Functionality', () => {
@@ -105,9 +107,89 @@ describe('PhobiaBlocker - Basic Functionality', () => {
         await setBlurAlwaysOn(browser, false)
     })
 
-    // Note: Tests for manual blur/unblur commands and settings changes
-    // are covered in the integration workflow. Individual unit tests for these
-    // features require service worker availability which becomes unreliable
-    // in long-running test suites. The core functionality tested above
-    // (blur detection, always-on mode, storage) validates the extension works.
+    describe('Context Menu Unblur', () => {
+        const wait = (ms) => new Promise(r => setTimeout(r, ms))
+
+        it('should unblur an image that has the .blur class (normal case)', async () => {
+            await setExtensionEnabled(browser, true)
+            await setBlurAmount(browser, 3)
+            await setPhobiaWords(browser, ['spider'])
+
+            await loadTestPage(page, 'simple-image.html')
+            await page.bringToFront()
+            await page.waitForSelector('#spider-image', { timeout: 5000 })
+            await wait(3000)
+
+            // Simulate contextmenu event fired directly on the .blur image (pointer-events: auto)
+            await page.evaluate(() => {
+                const img = document.querySelector('#spider-image')
+                if (img) img.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+            })
+
+            await sendMessageToAllContentScripts(browser, { type: 'unblur' })
+            await wait(300)
+
+            const result = await page.evaluate(() => {
+                const img = document.querySelector('#spider-image')
+                return {
+                    hasBlur: img.classList.contains('blur'),
+                    hasNoblur: img.classList.contains('noblur'),
+                    hasPermament: img.classList.contains('permamentUnblur')
+                }
+            })
+
+            assert.ok(!result.hasBlur, 'image should not have .blur after context menu unblur')
+            assert.ok(result.hasNoblur, 'image should have .noblur after context menu unblur')
+            assert.ok(result.hasPermament, 'image should have .permamentUnblur after context menu unblur')
+        })
+
+        it('should unblur a CSS-only-blurred image (no .blur class, contextmenu on parent)', async () => {
+            await setExtensionEnabled(browser, true)
+            await setBlurAmount(browser, 3)
+            await setPhobiaWords(browser, ['spider'])
+
+            await loadTestPage(page, 'simple-image.html')
+            await page.bringToFront()
+            await page.waitForSelector('#spider-image', { timeout: 5000 })
+            await wait(3000)
+
+            // Remove .blur class to simulate a CSS-only-blurred image (pre-analysis state or
+            // a page where mutations haven't been processed yet). The image remains visually
+            // blurred by the CSS rule `img:not(.noblur):not(.permamentUnblur)`.
+            // With no .blur class, pointer-events: none kicks in, so the contextmenu event
+            // lands on the parent element rather than the image itself.
+            await page.evaluate(() => {
+                const img = document.querySelector('#spider-image')
+                if (img) {
+                    img.classList.remove('blur', 'noblur', 'permamentUnblur')
+                    // Fire contextmenu on the parent — same as what Chrome does when
+                    // pointer-events: none makes the image transparent to pointer events
+                    const parent = img.parentElement
+                    if (parent) parent.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+                }
+            })
+
+            await sendMessageViaServiceWorker(browser, { type: 'unblur' })
+            await wait(300)
+
+            const result = await page.evaluate(() => {
+                const img = document.querySelector('#spider-image')
+                return {
+                    hasBlur: img.classList.contains('blur'),
+                    hasNoblur: img.classList.contains('noblur'),
+                    hasPermament: img.classList.contains('permamentUnblur'),
+                    filterPx: (() => {
+                        const f = window.getComputedStyle(img).filter
+                        const m = f && f.match(/blur\(([\d.]+)px\)/)
+                        return m ? parseFloat(m[1]) : 0
+                    })()
+                }
+            })
+
+            assert.ok(!result.hasBlur, 'image should not have .blur after fallback unblur')
+            assert.ok(result.hasNoblur, 'image should have .noblur after fallback unblur')
+            assert.ok(result.hasPermament, 'image should have .permamentUnblur after fallback unblur')
+            assert.strictEqual(result.filterPx, 0, `image should be visually unblurred (got ${result.filterPx}px)`)
+        })
+    })
 })

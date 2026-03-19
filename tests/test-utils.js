@@ -778,6 +778,62 @@ async function getPreviewBlurStrength(browser) {
     return value
 }
 
+/**
+ * Send a message to all content scripts (mirrors what popup blur/unblur buttons do)
+ * @param {Browser} browser - Puppeteer browser instance
+ * @param {Object} message - Message object to send
+ */
+async function sendMessageToAllContentScripts(browser, message) {
+    const extPage = await getExtensionPage(browser)
+
+    await extPage.evaluate((msg) => {
+        return new Promise((resolve) => {
+            chrome.tabs.query({}, (tabs) => {
+                let pending = tabs.length
+                if (pending === 0) { resolve(); return }
+                tabs.forEach(tab => {
+                    chrome.tabs.sendMessage(tab.id, msg, () => {
+                        void chrome.runtime.lastError
+                        if (--pending === 0) resolve()
+                    })
+                })
+            })
+        })
+    }, message)
+
+    await extPage.close()
+    await new Promise(r => setTimeout(r, 300))
+}
+
+/**
+ * Send a message to all content scripts via the service worker context.
+ * Unlike sendMessageToAllContentScripts, this does NOT open popup.html, so it
+ * avoids the popup.js side-effect of broadcasting targetWordsChanged to all tabs.
+ * @param {Browser} browser - Puppeteer browser instance
+ * @param {Object} message - Message object to send
+ */
+async function sendMessageViaServiceWorker(browser, message) {
+    const swTarget = await getExtensionServiceWorker(browser)
+    const swWorker = await swTarget.worker()
+
+    await swWorker.evaluate((msg) => {
+        return new Promise((resolve) => {
+            chrome.tabs.query({}, (tabs) => {
+                let pending = tabs.length
+                if (pending === 0) { resolve(); return }
+                tabs.forEach(tab => {
+                    chrome.tabs.sendMessage(tab.id, msg, () => {
+                        void chrome.runtime.lastError
+                        if (--pending === 0) resolve()
+                    })
+                })
+            })
+        })
+    }, message)
+
+    await new Promise(r => setTimeout(r, 300))
+}
+
 module.exports = {
     launchBrowserWithExtension,
     getExtensionServiceWorker,
@@ -804,5 +860,7 @@ module.exports = {
     setPreviewEnabled,
     setPreviewBlurStrength,
     getPreviewEnabled,
-    getPreviewBlurStrength
+    getPreviewBlurStrength,
+    sendMessageToAllContentScripts,
+    sendMessageViaServiceWorker
 }
