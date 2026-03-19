@@ -182,7 +182,7 @@ describe('PhobiaBlocker - Hover Preview', () => {
     })
 
     describe('Pointer Events', () => {
-        it('images with .blur class should have pointer-events: auto', async () => {
+        it('detected images with [data-phobia-blur] attribute should have pointer-events: auto', async () => {
             await setExtensionEnabled(browser, true)
             await setBlurAmount(browser, 60)
             await setPreviewEnabled(browser, true)
@@ -198,13 +198,48 @@ describe('PhobiaBlocker - Hover Preview', () => {
                 return {
                     found: true,
                     hasBlurClass: img.classList.contains('blur'),
+                    hasDataPhobiaBlur: img.hasAttribute('data-phobia-blur'),
                     pointerEvents: window.getComputedStyle(img).pointerEvents
                 }
             })
 
             assert.ok(result.found, '#spider-image should exist')
-            assert.ok(result.hasBlurClass, '#spider-image should have .blur class')
-            assert.strictEqual(result.pointerEvents, 'auto', 'Elements with .blur class must have pointer-events: auto for hover to work')
+            assert.ok(result.hasBlurClass, '#spider-image should have .blur class after detection')
+            assert.ok(result.hasDataPhobiaBlur, '#spider-image should have data-phobia-blur attribute after detection')
+            assert.strictEqual(result.pointerEvents, 'auto', 'Elements with [data-phobia-blur] must have pointer-events: auto for hover to work')
+        })
+
+        it('images with only site-owned .blur class (no data-phobia-blur) should not have extension pointer-events', async () => {
+            await setExtensionEnabled(browser, true)
+            await setBlurAmount(browser, 60)
+            // Use a word not on the page so the extension leaves images alone
+            await setPhobiaWords(browser, ['butterfly'])
+
+            await loadTestPage(page, 'simple-image.html')
+            await page.waitForSelector('body', { timeout: 5000 })
+            await wait(2000)
+
+            // Inject an img with only the site-owned .blur class (no data-phobia-blur)
+            const result = await page.evaluate(() => {
+                const img = document.createElement('img')
+                img.id = 'site-blur-only'
+                img.className = 'blur'  // site-owned class, not extension-owned
+                img.src = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs='
+                document.body.appendChild(img)
+                // Read pointer-events right away (before extension mutation observer fires)
+                return {
+                    hasBlurClass: img.classList.contains('blur'),
+                    hasDataPhobiaBlur: img.hasAttribute('data-phobia-blur'),
+                    // pointer-events for a non-phobia img: driven by img:not(.noblur) rule = none
+                    pointerEvents: window.getComputedStyle(img).pointerEvents
+                }
+            })
+
+            assert.ok(result.hasBlurClass, 'img should have site-owned .blur class')
+            assert.ok(!result.hasDataPhobiaBlur, 'img should NOT have data-phobia-blur (not a phobia detection)')
+            // The [data-phobia-blur] pointer-events: auto rule must NOT apply here
+            assert.notStrictEqual(result.pointerEvents, 'auto',
+                'Site-owned .blur class alone must not grant pointer-events: auto from the extension')
         })
 
         it('safe images with .noblur class should remain interactive', async () => {
@@ -637,7 +672,7 @@ describe('PhobiaBlocker - Hover Preview', () => {
     })
 
     describe('Hover After Unblur All', () => {
-        it('images should have permamentUnblur class after unblurAll', async () => {
+        it('images should have permamentUnblur class after unblurAll and data-phobia-blur removed', async () => {
             await setExtensionEnabled(browser, true)
             await setBlurAmount(browser, 60)
             await setPreviewEnabled(browser, true)
@@ -649,11 +684,16 @@ describe('PhobiaBlocker - Hover Preview', () => {
             await page.waitForSelector('#spider-image', { timeout: 5000 })
             await wait(3000)
 
-            // Confirm image is blurred before unblurAll
-            const hasBluBefore = await page.evaluate(() =>
-                document.querySelector('#spider-image').classList.contains('blur')
-            )
-            assert.ok(hasBluBefore, '#spider-image should have .blur class before unblurAll')
+            // Confirm image is blurred before unblurAll — both .blur class and data-phobia-blur set
+            const stateBefore = await page.evaluate(() => {
+                const img = document.querySelector('#spider-image')
+                return {
+                    hasBlur: img.classList.contains('blur'),
+                    hasDataPhobiaBlur: img.hasAttribute('data-phobia-blur')
+                }
+            })
+            assert.ok(stateBefore.hasBlur, '#spider-image should have .blur class before unblurAll')
+            assert.ok(stateBefore.hasDataPhobiaBlur, '#spider-image should have data-phobia-blur attribute before unblurAll')
 
             await sendMessageToAllContentScripts(browser, { type: 'unblurAll' })
             await wait(500)
@@ -663,13 +703,15 @@ describe('PhobiaBlocker - Hover Preview', () => {
                 return {
                     hasBlur: img.classList.contains('blur'),
                     hasNoblur: img.classList.contains('noblur'),
-                    hasPermament: img.classList.contains('permamentUnblur')
+                    hasPermament: img.classList.contains('permamentUnblur'),
+                    hasDataPhobiaBlur: img.hasAttribute('data-phobia-blur')
                 }
             })
 
             assert.ok(!result.hasBlur, 'image should not have .blur class after unblurAll')
             assert.ok(result.hasNoblur, 'image should have .noblur class after unblurAll')
             assert.ok(result.hasPermament, 'image should have .permamentUnblur class after unblurAll')
+            assert.ok(!result.hasDataPhobiaBlur, 'image should not have data-phobia-blur attribute after unblurAll')
         })
 
         it('hovering after unblurAll should not re-blur the image', async () => {

@@ -133,17 +133,18 @@ html.phobia-disabled iframe:not(.noblur) {
 /* Sibling overlay hover — fires only when an element sitting NEXT TO the image
    (e.g. a lightbox <a> beside <picture>) is hovered, not the whole container.
    This avoids the too-broad container :hover that triggered preview blur on every
-   image whenever the mouse was anywhere inside a large product card, etc. */
-img.blur:not(.permamentUnblur):has(~ *:hover),
-video.blur:not(.permamentUnblur):has(~ *:hover),
-iframe.blur:not(.permamentUnblur):has(~ *:hover) {
+   image whenever the mouse was anywhere inside a large product card, etc.
+   Uses [data-phobia-blur] to avoid matching sites that use .blur as their own class. */
+img[data-phobia-blur]:not(.permamentUnblur):has(~ *:hover),
+video[data-phobia-blur]:not(.permamentUnblur):has(~ *:hover),
+iframe[data-phobia-blur]:not(.permamentUnblur):has(~ *:hover) {
     filter: blur(var(--previewBlurAmount, 4px)) !important;
     -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
     -ms-filter: blur(var(--previewBlurAmount, 4px)) !important;
 }
 
 /* <picture>-wrapped image when a following sibling of <picture> is hovered */
-picture:has(> img.blur:not(.permamentUnblur)):has(~ *:hover) > img.blur:not(.permamentUnblur) {
+picture:has(> img[data-phobia-blur]:not(.permamentUnblur)):has(~ *:hover) > img[data-phobia-blur]:not(.permamentUnblur) {
     filter: blur(var(--previewBlurAmount, 4px)) !important;
     -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
     -ms-filter: blur(var(--previewBlurAmount, 4px)) !important;
@@ -153,9 +154,9 @@ picture:has(> img.blur:not(.permamentUnblur)):has(~ *:hover) > img.blur:not(.per
    blurred element with [data-phobia-container]. Absolutely-positioned overlays
    always share this same containing block, so hovering the overlay (or anything
    else inside the container) reliably triggers the preview at any DOM depth. */
-[data-phobia-container]:hover img.blur:not(.permamentUnblur),
-[data-phobia-container]:hover video.blur:not(.permamentUnblur),
-[data-phobia-container]:hover iframe.blur:not(.permamentUnblur) {
+[data-phobia-container]:hover img[data-phobia-blur]:not(.permamentUnblur),
+[data-phobia-container]:hover video[data-phobia-blur]:not(.permamentUnblur),
+[data-phobia-container]:hover iframe[data-phobia-blur]:not(.permamentUnblur) {
     filter: blur(var(--previewBlurAmount, 4px)) !important;
     -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
     -ms-filter: blur(var(--previewBlurAmount, 4px)) !important;
