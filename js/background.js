@@ -83,9 +83,10 @@ async function _preloadTintedIcons() {
     }
 }
 
-// Start preloading immediately — by the time real pages load and send messages,
-// the icons will already be ready.
-_preloadTintedIcons().catch(() => {})
+// Start preloading immediately. Keep the promise so the message handler can
+// await it when the service worker was just restarted by an incoming message
+// (race: preload is still in flight when the handler fires).
+const _preloadPromise = _preloadTintedIcons().catch(() => {})
 
 // Update the toolbar icon for the sending tab based on analysis status
 chrome.runtime.onMessage.addListener((message, sender) => {
@@ -93,15 +94,17 @@ chrome.runtime.onMessage.addListener((message, sender) => {
     const tabId = sender.tab?.id
     if (!tabId) return
 
-    const i16  = _tintedIcons[`${message.status}_16`]
-    const i48  = _tintedIcons[`${message.status}_48`]
-    const i128 = _tintedIcons[`${message.status}_128`]
-    if (!i16) return   // preload not done yet (service worker just restarted); skip this update
+    _preloadPromise.then(() => {
+        const i16  = _tintedIcons[`${message.status}_16`]
+        const i48  = _tintedIcons[`${message.status}_48`]
+        const i128 = _tintedIcons[`${message.status}_128`]
+        if (!i16 || !i48 || !i128) return   // unknown status; skip
 
-    chrome.action.setIcon({
-        imageData: { 16: i16, 48: i48, 128: i128 },
-        tabId
-    }).catch(() => {})
+        chrome.action.setIcon({
+            imageData: { 16: i16, 48: i48, 128: i128 },
+            tabId
+        }).catch(() => {})
+    })
 })
 
 // Handle keyboard shortcuts

@@ -197,7 +197,7 @@ describe('PhobiaBlocker - Hover Preview', () => {
                 if (!img) return { found: false }
                 return {
                     found: true,
-                    hasBlurClass: img.classList.contains('blur'),
+                    hasBlurClass: img.classList.contains('phobia-blur'),
                     hasDataPhobiaBlur: img.hasAttribute('data-phobia-blur'),
                     pointerEvents: window.getComputedStyle(img).pointerEvents
                 }
@@ -228,7 +228,7 @@ describe('PhobiaBlocker - Hover Preview', () => {
                 document.body.appendChild(img)
                 // Read pointer-events right away (before extension mutation observer fires)
                 return {
-                    hasBlurClass: img.classList.contains('blur'),
+                    hasBlurClass: img.classList.contains('phobia-blur'),
                     hasDataPhobiaBlur: img.hasAttribute('data-phobia-blur'),
                     // pointer-events for a non-phobia img: driven by img:not(.noblur) rule = none
                     pointerEvents: window.getComputedStyle(img).pointerEvents
@@ -257,7 +257,7 @@ describe('PhobiaBlocker - Hover Preview', () => {
                 if (!img) return { found: false }
                 return {
                     found: true,
-                    hasNoblurClass: img.classList.contains('noblur'),
+                    hasNoblurClass: img.classList.contains('phobia-noblur'),
                     isBlurred: window.getComputedStyle(img).filter.includes('blur')
                 }
             })
@@ -688,7 +688,7 @@ describe('PhobiaBlocker - Hover Preview', () => {
             const stateBefore = await page.evaluate(() => {
                 const img = document.querySelector('#spider-image')
                 return {
-                    hasBlur: img.classList.contains('blur'),
+                    hasBlur: img.classList.contains('phobia-blur'),
                     hasDataPhobiaBlur: img.hasAttribute('data-phobia-blur')
                 }
             })
@@ -701,9 +701,9 @@ describe('PhobiaBlocker - Hover Preview', () => {
             const result = await page.evaluate(() => {
                 const img = document.querySelector('#spider-image')
                 return {
-                    hasBlur: img.classList.contains('blur'),
-                    hasNoblur: img.classList.contains('noblur'),
-                    hasPermament: img.classList.contains('permamentUnblur'),
+                    hasBlur: img.classList.contains('phobia-blur'),
+                    hasNoblur: img.classList.contains('phobia-noblur'),
+                    hasPermament: img.classList.contains('phobia-permanent-unblur'),
                     hasDataPhobiaBlur: img.hasAttribute('data-phobia-blur')
                 }
             })

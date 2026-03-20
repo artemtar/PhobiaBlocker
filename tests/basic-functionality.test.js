@@ -132,9 +132,9 @@ describe('PhobiaBlocker - Basic Functionality', () => {
             const result = await page.evaluate(() => {
                 const img = document.querySelector('#spider-image')
                 return {
-                    hasBlur: img.classList.contains('blur'),
-                    hasNoblur: img.classList.contains('noblur'),
-                    hasPermament: img.classList.contains('permamentUnblur')
+                    hasBlur: img.classList.contains('phobia-blur'),
+                    hasNoblur: img.classList.contains('phobia-noblur'),
+                    hasPermament: img.classList.contains('phobia-permanent-unblur')
                 }
             })
 
@@ -175,9 +175,9 @@ describe('PhobiaBlocker - Basic Functionality', () => {
             const result = await page.evaluate(() => {
                 const img = document.querySelector('#spider-image')
                 return {
-                    hasBlur: img.classList.contains('blur'),
-                    hasNoblur: img.classList.contains('noblur'),
-                    hasPermament: img.classList.contains('permamentUnblur'),
+                    hasBlur: img.classList.contains('phobia-blur'),
+                    hasNoblur: img.classList.contains('phobia-noblur'),
+                    hasPermament: img.classList.contains('phobia-permanent-unblur'),
                     filterPx: (() => {
                         const f = window.getComputedStyle(img).filter
                         const m = f && f.match(/blur\(([\d.]+)px\)/)

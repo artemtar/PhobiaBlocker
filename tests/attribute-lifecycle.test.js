@@ -58,7 +58,7 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                     found: true,
                     hasDataPhobiaBlur: img.hasAttribute('data-phobia-blur'),
                     dataPhobiaBlurValue: img.getAttribute('data-phobia-blur'),
-                    hasBlurClass: img.classList.contains('blur')
+                    hasBlurClass: img.classList.contains('phobia-blur')
                 }
             })
 
@@ -81,8 +81,8 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                 return {
                     found: true,
                     hasDataPhobiaBlur: img.hasAttribute('data-phobia-blur'),
-                    hasBlurClass: img.classList.contains('blur'),
-                    hasNoblurClass: img.classList.contains('noblur')
+                    hasBlurClass: img.classList.contains('phobia-blur'),
+                    hasNoblurClass: img.classList.contains('phobia-noblur')
                 }
             })
 
@@ -151,7 +151,7 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                 if (!img) return { found: false }
                 return {
                     found: true,
-                    hasBlurClass: img.classList.contains('blur'),
+                    hasBlurClass: img.classList.contains('phobia-blur'),
                     hasDataPhobiaBlur: img.hasAttribute('data-phobia-blur'),
                     // CSS-layer blur (img:not(.noblur)) should be active
                     filter: window.getComputedStyle(img).filter
@@ -181,9 +181,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                 if (!img) return { found: false }
                 return {
                     found: true,
-                    hasBlurClass: img.classList.contains('blur'),
+                    hasBlurClass: img.classList.contains('phobia-blur'),
                     hasDataPhobiaBlur: img.hasAttribute('data-phobia-blur'),
-                    hasNoblurClass: img.classList.contains('noblur')
+                    hasNoblurClass: img.classList.contains('phobia-noblur')
                 }
             })
 
@@ -205,9 +205,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                 if (!img) return { found: false }
                 return {
                     found: true,
-                    hasBlurClass: img.classList.contains('blur'),
+                    hasBlurClass: img.classList.contains('phobia-blur'),
                     hasDataPhobiaBlur: img.hasAttribute('data-phobia-blur'),
-                    hasNoblurClass: img.classList.contains('noblur')
+                    hasNoblurClass: img.classList.contains('phobia-noblur')
                 }
             })
 
@@ -238,7 +238,7 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                 return {
                     found: true,
                     hasDataPhobiaBlur: img.hasAttribute('data-phobia-blur'),
-                    hasBlurClass: img.classList.contains('blur'),
+                    hasBlurClass: img.classList.contains('phobia-blur'),
                     filter: window.getComputedStyle(img).filter
                 }
             })
@@ -266,8 +266,8 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                 return {
                     found: true,
                     hasDataPhobiaBlur: img.hasAttribute('data-phobia-blur'),
-                    hasBlurClass: img.classList.contains('blur'),
-                    hasNoblurClass: img.classList.contains('noblur')
+                    hasBlurClass: img.classList.contains('phobia-blur'),
+                    hasNoblurClass: img.classList.contains('phobia-noblur')
                 }
             })
 
