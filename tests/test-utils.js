@@ -2,14 +2,15 @@ const puppeteer = require('puppeteer')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
+const { threadId } = require('worker_threads')
 
 const EXTENSION_PATH = path.resolve(__dirname, '..')
 const TEST_PAGES_PATH = path.resolve(__dirname, 'test-pages')
-// Per-process Chrome profile dir — each test file (Node.js process) gets its own
-// fresh profile, avoiding cross-test-file profile locking and stale-state issues.
-// The profile is created on first Chrome launch and its Extensions/ directory is
-// then available for the filesystem ID discovery fallback.
-const TEST_USER_DATA_DIR = path.join(os.tmpdir(), `phobiablocker-test-${process.pid}`)
+// Per-thread Chrome profile dir — Node's --test runner executes each test file in a
+// separate worker thread (same process, different threadId). Using only process.pid
+// would cause all concurrent test files to share the same profile dir, leading to
+// Chrome profile locking and cross-test interference.
+const TEST_USER_DATA_DIR = path.join(os.tmpdir(), `phobiablocker-test-${process.pid}-${threadId}`)
 
 // Cached extension ID - MV3 service workers get killed between tests,
 // so we cache the ID to avoid re-discovering it on every storage call
@@ -779,6 +780,42 @@ async function getPreviewBlurStrength(browser) {
 }
 
 /**
+ * Wait until an element has the phobia-blur class (blur was detected by the extension).
+ * Much faster than a fixed wait(3000) — resolves as soon as the class appears (~0.5–1 s).
+ * @param {Page} page - Puppeteer page
+ * @param {string} selector - CSS selector for the element
+ * @param {number} timeout - Max wait in ms (default 8000)
+ */
+async function waitForPhobiaBlur(page, selector, timeout = 8000) {
+    await page.waitForFunction(
+        (sel) => {
+            const el = document.querySelector(sel)
+            return el != null && el.classList.contains('phobia-blur')
+        },
+        { timeout, polling: 100 },
+        selector
+    )
+}
+
+/**
+ * Wait until an element has the phobia-noblur class (no match found, unveil timer fired).
+ * The extension's unveil timer is 2 s, so this resolves at ~2.1 s instead of a fixed 3 s.
+ * @param {Page} page - Puppeteer page
+ * @param {string} selector - CSS selector for the element
+ * @param {number} timeout - Max wait in ms (default 8000)
+ */
+async function waitForPhobiaNoblur(page, selector, timeout = 8000) {
+    await page.waitForFunction(
+        (sel) => {
+            const el = document.querySelector(sel)
+            return el != null && el.classList.contains('phobia-noblur')
+        },
+        { timeout, polling: 100 },
+        selector
+    )
+}
+
+/**
  * Send a message to all content scripts (mirrors what popup blur/unblur buttons do)
  * @param {Browser} browser - Puppeteer browser instance
  * @param {Object} message - Message object to send
@@ -803,6 +840,39 @@ async function sendMessageToAllContentScripts(browser, message) {
 
     await extPage.close()
     await new Promise(r => setTimeout(r, 300))
+}
+
+/**
+ * Query triggered words from the content script of a specific page.
+ * Opens an extension page (with chrome.tabs access), finds the tab by URL,
+ * sends a getTriggeredWords message, and returns the words array.
+ * @param {Browser} browser - Puppeteer browser instance
+ * @param {Page} page - The page whose content script to query
+ * @returns {Promise<Array<{word: string, count: number}>>}
+ */
+async function queryTriggeredWords(browser, page) {
+    const pageUrl = page.url()
+    // Use the service worker context to send the message. This avoids opening popup.html
+    // (getExtensionPage), which runs popup.js and broadcasts targetWordsChanged to all
+    // content scripts — restarting analysis and causing a race condition where
+    // _triggerWords may not yet be set on the new ImageNode instances.
+    const swTarget = await getExtensionServiceWorker(browser)
+    const swWorker = await swTarget.worker()
+
+    const words = await swWorker.evaluate((targetUrl) => {
+        return new Promise((resolve) => {
+            chrome.tabs.query({}, (tabs) => {
+                const tab = tabs.find(t => t.url === targetUrl)
+                if (!tab) { resolve([]); return }
+                chrome.tabs.sendMessage(tab.id, { type: 'getTriggeredWords' }, (response) => {
+                    void chrome.runtime.lastError
+                    resolve(response && response.words ? response.words : [])
+                })
+            })
+        })
+    }, pageUrl)
+
+    return words
 }
 
 /**
@@ -862,5 +932,8 @@ module.exports = {
     getPreviewEnabled,
     getPreviewBlurStrength,
     sendMessageToAllContentScripts,
-    sendMessageViaServiceWorker
+    sendMessageViaServiceWorker,
+    queryTriggeredWords,
+    waitForPhobiaBlur,
+    waitForPhobiaNoblur
 }

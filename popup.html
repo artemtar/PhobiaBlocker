@@ -19,6 +19,23 @@
         </button>
     </div>
     <div class="main-area">
+        <div id="detected-words-container" class="main-area-container">
+            <div class="suported-words-collapser">
+                <h3>
+                    Detected on this page
+                    <span class="info-icon" data-tooltip="Counts all elements matching your phobia words, including hidden ones. The number may differ from what appears visually on screen, since hidden elements might not be rendered. Only normalized words count is shown, all infliction of a word counted same as one normalized word">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                            <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5" fill="none"/>
+                            <text x="8" y="12" text-anchor="middle" font-size="11" font-weight="bold" fill="currentColor">i</text>
+                        </svg>
+                    </span>
+                </h3>
+                <span id="btn-detected-words" data-bs-toggle="collapse" data-bs-target="#detected-words-area" aria-expanded="false" aria-controls="detected-words-area"></span>
+            </div>
+            <div id="detected-words-area" class="collapse">
+                <div id="detected-words-list"></div>
+            </div>
+        </div>
         <div class="main-area-container settings-contianer">
             <div class="setting-info">
                 <h3>

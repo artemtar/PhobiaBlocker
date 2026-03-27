@@ -167,6 +167,37 @@ document.addEventListener('DOMContentLoaded', () => {
     const arrorRightIcon = document.createRange().createContextualFragment('<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-caret-right" viewBox="0 0 16 16"><path d="M6 12.796V3.204L11.481 8 6 12.796zm.659.753 5.48-4.796a1 1 0 0 0 0-1.506L6.66 2.451C6.011 1.885 5 2.345 5 3.204v9.592a1 1 0 0 0 1.659.753z"/></svg>').firstElementChild
     const arrorDownIcon = document.createRange().createContextualFragment('<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-caret-down" viewBox="0 0 16 16"><path d="M3.204 5h9.592L8 10.481 3.204 5zm-.753.659 4.796 5.48a1 1 0 0 0 1.506 0l4.796-5.48c.566-.647.106-1.659-.753-1.659H3.204a1 1 0 0 0-.753 1.659z"/></svg>').firstElementChild
 
+    chrome.storage.sync.get('detectedWordsCollapsed', (storage) => {
+        const btnDetectedWords = document.getElementById('btn-detected-words')
+        const detectedWordsArea = document.getElementById('detected-words-area')
+
+        if (storage.detectedWordsCollapsed) {
+            btnDetectedWords.innerHTML = ''
+            btnDetectedWords.appendChild(arrorRightIcon.cloneNode(true))
+        }
+        else {
+            btnDetectedWords.innerHTML = ''
+            btnDetectedWords.appendChild(arrorDownIcon.cloneNode(true))
+            detectedWordsArea.classList.remove('collapsed')
+            detectedWordsArea.classList.add('collapse', 'show')
+        }
+    })
+
+    document.getElementById('btn-detected-words').addEventListener('click', () => {
+        const btnDetectedWords = document.getElementById('btn-detected-words')
+
+        if (btnDetectedWords.getAttribute('aria-expanded') !== 'true') {
+            btnDetectedWords.innerHTML = ''
+            btnDetectedWords.appendChild(arrorRightIcon.cloneNode(true))
+            chrome.storage.sync.set({ 'detectedWordsCollapsed': true })
+        }
+        else {
+            btnDetectedWords.innerHTML = ''
+            btnDetectedWords.appendChild(arrorDownIcon.cloneNode(true))
+            chrome.storage.sync.set({ 'detectedWordsCollapsed': false })
+        }
+    })
+
     chrome.storage.sync.get('supportedWordsCollapsed', (storage) => {
         const btnSupportedWords = document.getElementById('btn-supported-words')
         const supportedWordsArea = document.getElementById('supported-words-area')
@@ -228,6 +259,35 @@ document.addEventListener('DOMContentLoaded', () => {
     // Settings button click handler
     document.getElementById('open-settings-btn').addEventListener('click', () => {
         chrome.runtime.openOptionsPage()
+    })
+
+    // Query active tab for which words triggered blur on this page
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (!tabs || !tabs[0]) return
+        chrome.tabs.sendMessage(tabs[0].id, { type: 'getTriggeredWords' }, (response) => {
+            const list = document.getElementById('detected-words-list')
+            list.innerHTML = ''
+            if (chrome.runtime.lastError || !response || !response.words.length) {
+                const empty = document.createElement('span')
+                empty.className = 'detected-words-empty'
+                empty.textContent = 'Nothing found on this page'
+                list.appendChild(empty)
+                return
+            }
+            response.words.forEach(({ word, count }) => {
+                const row = document.createElement('div')
+                row.className = 'detected-word-row'
+                const name = document.createElement('span')
+                name.className = 'detected-word-name'
+                name.textContent = word
+                const cnt = document.createElement('span')
+                cnt.className = 'detected-word-count'
+                cnt.textContent = `${count} item${count !== 1 ? 's' : ''}`
+                row.appendChild(name)
+                row.appendChild(cnt)
+                list.appendChild(row)
+            })
+        })
     })
 
     // Tooltip functionality

@@ -110,6 +110,34 @@ body {
   flex: 1;
 }
 
+.detected-word-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  font-size: 13px;
+  color: #2d3748;
+}
+
+.detected-word-row + .detected-word-row {
+  border-top: 1px solid #f0f4f8;
+}
+
+.detected-word-name {
+  font-weight: 600;
+}
+
+.detected-word-count {
+  color: #888;
+  font-size: 12px;
+}
+
+.detected-words-empty {
+  color: #aaa;
+  font-size: 12px;
+  font-style: italic;
+}
+
 .info-icon {
   display: inline-flex;
   align-items: center;
@@ -204,7 +232,8 @@ h3 {
   color: #1976d2;
 }
 
-#btn-supported-words {
+#btn-supported-words,
+#btn-detected-words {
   width: 28px;
   height: 28px;
   display: flex;
@@ -217,17 +246,20 @@ h3 {
   flex-shrink: 0;
 }
 
-#btn-supported-words:hover {
+#btn-supported-words:hover,
+#btn-detected-words:hover {
   background: #bbdefb;
   transform: scale(1.05);
   box-shadow: 0 2px 6px rgba(25, 118, 210, 0.2);
 }
 
-#btn-supported-words:active {
+#btn-supported-words:active,
+#btn-detected-words:active {
   transform: scale(0.98);
 }
 
-#btn-supported-words svg {
+#btn-supported-words svg,
+#btn-detected-words svg {
   color: #1976d2;
   transition: transform 0.2s ease;
   display: block;

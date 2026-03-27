@@ -129,6 +129,7 @@ class ImageNode {
         this._container = undefined  // undefined = not yet resolved; null = resolved but none found
         this._boundMouseEnter = null
         this._boundMouseLeave = null
+        this._triggerWords = null   // normalized words that caused blur (from NLP analysis)
         this._init()
     }
 
@@ -298,8 +299,11 @@ class ImageNode {
         }
     }
 
-    updateBlurStatus(analysisResult){
+    updateBlurStatus(analysisResult, matchedWords = []){
         if(!this.isBlured) this.isBlured = analysisResult
+        if(matchedWords.length > 0 && !this._triggerWords) {
+            this._triggerWords = matchedWords
+        }
         this.hasBeenAnalyzed = true
     }
 
@@ -642,7 +646,7 @@ class TextAnalizer {
 
             dependentImageNodes.forEach((imageNode) => {
                 try {
-                    imageNode.updateBlurStatus(analysisResult)
+                    imageNode.updateBlurStatus(analysisResult, match)
                     imageNode.textProcessingFinished()
                 } catch (nodeError) {
                     console.error('PhobiaBlocker: textProcessingFinished failed for node', nodeError)
@@ -1580,8 +1584,42 @@ if (document.readyState === 'loading') {
 
 document.addEventListener('contextmenu', (event) => {lastElementContext = event.target}, true)
 
-chrome.runtime.onMessage.addListener((message, sender) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     switch (message.type) {
+    case 'getTriggeredWords': {
+        // If extension is disabled on this site, nothing is visually blurred — report nothing
+        if (document.documentElement.classList.contains('phobia-disabled')) {
+            sendResponse({ words: [] })
+            return true
+        }
+        // If blur amount is 0px, nothing is visually blurred — report nothing
+        const blurAmountStr = document.documentElement.style.getPropertyValue('--blurValueAmount')
+        const blurAmount = parseFloat(blurAmountStr)
+        if (!isNaN(blurAmount) && blurAmount <= 0) {
+            sendResponse({ words: [] })
+            return true
+        }
+        const wordCounts = new Map()
+        controller._imageNodeList.getAllImages().forEach(node => {
+            if (!node._triggerWords) return
+            const el = node.getImageNode()
+            if (!el) return
+            // Check actual current DOM state: img/video/iframe use data-phobia-blur attribute,
+            // BgImageNode elements use .phobia-blur class (no data attribute on them).
+            const isCurrentlyBlurred = el.hasAttribute('data-phobia-blur') ||
+                el.classList.contains('phobia-blur')
+            if (isCurrentlyBlurred) {
+                node._triggerWords.forEach(word => {
+                    wordCounts.set(word, (wordCounts.get(word) || 0) + 1)
+                })
+            }
+        })
+        const words = [...wordCounts.entries()]
+            .map(([word, count]) => ({ word, count }))
+            .sort((a, b) => b.count - a.count)
+        sendResponse({ words })
+        return true
+    }
     case 'blurAll':
         controller._permanentlyUnblurred = false
         // Remove permamentUnblur from all elements so blur() can re-apply
@@ -1617,27 +1655,30 @@ chrome.runtime.onMessage.addListener((message, sender) => {
             }
         })
         break
-    case 'unblurAll':
+    case 'unblurAll': {
         // Populate image list if empty (e.g., if page loaded with extension disabled)
         if (controller._imageNodeList.getAllImages().length === 0) {
             controller.updateImageList(document)
         }
+        // Collect ALL visual elements BEFORE controller.unBlurAll() removes the phobia-blur
+        // class. BgImageNode divs are identified only by .phobia-blur — if we query after
+        // unBlurAll() the class is gone and the selector misses them.
+        const toMarkPermanent = [...document.querySelectorAll('img, video, iframe, .phobia-blur')]
         controller.unBlurAll()
-        // Mark all visual elements as permanently unblurred so that:
-        // 1. Subsequent NLP analysis cannot re-blur them (blur() checks permamentUnblur)
-        // 2. Hover preview does not apply (CSS rules exclude .permamentUnblur)
-        document.querySelectorAll('img, video, iframe').forEach(el => {
-            if (!el.classList.contains('phobia-permanent-unblur')) {
-                el.classList.remove('phobia-blur')
-                el.classList.add('phobia-noblur', 'phobia-permanent-unblur')
-                // Clear any inline filter forced by blurAll on disabled sites
-                el.style.removeProperty('filter')
-            }
+        // Mark ALL collected elements as permanently unblurred so that:
+        // 1. Subsequent NLP analysis cannot re-blur them (blur() checks phobia-permanent-unblur)
+        // 2. Hover preview does not apply (CSS rules exclude .phobia-permanent-unblur)
+        toMarkPermanent.forEach(el => {
+            el.classList.remove('phobia-blur')
+            el.classList.add('phobia-noblur', 'phobia-permanent-unblur')
+            el.removeAttribute('data-phobia-blur')
+            el.style.removeProperty('filter')
         })
         // Any new images that appear after this point (lazy-load, infinite scroll)
         // should also be immediately unblurred without going through NLP analysis.
         controller._permanentlyUnblurred = true
         break
+    }
     case 'setBlurAmount':
         // Check if site is whitelisted - if so, keep blur at 0
         if (isWhitelisted()) {
@@ -1679,7 +1720,7 @@ chrome.runtime.onMessage.addListener((message, sender) => {
             }
             // Check children with blur class
             else {
-                blured = lastElementContext.querySelector('.blur')
+                blured = lastElementContext.querySelector('.phobia-blur')
             }
             // Check siblings if nothing found
             if (!blured && lastElementContext.parentElement) {
@@ -1699,7 +1740,7 @@ chrome.runtime.onMessage.addListener((message, sender) => {
             }
             // Check if parent has blurred children
             if (!blured && lastElementContext.parentElement) {
-                blured = lastElementContext.parentElement.querySelector('.blur')
+                blured = lastElementContext.parentElement.querySelector('.phobia-blur')
             }
 
             // Last resort: element may be CSS-blurred without a .blur class (image hasn't been
@@ -1722,6 +1763,8 @@ chrome.runtime.onMessage.addListener((message, sender) => {
             if (blured) {
                 blured.classList.remove('phobia-blur')
                 blured.classList.add('phobia-noblur', 'phobia-permanent-unblur')
+                blured.removeAttribute('data-phobia-blur')
+                blured.style.removeProperty('filter')
             }
         }
         break

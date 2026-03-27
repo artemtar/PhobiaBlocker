@@ -21,7 +21,10 @@ const {
     setExtensionEnabled,
     clearExtensionStorage,
     setBlurAmount,
-    sendMessageToAllContentScripts
+    sendMessageViaServiceWorker,
+    queryTriggeredWords,
+    waitForPhobiaBlur,
+    waitForPhobiaNoblur
 } = require('./test-utils')
 
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms))
@@ -48,8 +51,7 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             await setPhobiaWords(browser, ['spider'])
 
             await loadTestPage(page, 'simple-image.html')
-            await page.waitForSelector('#spider-image', { timeout: 5000 })
-            await wait(3000)
+            await waitForPhobiaBlur(page, '#spider-image')
 
             const result = await page.evaluate(() => {
                 const img = document.querySelector('#spider-image')
@@ -75,8 +77,7 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             await setPhobiaWords(browser, ['butterfly'])
 
             await loadTestPage(page, 'simple-image.html')
-            await page.waitForSelector('#safe-image', { timeout: 5000 })
-            await wait(3000)
+            await waitForPhobiaNoblur(page, '#safe-image')
 
             const result = await page.evaluate(() => {
                 const img = document.querySelector('#safe-image')
@@ -102,8 +103,7 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
 
             await loadTestPage(page, 'simple-image.html')
             await page.bringToFront()
-            await page.waitForSelector('#spider-image', { timeout: 5000 })
-            await wait(3000)
+            await waitForPhobiaBlur(page, '#spider-image')
 
             // Verify attribute is set before unblur
             const before = await page.evaluate(() =>
@@ -111,13 +111,22 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             )
             assert.ok(before, 'data-phobia-blur should be set before unblurAll')
 
-            await sendMessageToAllContentScripts(browser, { type: 'unblurAll' })
-            await wait(500)
+            await sendMessageViaServiceWorker(browser, { type: 'unblurAll' })
+            await wait(300)
 
-            const after = await page.evaluate(() =>
-                document.querySelector('#spider-image').hasAttribute('data-phobia-blur')
-            )
-            assert.ok(!after, 'data-phobia-blur must be removed after unblurAll')
+            const after = await page.evaluate(() => {
+                const img = document.querySelector('#spider-image')
+                return {
+                    hasDataPhobiaBlur: img.hasAttribute('data-phobia-blur'),
+                    hasBlurClass: img.classList.contains('phobia-blur'),
+                    hasNoblur: img.classList.contains('phobia-noblur'),
+                    hasPermanentUnblur: img.classList.contains('phobia-permanent-unblur')
+                }
+            })
+            assert.ok(!after.hasDataPhobiaBlur, 'data-phobia-blur must be removed after unblurAll')
+            assert.ok(!after.hasBlurClass, 'phobia-blur class must be removed after unblurAll')
+            assert.ok(after.hasNoblur, 'phobia-noblur class must be added after unblurAll')
+            assert.ok(after.hasPermanentUnblur, 'phobia-permanent-unblur class must be added after unblurAll')
         })
 
         it('data-phobia-container should be removed from container when all images unblurred', async () => {
@@ -125,11 +134,10 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
 
             await loadTestPage(page, 'simple-image.html')
             await page.bringToFront()
-            await page.waitForSelector('#spider-image', { timeout: 5000 })
-            await wait(3000)
+            await waitForPhobiaBlur(page, '#spider-image')
 
-            await sendMessageToAllContentScripts(browser, { type: 'unblurAll' })
-            await wait(500)
+            await sendMessageViaServiceWorker(browser, { type: 'unblurAll' })
+            await wait(300)
 
             // No element should have data-phobia-container after all images unblurred
             const containerCount = await page.evaluate(() =>
@@ -191,8 +199,7 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             await setPhobiaWords(browser, ['spider'])
 
             await loadTestPage(page, 'simple-image.html')
-            await page.waitForSelector('#spider-image', { timeout: 5000 })
-            await wait(3000)
+            await waitForPhobiaBlur(page, '#spider-image')
 
             const state = await page.evaluate(() => {
                 const img = document.querySelector('#spider-image')
@@ -215,8 +222,7 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             await setPhobiaWords(browser, ['butterfly'])
 
             await loadTestPage(page, 'simple-image.html')
-            await page.waitForSelector('#safe-image', { timeout: 5000 })
-            await wait(3000)
+            await waitForPhobiaNoblur(page, '#safe-image')
 
             const state = await page.evaluate(() => {
                 const img = document.querySelector('#safe-image')
@@ -247,8 +253,8 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             // Click the button to dynamically add spider content via DOM mutation
             await page.click('#add-spider-content')
 
-            // Wait for the mutation observer to pick up the new node and run analysis
-            await wait(4000)
+            // Wait for mutation observer + batch debounce + NLP analysis + blur to apply
+            await waitForPhobiaBlur(page, '.dynamic-spider')
 
             const result = await page.evaluate(() => {
                 const img = document.querySelector('.dynamic-spider')
@@ -276,7 +282,7 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             await wait(1000)
 
             await page.click('#add-safe-content')
-            await wait(4000)
+            await waitForPhobiaNoblur(page, '.dynamic-safe')
 
             const result = await page.evaluate(() => {
                 const img = document.querySelector('.dynamic-safe')
@@ -310,8 +316,7 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             await setPhobiaWords(browser, ['butterfly'])
 
             await loadTestPage(page, 'simple-image.html')
-            await page.waitForSelector('#safe-image', { timeout: 5000 })
-            await wait(3000)
+            await waitForPhobiaNoblur(page, '#safe-image')
 
             // Confirm safe image has phobia-noblur before changes
             const stateBefore = await page.evaluate(() => {
@@ -338,7 +343,7 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             })
 
             // Wait for MutationObserver to fire and re-analysis to complete
-            await wait(3500)
+            await waitForPhobiaBlur(page, '#safe-image')
 
             const stateAfter = await page.evaluate(() => {
                 const img = document.querySelector('#safe-image')
@@ -363,8 +368,7 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             await setPhobiaWords(browser, ['spider'])
 
             await loadTestPage(page, 'simple-image.html')
-            await page.waitForSelector('#spider-image', { timeout: 5000 })
-            await wait(3000)
+            await waitForPhobiaBlur(page, '#spider-image')
 
             // Confirm spider image is blurred before src change
             const before = await page.evaluate(() => {
@@ -379,7 +383,8 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                 img.src = 'https://via.placeholder.com/300x200/880000/ffffff?text=Spider2'
             })
 
-            await wait(3500)
+            // Wait for re-analysis triggered by src mutation to complete
+            await waitForPhobiaBlur(page, '#spider-image')
 
             const after = await page.evaluate(() => {
                 const img = document.querySelector('#spider-image')
@@ -394,6 +399,254 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
         })
     })
 
+    describe('unblurAll covers BgImageNode (background-image div) elements', () => {
+        it('BgImageNode div should have phobia-blur class after detection', async () => {
+            await setPhobiaWords(browser, ['snake'])
+
+            await loadTestPage(page, 'simple-image.html')
+            await page.bringToFront()
+            await waitForPhobiaBlur(page, '#bg-image-snake')
+
+            const result = await page.evaluate(() => {
+                const el = document.querySelector('#bg-image-snake')
+                if (!el) return { found: false }
+                return {
+                    found: true,
+                    hasBlurClass: el.classList.contains('phobia-blur'),
+                    filterPx: (() => {
+                        const f = window.getComputedStyle(el).filter
+                        const m = f && f.match(/blur\(([\d.]+)px\)/)
+                        return m ? parseFloat(m[1]) : 0
+                    })()
+                }
+            })
+
+            assert.ok(result.found, '#bg-image-snake should exist')
+            assert.ok(result.hasBlurClass, 'BgImageNode div should have phobia-blur class after detection')
+            assert.ok(result.filterPx > 0, `BgImageNode should be visually blurred (got ${result.filterPx}px)`)
+        })
+
+        it('unblurAll should remove phobia-blur from BgImageNode div and add phobia-permanent-unblur', async () => {
+            await setPhobiaWords(browser, ['snake'])
+
+            await loadTestPage(page, 'simple-image.html')
+            await page.bringToFront()
+            await waitForPhobiaBlur(page, '#bg-image-snake')
+
+            const before = await page.evaluate(() =>
+                document.querySelector('#bg-image-snake').classList.contains('phobia-blur')
+            )
+            assert.ok(before, '#bg-image-snake should have phobia-blur before unblurAll')
+
+            await sendMessageViaServiceWorker(browser, { type: 'unblurAll' })
+            await wait(300)
+
+            const after = await page.evaluate(() => {
+                const el = document.querySelector('#bg-image-snake')
+                return {
+                    hasBlurClass: el.classList.contains('phobia-blur'),
+                    hasNoblur: el.classList.contains('phobia-noblur'),
+                    hasPermanentUnblur: el.classList.contains('phobia-permanent-unblur'),
+                    filterPx: (() => {
+                        const f = window.getComputedStyle(el).filter
+                        const m = f && f.match(/blur\(([\d.]+)px\)/)
+                        return m ? parseFloat(m[1]) : 0
+                    })()
+                }
+            })
+
+            assert.ok(!after.hasBlurClass, 'phobia-blur must be removed from BgImageNode after unblurAll')
+            assert.ok(after.hasNoblur, 'phobia-noblur must be added to BgImageNode after unblurAll')
+            assert.ok(after.hasPermanentUnblur,
+                'phobia-permanent-unblur must be added to BgImageNode after unblurAll')
+            assert.strictEqual(after.filterPx, 0,
+                `BgImageNode should be visually unblurred after unblurAll (got ${after.filterPx}px)`)
+        })
+    })
+
+    describe('right-click unblur (context menu)', () => {
+        it('unblur message on a phobia-blur img removes class, attribute, inline filter and adds permanent-unblur', async () => {
+            await setPhobiaWords(browser, ['spider'])
+
+            await loadTestPage(page, 'simple-image.html')
+            await page.bringToFront()
+            await waitForPhobiaBlur(page, '#spider-image')
+
+            // Confirm it's blurred first
+            const before = await page.evaluate(() => {
+                const img = document.querySelector('#spider-image')
+                return {
+                    hasBlur: img.classList.contains('phobia-blur'),
+                    hasDataAttr: img.hasAttribute('data-phobia-blur')
+                }
+            })
+            assert.ok(before.hasBlur, '#spider-image should have phobia-blur before right-click unblur')
+            assert.ok(before.hasDataAttr, '#spider-image should have data-phobia-blur before right-click unblur')
+
+            // Simulate contextmenu on the blurred image (pointer-events: auto on .phobia-blur)
+            await page.evaluate(() => {
+                const img = document.querySelector('#spider-image')
+                if (img) img.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+            })
+
+            await sendMessageViaServiceWorker(browser, { type: 'unblur' })
+            await wait(300)
+
+            const after = await page.evaluate(() => {
+                const img = document.querySelector('#spider-image')
+                return {
+                    hasBlur: img.classList.contains('phobia-blur'),
+                    hasNoblur: img.classList.contains('phobia-noblur'),
+                    hasPermanentUnblur: img.classList.contains('phobia-permanent-unblur'),
+                    hasDataAttr: img.hasAttribute('data-phobia-blur'),
+                    filterPx: (() => {
+                        const f = window.getComputedStyle(img).filter
+                        const m = f && f.match(/blur\(([\d.]+)px\)/)
+                        return m ? parseFloat(m[1]) : 0
+                    })()
+                }
+            })
+
+            assert.ok(!after.hasBlur, 'phobia-blur must be removed after right-click unblur')
+            assert.ok(after.hasNoblur, 'phobia-noblur must be added after right-click unblur')
+            assert.ok(after.hasPermanentUnblur, 'phobia-permanent-unblur must be added after right-click unblur')
+            assert.ok(!after.hasDataAttr, 'data-phobia-blur must be removed after right-click unblur')
+            assert.strictEqual(after.filterPx, 0,
+                `image should be visually unblurred after right-click unblur (got ${after.filterPx}px)`)
+        })
+
+        it('unblur message on an img with no phobia-blur class falls back to last-resort and unblurs', async () => {
+            await setPhobiaWords(browser, ['spider'])
+
+            await loadTestPage(page, 'simple-image.html')
+            await page.bringToFront()
+            await waitForPhobiaBlur(page, '#spider-image')
+
+            // Remove phobia-blur (and noblur/permanent) to simulate a CSS-only-blurred image
+            // (pre-analysis state, or an element not yet processed by the extension).
+            // Also remove data-phobia-blur so pointer-events:none applies (no data attr rule).
+            // The image is still visually blurred by: img:not(.phobia-noblur):not(.phobia-permanent-unblur)
+            // Contextmenu fires on the image — the last-resort code in the unblur handler
+            // walks ancestors looking for any img:not(.phobia-noblur):not(.phobia-permanent-unblur).
+            await page.evaluate(() => {
+                const img = document.querySelector('#spider-image')
+                if (img) {
+                    img.classList.remove('phobia-blur', 'phobia-noblur', 'phobia-permanent-unblur')
+                    img.removeAttribute('data-phobia-blur')
+                    img.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+                }
+            })
+
+            await sendMessageViaServiceWorker(browser, { type: 'unblur' })
+            await wait(500)
+
+            const after = await page.evaluate(() => {
+                const img = document.querySelector('#spider-image')
+                return {
+                    hasBlur: img.classList.contains('phobia-blur'),
+                    hasNoblur: img.classList.contains('phobia-noblur'),
+                    hasPermanentUnblur: img.classList.contains('phobia-permanent-unblur'),
+                    filterPx: (() => {
+                        const f = window.getComputedStyle(img).filter
+                        const m = f && f.match(/blur\(([\d.]+)px\)/)
+                        return m ? parseFloat(m[1]) : 0
+                    })()
+                }
+            })
+
+            assert.ok(!after.hasBlur, 'phobia-blur must not be present after last-resort right-click unblur')
+            assert.ok(after.hasNoblur, 'phobia-noblur must be added after last-resort right-click unblur')
+            assert.ok(after.hasPermanentUnblur,
+                'phobia-permanent-unblur must be added after last-resort right-click unblur')
+            assert.strictEqual(after.filterPx, 0,
+                `image should be visually unblurred after last-resort unblur (got ${after.filterPx}px)`)
+        })
+    })
+
+    describe('getTriggeredWords message', () => {
+        it('returns detected words with counts when images are blurred', async () => {
+            await setBlurAmount(browser, 60)
+            await setPhobiaWords(browser, ['spider'])
+
+            await loadTestPage(page, 'simple-image.html')
+            await page.bringToFront()
+            await waitForPhobiaBlur(page, '#spider-image')
+
+            const words = await queryTriggeredWords(browser, page)
+
+            assert.ok(words.length > 0, 'getTriggeredWords should return at least one word when images are blurred')
+            const spiderEntry = words.find(w => w.word === 'spider')
+            assert.ok(spiderEntry, 'getTriggeredWords should return "spider" as a trigger word')
+            assert.ok(spiderEntry.count >= 1, `spider count should be >= 1, got ${spiderEntry.count}`)
+        })
+
+        it('returns empty when blur amount is set to 0', async () => {
+            await setPhobiaWords(browser, ['spider'])
+            await setBlurAmount(browser, 0)
+
+            await loadTestPage(page, 'simple-image.html')
+            await page.bringToFront()
+            // With blur amount 0px, phobia-blur class is still applied (just visually transparent).
+            // Wait for that class so we know analysis is done before overriding the CSS variable.
+            await waitForPhobiaBlur(page, '#spider-image')
+
+            // Set --blurValueAmount to 0px directly on the page to simulate slider at 0
+            await page.evaluate(() => {
+                document.documentElement.style.setProperty('--blurValueAmount', '0px')
+            })
+
+            const words = await queryTriggeredWords(browser, page)
+            assert.deepStrictEqual(words, [],
+                'getTriggeredWords should return empty array when blur amount is 0px')
+
+            // Restore blur amount for subsequent tests
+            await setBlurAmount(browser, 60)
+        })
+
+        it('returns empty after unblurAll (elements no longer have phobia-blur)', async () => {
+            await setBlurAmount(browser, 60)
+            await setPhobiaWords(browser, ['spider'])
+
+            await loadTestPage(page, 'simple-image.html')
+            await page.bringToFront()
+            await waitForPhobiaBlur(page, '#spider-image')
+
+            // Verify words are returned before unblur
+            const before = await queryTriggeredWords(browser, page)
+            assert.ok(before.length > 0, 'should have triggered words before unblurAll')
+
+            await sendMessageViaServiceWorker(browser, { type: 'unblurAll' })
+            await wait(300)
+
+            const after = await queryTriggeredWords(browser, page)
+            assert.deepStrictEqual(after, [],
+                'getTriggeredWords should return empty array after unblurAll (no phobia-blur elements remain)')
+        })
+
+        it('returns empty when extension is disabled on the page', async () => {
+            await setBlurAmount(browser, 60)
+            await setPhobiaWords(browser, ['spider'])
+
+            await loadTestPage(page, 'simple-image.html')
+            await page.bringToFront()
+            await waitForPhobiaBlur(page, '#spider-image')
+
+            // Simulate extension disabled by adding the phobia-disabled class
+            await page.evaluate(() => {
+                document.documentElement.classList.add('phobia-disabled')
+            })
+
+            const words = await queryTriggeredWords(browser, page)
+            assert.deepStrictEqual(words, [],
+                'getTriggeredWords should return empty when phobia-disabled class is present')
+
+            // Cleanup
+            await page.evaluate(() => {
+                document.documentElement.classList.remove('phobia-disabled')
+            })
+        })
+    })
+
     describe('blurAll hotkey uses consistent blur amount', () => {
         it('blurAll should apply the default blur amount even when blurValueAmount not stored', async () => {
             await clearExtensionStorage(browser)
@@ -403,8 +656,8 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
 
             await loadTestPage(page, 'simple-image.html')
             await page.bringToFront()
-            await page.waitForSelector('#spider-image', { timeout: 5000 })
-            await wait(3000)
+            // 'butterfly' matches nothing → wait for noblur (2s unveil timer) to confirm analysis done
+            await waitForPhobiaNoblur(page, '#spider-image')
 
             // Verify images are unblurred (no phobia match)
             const blurBefore = await page.evaluate(() => {
@@ -415,8 +668,8 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             assert.strictEqual(blurBefore, 0, 'image should be unblurred before blurAll (no phobia match)')
 
             // Send blurAll (same as Ctrl+Alt+B hotkey)
-            await sendMessageToAllContentScripts(browser, { type: 'blurAll' })
-            await wait(500)
+            await sendMessageViaServiceWorker(browser, { type: 'blurAll' })
+            await wait(300)
 
             const blurAfter = await page.evaluate(() => {
                 const f = window.getComputedStyle(document.querySelector('#spider-image')).filter
@@ -438,8 +691,7 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             await setPhobiaWords(browser, ['spider'])
             await loadTestPage(page, 'simple-image.html')
             await page.bringToFront()
-            await page.waitForSelector('#spider-image', { timeout: 5000 })
-            await wait(3000)
+            await waitForPhobiaBlur(page, '#spider-image')
 
             const analysisBluePx = await page.evaluate(() => {
                 const f = window.getComputedStyle(document.querySelector('#spider-image')).filter
@@ -451,11 +703,10 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             await setPhobiaWords(browser, ['butterfly'])
             await loadTestPage(page, 'simple-image.html')
             await page.bringToFront()
-            await page.waitForSelector('#spider-image', { timeout: 5000 })
-            await wait(3000)
+            await waitForPhobiaNoblur(page, '#spider-image')
 
-            await sendMessageToAllContentScripts(browser, { type: 'blurAll' })
-            await wait(500)
+            await sendMessageViaServiceWorker(browser, { type: 'blurAll' })
+            await wait(300)
 
             const hotkeyBlurPx = await page.evaluate(() => {
                 const f = window.getComputedStyle(document.querySelector('#spider-image')).filter
