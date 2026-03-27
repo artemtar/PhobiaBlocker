@@ -228,7 +228,7 @@ describe('PhobiaBlocker - Hover Preview', () => {
                 document.body.appendChild(img)
                 // Read pointer-events right away (before extension mutation observer fires)
                 return {
-                    hasBlurClass: img.classList.contains('phobia-blur'),
+                    hasBlurClass: img.classList.contains('blur'),  // site-owned class
                     hasDataPhobiaBlur: img.hasAttribute('data-phobia-blur'),
                     // pointer-events for a non-phobia img: driven by img:not(.noblur) rule = none
                     pointerEvents: window.getComputedStyle(img).pointerEvents
@@ -747,6 +747,290 @@ describe('PhobiaBlocker - Hover Preview', () => {
         })
     })
 
+    describe('Absolute-Positioned Sibling Overlay Hover (IMDB-style)', () => {
+        // In IMDB-style cards, an absolutely-positioned <a> overlay covers the image
+        // container and intercepts all pointer events. The container's own mouseenter
+        // never fires. _attachContainerListeners must detect the overlay as a sibling
+        // and attach listeners directly to it.
+
+        it('hovering the absolute overlay should show preview blur on the image', async () => {
+            await setExtensionEnabled(browser, true)
+            await setBlurAmount(browser, 60)
+            await setPreviewEnabled(browser, true)
+            await setPreviewBlurStrength(browser, 5)
+            await setPhobiaWords(browser, ['spider'])
+
+            await loadTestPage(page, 'imdb-style-overlay.html')
+            await page.waitForSelector('#spider-image', { timeout: 5000 })
+            await wait(3000)
+
+            const blurBefore = extractBlurPx(
+                await page.evaluate(() => window.getComputedStyle(document.querySelector('#spider-image')).filter)
+            )
+
+            // Hover the absolute overlay, not the image itself
+            await hoverElement(page, '#lockup-overlay')
+            await wait(300)
+
+            const blurDuring = extractBlurPx(
+                await page.evaluate(() => window.getComputedStyle(document.querySelector('#spider-image')).filter)
+            )
+
+            assert.ok(blurBefore > 0, 'Image should be blurred before hover')
+            assert.ok(
+                blurDuring < blurBefore,
+                `Hovering absolute overlay (${blurDuring}px) should show less blur than full blur (${blurBefore}px)`
+            )
+        })
+
+        it('moving mouse away from the overlay should restore full blur', async () => {
+            await setExtensionEnabled(browser, true)
+            await setBlurAmount(browser, 60)
+            await setPreviewEnabled(browser, true)
+            await setPreviewBlurStrength(browser, 5)
+            await setPhobiaWords(browser, ['spider'])
+
+            await loadTestPage(page, 'imdb-style-overlay.html')
+            await page.waitForSelector('#spider-image', { timeout: 5000 })
+            await wait(3000)
+
+            const blurFull = extractBlurPx(
+                await page.evaluate(() => window.getComputedStyle(document.querySelector('#spider-image')).filter)
+            )
+
+            await hoverElement(page, '#lockup-overlay')
+            await wait(300)
+
+            // Move completely outside the card
+            await page.mouse.move(10, 10)
+            await wait(400)
+
+            const blurAfter = extractBlurPx(
+                await page.evaluate(() => window.getComputedStyle(document.querySelector('#spider-image')).filter)
+            )
+
+            assert.ok(
+                Math.abs(blurAfter - blurFull) < 1,
+                `Blur after moving away (${blurAfter}px) should match original full blur (${blurFull}px)`
+            )
+        })
+
+        it('hovering overlay when preview is disabled should not change blur', async () => {
+            await setExtensionEnabled(browser, true)
+            await setBlurAmount(browser, 60)
+            await setPreviewEnabled(browser, false)
+            await setPreviewBlurStrength(browser, 5)
+            await setPhobiaWords(browser, ['spider'])
+
+            await loadTestPage(page, 'imdb-style-overlay.html')
+            await page.waitForSelector('#spider-image', { timeout: 5000 })
+            await wait(3000)
+
+            const blurBefore = extractBlurPx(
+                await page.evaluate(() => window.getComputedStyle(document.querySelector('#spider-image')).filter)
+            )
+
+            await hoverElement(page, '#lockup-overlay')
+            await wait(300)
+
+            const blurDuring = extractBlurPx(
+                await page.evaluate(() => window.getComputedStyle(document.querySelector('#spider-image')).filter)
+            )
+
+            assert.ok(
+                Math.abs(blurDuring - blurBefore) < 1,
+                `When preview is disabled, hovering overlay (${blurDuring}px) should not change blur (${blurBefore}px)`
+            )
+        })
+
+        it('safe image overlay should not trigger preview on unrelated card', async () => {
+            await setExtensionEnabled(browser, true)
+            await setBlurAmount(browser, 60)
+            await setPreviewEnabled(browser, true)
+            await setPreviewBlurStrength(browser, 5)
+            await setPhobiaWords(browser, ['spider'])
+
+            await loadTestPage(page, 'imdb-style-overlay.html')
+            await page.waitForSelector('#spider-image', { timeout: 5000 })
+            await wait(3000)
+
+            const spiderBlurBefore = extractBlurPx(
+                await page.evaluate(() => window.getComputedStyle(document.querySelector('#spider-image')).filter)
+            )
+
+            // Hover the safe card's overlay — should not affect the spider image
+            await hoverElement(page, '#safe-overlay')
+            await wait(300)
+
+            const spiderBlurDuring = extractBlurPx(
+                await page.evaluate(() => window.getComputedStyle(document.querySelector('#spider-image')).filter)
+            )
+
+            assert.ok(
+                Math.abs(spiderBlurDuring - spiderBlurBefore) < 1,
+                `Hovering safe card overlay should not affect spider image blur (before: ${spiderBlurBefore}px, during: ${spiderBlurDuring}px)`
+            )
+        })
+    })
+
+    describe('Blur All on Disabled/Whitelisted Site', () => {
+        // When the extension is disabled (or site is whitelisted), html.phobia-disabled is set.
+        // The CSS rule `html.phobia-disabled img:not(.phobia-noblur) { filter: none !important }`
+        // has specificity (0,2,2) which overrides class-based blur (0,1,1).
+        // The blurAll handler compensates by forcing an inline `filter: blur(Xpx) !important`
+        // on each [data-phobia-blur] element. Hover preview is handled in
+        // _attachContainerListeners which also sets/restores inline style when phobia-disabled.
+
+        it('blurAll should visibly blur images even when extension is disabled', async () => {
+            await setExtensionEnabled(browser, false)
+            await setBlurAmount(browser, 60)
+            await setPreviewEnabled(browser, true)
+            await setPreviewBlurStrength(browser, 5)
+            await setPhobiaWords(browser, ['spider'])
+
+            await loadTestPage(page, 'simple-image.html')
+            await page.bringToFront()
+            await page.waitForSelector('#spider-image', { timeout: 5000 })
+            await wait(3000)
+
+            await sendMessageToAllContentScripts(browser, { type: 'blurAll' })
+            await wait(500)
+
+            const result = await page.evaluate(() => {
+                const img = document.querySelector('#spider-image')
+                if (!img) return { found: false }
+                const filter = window.getComputedStyle(img).filter
+                return {
+                    found: true,
+                    filter,
+                    blurPx: (() => {
+                        const m = filter.match(/blur\(([\d.]+)px\)/)
+                        return m ? parseFloat(m[1]) : 0
+                    })(),
+                    hasDataPhobiaBlur: img.hasAttribute('data-phobia-blur'),
+                    hasPhobiaDisabled: document.documentElement.classList.contains('phobia-disabled')
+                }
+            })
+
+            assert.ok(result.found, '#spider-image should exist')
+            assert.ok(result.hasPhobiaDisabled, 'html.phobia-disabled should be set when extension is disabled')
+            assert.ok(result.hasDataPhobiaBlur, '#spider-image should have data-phobia-blur after blurAll')
+            assert.ok(result.blurPx > 0,
+                `blurAll on disabled site should visibly blur the image (got ${result.blurPx}px, filter: "${result.filter}")`)
+        })
+
+        it('hovering a blurred image on a disabled site should show preview blur', async () => {
+            await setExtensionEnabled(browser, false)
+            await setBlurAmount(browser, 60)
+            await setPreviewEnabled(browser, true)
+            await setPreviewBlurStrength(browser, 5)
+            await setPhobiaWords(browser, ['spider'])
+
+            await loadTestPage(page, 'simple-image.html')
+            await page.bringToFront()
+            await page.waitForSelector('#spider-image', { timeout: 5000 })
+            await wait(3000)
+
+            await sendMessageToAllContentScripts(browser, { type: 'blurAll' })
+            await wait(500)
+
+            const blurBefore = extractBlurPx(
+                await page.evaluate(() => window.getComputedStyle(document.querySelector('#spider-image')).filter)
+            )
+
+            await hoverElement(page, '#spider-image')
+            await wait(300)
+
+            const blurDuring = extractBlurPx(
+                await page.evaluate(() => window.getComputedStyle(document.querySelector('#spider-image')).filter)
+            )
+
+            assert.ok(blurBefore > 0, `Image should be blurred before hover (got ${blurBefore}px)`)
+            assert.ok(
+                blurDuring < blurBefore,
+                `Hover preview on disabled site (${blurDuring}px) should be less than full blur (${blurBefore}px)`
+            )
+        })
+
+        it('hover preview should still work after unblurAll then blurAll on a disabled site', async () => {
+            await setExtensionEnabled(browser, false)
+            await setBlurAmount(browser, 60)
+            await setPreviewEnabled(browser, true)
+            await setPreviewBlurStrength(browser, 5)
+            await setPhobiaWords(browser, ['spider'])
+
+            await loadTestPage(page, 'simple-image.html')
+            await page.bringToFront()
+            await page.waitForSelector('#spider-image', { timeout: 5000 })
+            await wait(3000)
+
+            // blurAll → unblurAll → blurAll cycle
+            await sendMessageToAllContentScripts(browser, { type: 'blurAll' })
+            await wait(300)
+            await sendMessageToAllContentScripts(browser, { type: 'unblurAll' })
+            await wait(300)
+            await sendMessageToAllContentScripts(browser, { type: 'blurAll' })
+            await wait(500)
+
+            const blurBefore = extractBlurPx(
+                await page.evaluate(() => window.getComputedStyle(document.querySelector('#spider-image')).filter)
+            )
+
+            await hoverElement(page, '#spider-image')
+            await wait(300)
+
+            const blurDuring = extractBlurPx(
+                await page.evaluate(() => window.getComputedStyle(document.querySelector('#spider-image')).filter)
+            )
+
+            assert.ok(blurBefore > 0, `Image should be blurred after second blurAll (got ${blurBefore}px)`)
+            assert.ok(
+                blurDuring < blurBefore,
+                `After unblurAll+blurAll on disabled site, hover preview (${blurDuring}px) should be less than full blur (${blurBefore}px)`
+            )
+        })
+
+        it('moving mouse away on disabled site should restore full blur', async () => {
+            await setExtensionEnabled(browser, false)
+            await setBlurAmount(browser, 60)
+            await setPreviewEnabled(browser, true)
+            await setPreviewBlurStrength(browser, 5)
+            await setPhobiaWords(browser, ['spider'])
+
+            await loadTestPage(page, 'simple-image.html')
+            await page.bringToFront()
+            await page.waitForSelector('#spider-image', { timeout: 5000 })
+            await wait(3000)
+
+            await sendMessageToAllContentScripts(browser, { type: 'blurAll' })
+            await wait(500)
+
+            const blurBefore = extractBlurPx(
+                await page.evaluate(() => window.getComputedStyle(document.querySelector('#spider-image')).filter)
+            )
+
+            await hoverElement(page, '#spider-image')
+            await wait(300)
+
+            await page.mouse.move(10, 10)
+            await wait(400)
+
+            const blurAfter = extractBlurPx(
+                await page.evaluate(() => window.getComputedStyle(document.querySelector('#spider-image')).filter)
+            )
+
+            assert.ok(
+                Math.abs(blurAfter - blurBefore) < 1,
+                `Blur after moving away (${blurAfter}px) should restore to full blur (${blurBefore}px)`
+            )
+        })
+
+        afterEach(async () => {
+            // Re-enable the extension after each disabled-site test so other describes work normally
+            await setExtensionEnabled(browser, true)
+        })
+    })
+
     describe('Video and Iframe Pointer Events', () => {
         it('blurred video elements should have pointer-events: auto', async () => {
             await setExtensionEnabled(browser, true)
@@ -758,7 +1042,7 @@ describe('PhobiaBlocker - Hover Preview', () => {
             await wait(3000)
 
             const result = await page.evaluate(() => {
-                const video = document.querySelector('video.blur')
+                const video = document.querySelector('video[data-phobia-blur]')
                 if (!video) return { found: false }
                 return {
                     found: true,
@@ -784,7 +1068,7 @@ describe('PhobiaBlocker - Hover Preview', () => {
             await wait(3000)
 
             const result = await page.evaluate(() => {
-                const iframe = document.querySelector('iframe.blur')
+                const iframe = document.querySelector('iframe[data-phobia-blur]')
                 if (!iframe) return { found: false }
                 return {
                     found: true,

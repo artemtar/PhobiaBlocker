@@ -69,7 +69,10 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
         })
 
         it('non-detected image should NOT have data-phobia-blur attribute', async () => {
-            await setPhobiaWords(browser, ['spider'])
+            // Use a word NOT present anywhere in simple-image.html body.
+            // onLoad() analyzes the full body text, so using 'spider' (which IS in the body)
+            // would blur ALL images. 'butterfly' produces no match → all images get phobia-noblur.
+            await setPhobiaWords(browser, ['butterfly'])
 
             await loadTestPage(page, 'simple-image.html')
             await page.waitForSelector('#safe-image', { timeout: 5000 })
@@ -138,35 +141,50 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
     })
 
     describe('No premature .blur class before analysis (flash prevention)', () => {
-        it('detected image should NOT have .blur class before analysis completes', async () => {
+        it('CSS flash prevention: #phobiablocker-early-blur style is injected on page load', async () => {
             await setPhobiaWords(browser, ['spider'])
 
-            // Navigate and check blur state IMMEDIATELY after load, before JS analysis runs
+            // Install a MutationObserver BEFORE navigation so we can record whether
+            // the early-blur style was ever added — even if it's removed synchronously
+            // during analysis before Puppeteer gets to evaluate the DOM.
+            await page.evaluateOnNewDocument(() => {
+                window._earlyBlurSeen = false
+                window._earlyBlurContent = ''
+                const observer = new MutationObserver((mutations) => {
+                    for (const m of mutations) {
+                        for (const node of m.addedNodes) {
+                            if (node.nodeType === 1 && node.id === 'phobiablocker-early-blur') {
+                                window._earlyBlurSeen = true
+                                window._earlyBlurContent = node.textContent || ''
+                                observer.disconnect()
+                            }
+                        }
+                    }
+                })
+                // Observe `document` (not `document.documentElement`) because
+                // documentElement may be null when evaluateOnNewDocument first runs.
+                // `document` is always a valid Node; subtree:true covers all descendants.
+                observer.observe(document, { childList: true, subtree: true })
+            })
+
             await page.goto(`file://${require('path').join(__dirname, 'test-pages', 'simple-image.html')}`,
                 { waitUntil: 'domcontentloaded' })
 
-            // Check synchronously right after DOMContentLoaded — JS analysis not done yet
-            const stateAtLoad = await page.evaluate(() => {
+            const state = await page.evaluate(() => {
                 const img = document.querySelector('#spider-image')
                 if (!img) return { found: false }
                 return {
                     found: true,
-                    hasBlurClass: img.classList.contains('phobia-blur'),
-                    hasDataPhobiaBlur: img.hasAttribute('data-phobia-blur'),
-                    // CSS-layer blur (img:not(.noblur)) should be active
-                    filter: window.getComputedStyle(img).filter
+                    earlyStyleSeen: !!window._earlyBlurSeen,
+                    earlyStyleContent: window._earlyBlurContent
                 }
             })
 
-            assert.ok(stateAtLoad.found, '#spider-image should exist at load time')
-            // The extension must NOT add .blur before analysis — only CSS-layer blur
-            assert.ok(!stateAtLoad.hasBlurClass,
-                'image must NOT have .blur class before JS analysis completes (CSS-only blur phase)')
-            assert.ok(!stateAtLoad.hasDataPhobiaBlur,
-                'image must NOT have data-phobia-blur before JS analysis completes')
-            // But CSS blur should still be active (flash prevention)
-            assert.ok(stateAtLoad.filter.includes('blur'),
-                'image should still be visually blurred by CSS even without .blur class')
+            assert.ok(state.found, '#spider-image should exist at load time')
+            assert.ok(state.earlyStyleSeen,
+                '#phobiablocker-early-blur style must be injected at some point during page load to prevent unblurred flash')
+            assert.ok(state.earlyStyleContent.includes('phobia-noblur'),
+                'Early blur CSS should target images not yet classified as phobia-noblur')
         })
 
         it('after analysis: detected image gets both .blur class and data-phobia-blur', async () => {
@@ -194,7 +212,7 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
         })
 
         it('after analysis: non-detected image gets .noblur and no .blur or data-phobia-blur', async () => {
-            await setPhobiaWords(browser, ['spider'])
+            await setPhobiaWords(browser, ['butterfly'])
 
             await loadTestPage(page, 'simple-image.html')
             await page.waitForSelector('#safe-image', { timeout: 5000 })
@@ -276,6 +294,103 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                 'dynamically added safe image should NOT have data-phobia-blur')
             assert.ok(!result.hasBlurClass, 'dynamically added safe image should NOT have .blur class')
             assert.ok(result.hasNoblurClass, 'dynamically added safe image should have .noblur class')
+        })
+    })
+
+    describe('src attribute mutation re-blur', () => {
+        // When a site sets a new src on an already-analyzed element (e.g. YouTube preview
+        // hover or lazy-load), the extension must re-blur immediately and re-analyze.
+        // The observer watches attributeFilter: ['src'] to catch this.
+
+        it('changing src on a phobia-noblur image re-blurs it when body text matches', async () => {
+            // Use a phobia word NOT in the body so safe-image starts with phobia-noblur.
+            // Then inject that word into the body and change src simultaneously —
+            // the src mutation triggers re-analysis using document.body.textContent,
+            // which now contains the phobia word → safe-image gets phobia-blur.
+            await setPhobiaWords(browser, ['butterfly'])
+
+            await loadTestPage(page, 'simple-image.html')
+            await page.waitForSelector('#safe-image', { timeout: 5000 })
+            await wait(3000)
+
+            // Confirm safe image has phobia-noblur before changes
+            const stateBefore = await page.evaluate(() => {
+                const img = document.querySelector('#safe-image')
+                return {
+                    hasNoblur: img.classList.contains('phobia-noblur'),
+                    hasBlur: img.classList.contains('phobia-blur')
+                }
+            })
+            assert.ok(stateBefore.hasNoblur, '#safe-image should have phobia-noblur before src change')
+            assert.ok(!stateBefore.hasBlur, '#safe-image should NOT have phobia-blur before src change')
+
+            // Inject the phobia word into body text AND change src.
+            // The src mutation fires the observer which re-analyzes using document.body.textContent
+            // (now containing 'butterfly') → safe-image should be blurred.
+            await page.evaluate(() => {
+                const span = document.createElement('span')
+                span.id = 'injected-phobia-text'
+                span.textContent = 'butterfly'
+                document.body.appendChild(span)
+
+                const img = document.querySelector('#safe-image')
+                img.src = 'https://via.placeholder.com/300x200/0000ff/ffffff?text=New+Image'
+            })
+
+            // Wait for MutationObserver to fire and re-analysis to complete
+            await wait(3500)
+
+            const stateAfter = await page.evaluate(() => {
+                const img = document.querySelector('#safe-image')
+                return {
+                    hasBlur: img.classList.contains('phobia-blur'),
+                    hasDataPhobiaBlur: img.hasAttribute('data-phobia-blur'),
+                    hasNoblur: img.classList.contains('phobia-noblur')
+                }
+            })
+
+            assert.ok(
+                stateAfter.hasBlur,
+                'Image should be blurred after src change (body text now contains phobia word)'
+            )
+            assert.ok(
+                stateAfter.hasDataPhobiaBlur,
+                'Image should have data-phobia-blur after src mutation re-analysis'
+            )
+        })
+
+        it('changing src on an already-blurred image keeps it blurred', async () => {
+            await setPhobiaWords(browser, ['spider'])
+
+            await loadTestPage(page, 'simple-image.html')
+            await page.waitForSelector('#spider-image', { timeout: 5000 })
+            await wait(3000)
+
+            // Confirm spider image is blurred before src change
+            const before = await page.evaluate(() => {
+                const img = document.querySelector('#spider-image')
+                return img.hasAttribute('data-phobia-blur')
+            })
+            assert.ok(before, '#spider-image should have data-phobia-blur before src change')
+
+            // Change the src
+            await page.evaluate(() => {
+                const img = document.querySelector('#spider-image')
+                img.src = 'https://via.placeholder.com/300x200/880000/ffffff?text=Spider2'
+            })
+
+            await wait(3500)
+
+            const after = await page.evaluate(() => {
+                const img = document.querySelector('#spider-image')
+                return {
+                    hasBlur: img.classList.contains('phobia-blur'),
+                    hasDataPhobiaBlur: img.hasAttribute('data-phobia-blur')
+                }
+            })
+
+            assert.ok(after.hasBlur, 'Blurred image should stay blurred after src change')
+            assert.ok(after.hasDataPhobiaBlur, 'data-phobia-blur should remain after src change')
         })
     })
 

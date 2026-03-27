@@ -132,31 +132,3 @@ html.phobia-disabled iframe:not(.phobia-noblur) {
     transition: none !important;
 }
 
-/* Sibling overlay hover — fires only when an element sitting NEXT TO the image
-   (e.g. a lightbox <a> beside <picture>) is hovered, not the whole container. */
-img[data-phobia-blur]:not(.phobia-permanent-unblur):has(~ *:hover),
-video[data-phobia-blur]:not(.phobia-permanent-unblur):has(~ *:hover),
-iframe[data-phobia-blur]:not(.phobia-permanent-unblur):has(~ *:hover) {
-    filter: blur(var(--previewBlurAmount, 4px)) !important;
-    -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
-    -ms-filter: blur(var(--previewBlurAmount, 4px)) !important;
-}
-
-/* <picture>-wrapped image when a following sibling of <picture> is hovered */
-picture:has(> img[data-phobia-blur]:not(.phobia-permanent-unblur)):has(~ *:hover) > img[data-phobia-blur]:not(.phobia-permanent-unblur) {
-    filter: blur(var(--previewBlurAmount, 4px)) !important;
-    -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
-    -ms-filter: blur(var(--previewBlurAmount, 4px)) !important;
-}
-
-/* Positioned-container hover — JS marks the nearest positioned ancestor of each
-   blurred element with [data-phobia-container]. Absolutely-positioned overlays
-   always share this same containing block, so hovering the overlay (or anything
-   else inside the container) reliably triggers the preview at any DOM depth. */
-[data-phobia-container]:hover img[data-phobia-blur]:not(.phobia-permanent-unblur),
-[data-phobia-container]:hover video[data-phobia-blur]:not(.phobia-permanent-unblur),
-[data-phobia-container]:hover iframe[data-phobia-blur]:not(.phobia-permanent-unblur) {
-    filter: blur(var(--previewBlurAmount, 4px)) !important;
-    -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
-    -ms-filter: blur(var(--previewBlurAmount, 4px)) !important;
-}

@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Page - IMDB-Style Absolute Overlay</title>
+    <style>
+        /* card-wrapper is the positioned containing block for the overlay.
+           Without this, inset:0 on the overlay would cover the whole page and
+           mouseenter would never fire when hovering (already inside). */
+        .card-wrapper {
+            position: relative;
+            display: inline-block;
+            width: 300px;
+            margin: 20px;
+        }
+        /* First positioned ancestor of the img — becomes [data-phobia-container].
+           _findHoverContainer stops here; _attachContainerListeners then scans
+           card-wrapper's children for the absolute overlay sibling. */
+        .media-container {
+            position: relative;
+            width: 300px;
+            height: 200px;
+        }
+        /* Absolute overlay: sibling of .media-container, direct child of .card-wrapper.
+           Covers the card area. Intercepts all pointer events before they reach the image.
+           This pattern is used by many sites (IMDB, streaming services, image galleries). */
+        .lockup-overlay {
+            position: absolute;
+            inset: 0;
+            z-index: 2;
+            display: block;
+            background: transparent;
+        }
+    </style>
+</head>
+<body>
+    <h1>IMDB-Style Absolute Overlay Test</h1>
+    <p>This page contains a spider in an IMDB-style card layout. Spiders are arachnids with eight legs.</p>
+
+    <!--
+        IMDB structure:
+          div.card-wrapper (no position — natural boundary for _attachContainerListeners scan)
+            div.media-container (position: relative — becomes [data-phobia-container])
+              img (has data-phobia-blur after analysis)
+            a.lockup-overlay (position: absolute — sibling of media-container, intercepts hover)
+    -->
+    <div class="card-wrapper" id="spider-card">
+        <div class="media-container" id="spider-container">
+            <img id="spider-image"
+                 width="300" height="200"
+                 src="https://via.placeholder.com/300x200/ff0000/ffffff?text=Spider"
+                 alt="Spider">
+        </div>
+        <a id="lockup-overlay" class="lockup-overlay" href="#" aria-label="View list"></a>
+    </div>
+
+    <!-- Safe card with no phobia-related text -->
+    <div class="card-wrapper" id="safe-card">
+        <div class="media-container" id="safe-container">
+            <img id="safe-image"
+                 width="300" height="200"
+                 src="https://via.placeholder.com/300x200/00aa00/ffffff?text=Safe"
+                 alt="Landscape">
+        </div>
+        <a id="safe-overlay" class="lockup-overlay" href="#" aria-label="View list"></a>
+    </div>
+</body>
+</html>

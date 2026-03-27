@@ -40,25 +40,6 @@
                     filter: blur(var(--previewBlurAmount, 4px)) !important;
                     -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
                 }
-                /* Sibling overlay hover */
-                img[data-phobia-blur]:not(.phobia-permanent-unblur):has(~ *:hover),
-                video[data-phobia-blur]:not(.phobia-permanent-unblur):has(~ *:hover),
-                iframe[data-phobia-blur]:not(.phobia-permanent-unblur):has(~ *:hover) {
-                    filter: blur(var(--previewBlurAmount, 4px)) !important;
-                    -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
-                }
-                /* <picture>-wrapped image when a sibling overlay of <picture> is hovered */
-                picture:has(> img[data-phobia-blur]:not(.phobia-permanent-unblur)):has(~ *:hover) > img[data-phobia-blur]:not(.phobia-permanent-unblur) {
-                    filter: blur(var(--previewBlurAmount, 4px)) !important;
-                    -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
-                }
-                /* Positioned-container hover */
-                [data-phobia-container]:hover img[data-phobia-blur]:not(.phobia-permanent-unblur),
-                [data-phobia-container]:hover video[data-phobia-blur]:not(.phobia-permanent-unblur),
-                [data-phobia-container]:hover iframe[data-phobia-blur]:not(.phobia-permanent-unblur) {
-                    filter: blur(var(--previewBlurAmount, 4px)) !important;
-                    -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
-                }
             `
 
             // Defensive: Ensure document and documentElement exist
@@ -173,38 +154,117 @@ class ImageNode {
                this._imageNode.isConnected !== false
     }
 
-    // Walk up the DOM to find the outermost ancestor that still contains only this
-    // one media element. Stops when an ancestor has >1 img/video/iframe (a shelf/grid).
-    // Called lazily on first blur() to avoid the querySelectorAll cost for unblurred elements.
+    // Walk up the DOM to find the nearest positioned ancestor that still contains only
+    // this one media element. Positioned elements (relative/absolute/fixed/sticky) are
+    // natural card/component boundaries in CSS — overlay buttons (e.g. "More actions")
+    // live inside the same positioned ancestor as the thumbnail, so mouseenter/mouseleave
+    // fire correctly without the container growing into a huge static layout parent.
+    // Stops early if an ancestor has >1 img/video/iframe (a shelf/grid row).
+    // Falls back to the immediate parent if no positioned ancestor is found.
+    // Called lazily on first blur() to avoid the getComputedStyle cost for unblurred elements.
     _findHoverContainer() {
         let node = this._imageNode.parentElement
-        let bestContainer = null
         while (node && node !== document.body) {
             if (node.querySelectorAll('img, video, iframe').length > 1) break
-            bestContainer = node
+            try {
+                const pos = window.getComputedStyle(node).position
+                if (pos !== 'static') {
+                    this._container = node
+                    return
+                }
+            } catch (_) { /* skip detached nodes */ }
             node = node.parentElement
         }
-        this._container = bestContainer
+        // No positioned ancestor found — use immediate parent to avoid giant static containers
+        const parent = this._imageNode.parentElement
+        this._container = (parent && parent !== document.body) ? parent : null
     }
 
     _attachContainerListeners() {
         if (!this._container || this._boundMouseEnter) return
-        this._boundMouseEnter = () => {
-            if (this._imageNode && this._imageNode.classList)
-                this._imageNode.classList.add('phobia-preview')
+
+        const addPreview = () => {
+            if (!this._imageNode || !this._imageNode.classList) return
+            this._imageNode.classList.add('phobia-preview')
+            // On disabled sites, html.phobia-disabled overrides CSS preview rules,
+            // so force the preview blur via inline style instead.
+            if (document.documentElement.classList.contains('phobia-disabled')) {
+                const previewVal = previewEnabled ? `${previewBlurStrength}px`
+                    : document.documentElement.style.getPropertyValue('--blurValueAmount')
+                this._imageNode.style.setProperty('filter', `blur(${previewVal})`, 'important')
+            }
         }
-        this._boundMouseLeave = () => {
-            if (this._imageNode && this._imageNode.classList)
-                this._imageNode.classList.remove('phobia-preview')
+        const removePreview = () => {
+            if (!this._imageNode || !this._imageNode.classList) return
+            this._imageNode.classList.remove('phobia-preview')
+            // Restore full blur inline style only if the element is still force-blurred
+            if (document.documentElement.classList.contains('phobia-disabled')
+                    && this._imageNode.hasAttribute('data-phobia-blur')) {
+                const blurVal = document.documentElement.style.getPropertyValue('--blurValueAmount')
+                this._imageNode.style.setProperty('filter', `blur(${blurVal})`, 'important')
+            }
         }
+
+        this._boundMouseEnter = addPreview
+        this._boundMouseLeave = (e) => {
+            if (!this._imageNode || !this._imageNode.classList) return
+            const rt = e.relatedTarget
+            const parent = this._container.parentElement
+            // Mouse moved to a sibling of the container — keep preview active until
+            // mouse leaves the shared parent.
+            if (rt && parent && parent !== document.body &&
+                parent.contains(rt) && !this._container.contains(rt)) {
+                parent.addEventListener('mouseleave', removePreview, { once: true })
+                return
+            }
+            removePreview()
+        }
+
         this._container.addEventListener('mouseenter', this._boundMouseEnter)
         this._container.addEventListener('mouseleave', this._boundMouseLeave)
+
+        // Attach to absolutely-positioned siblings that
+        // visually cover the container and intercept pointer events before they reach it.
+        const parent = this._container.parentElement
+        if (parent) {
+            this._overlaySiblings = []
+            for (const sibling of parent.children) {
+                if (sibling === this._container) continue
+                try {
+                    const pos = window.getComputedStyle(sibling).position
+                    if (pos === 'absolute' && sibling.querySelectorAll('img, video, iframe').length === 0) {
+                        // For overlay mouseleave: if mouse stays inside parent, keep preview
+                        // and wait for parent to lose focus; otherwise remove immediately.
+                        const overlayLeave = (e) => {
+                            if (!this._imageNode || !this._imageNode.classList) return
+                            const rt = e.relatedTarget
+                            if (rt && parent.contains(rt)) {
+                                // Still inside the card — keep preview; container/parent handles cleanup
+                                parent.addEventListener('mouseleave', removePreview, { once: true })
+                                return
+                            }
+                            removePreview()
+                        }
+                        sibling.addEventListener('mouseenter', addPreview)
+                        sibling.addEventListener('mouseleave', overlayLeave)
+                        this._overlaySiblings.push({ el: sibling, enter: addPreview, leave: overlayLeave })
+                    }
+                } catch (_) { /* skip detached nodes */ }
+            }
+        }
     }
 
     _detachContainerListeners() {
         if (!this._container || !this._boundMouseEnter) return
         this._container.removeEventListener('mouseenter', this._boundMouseEnter)
         this._container.removeEventListener('mouseleave', this._boundMouseLeave)
+        if (this._overlaySiblings) {
+            for (const { el, enter, leave } of this._overlaySiblings) {
+                el.removeEventListener('mouseenter', enter)
+                el.removeEventListener('mouseleave', leave)
+            }
+            this._overlaySiblings = null
+        }
         this._boundMouseEnter = null
         this._boundMouseLeave = null
     }
@@ -290,6 +350,7 @@ class TagImageNode extends ImageNode {
         this._imageNode.classList.remove('phobia-blur', 'phobia-preview')
         this._imageNode.classList.add('phobia-noblur')
         this._imageNode.removeAttribute('data-phobia-blur')
+        this._imageNode.style.removeProperty('filter')
         this._detachContainerListeners()
         // Remove container marker when no blurred images remain inside it
         if (this._container && !this._container.querySelector(
@@ -367,6 +428,7 @@ class VideoNode extends ImageNode {
         this._imageNode.classList.remove('phobia-blur', 'phobia-preview')
         this._imageNode.classList.add('phobia-noblur')
         this._imageNode.removeAttribute('data-phobia-blur')
+        this._imageNode.style.removeProperty('filter')
         this._detachContainerListeners()
         if (this._container && !this._container.querySelector(
             'img[data-phobia-blur], video[data-phobia-blur], iframe[data-phobia-blur]'
@@ -446,6 +508,7 @@ class IframeNode extends ImageNode {
         this._imageNode.classList.remove('phobia-blur', 'phobia-preview')
         this._imageNode.classList.add('phobia-noblur')
         this._imageNode.removeAttribute('data-phobia-blur')
+        this._imageNode.style.removeProperty('filter')
         this._detachContainerListeners()
         if (this._container && !this._container.querySelector(
             'img[data-phobia-blur], video[data-phobia-blur], iframe[data-phobia-blur]'
@@ -663,8 +726,9 @@ class Controller {
         //   - attributes mutation where a bg-image container's class/style changed
         //   - addedNodes with a new container element that itself has a background image
         const tag = nodeToCheck.tagName
+        const forceBlur = blurIsAlwaysOn || isBlacklisted()
         if (tag === 'IMG') {
-            if (!this._isInsideInteractiveControl(nodeToCheck)) checkAndUpdate(TagImageNode, nodeToCheck)
+            if (forceBlur || !this._isInsideInteractiveControl(nodeToCheck)) checkAndUpdate(TagImageNode, nodeToCheck)
             else { nodeToCheck.classList.add('phobia-noblur'); nodeToCheck.classList.remove('phobia-blur') }
         } else if (tag === 'VIDEO') {
             checkAndUpdate(VideoNode, nodeToCheck)
@@ -688,7 +752,7 @@ class Controller {
             const el = elements[i]
             const elTag = el.tagName
             if (elTag === 'IMG') {
-                if (!this._isInsideInteractiveControl(el)) checkAndUpdate(TagImageNode, el)
+                if (forceBlur || !this._isInsideInteractiveControl(el)) checkAndUpdate(TagImageNode, el)
                 else { el.classList.add('phobia-noblur'); el.classList.remove('phobia-blur') }
             } else if (elTag === 'VIDEO') {
                 checkAndUpdate(VideoNode, el)
@@ -1019,7 +1083,10 @@ class Controller {
                     return
                 }
                 mutation.addedNodes.forEach((node) => {
-                    if (node.nodeType === Node.ELEMENT_NODE) this.updateImageList(node)
+                    if (node.nodeType === Node.ELEMENT_NODE) {
+                        let { newImages } = this.updateImageList(node)
+                        newImages.forEach(img => img.blur())
+                    }
                 })
             })
             this._mutationBatch = []
@@ -1088,12 +1155,12 @@ class Controller {
         unanalyzedExistingImages = allExistingImages.filter(img => !img.hasBeenAnalyzed)
 
         // Analyze NEW images AND existing images that haven't been analyzed yet.
-        // Don't touch the icon here — mutation batches run continuously during page load
-        // (lazy images, ads, framework re-renders) and would keep resetting the debounce
-        // timer, holding the icon yellow indefinitely. Icon state is owned by onLoad().
         let imagesToAnalyze = allNewImages.concat(unanalyzedExistingImages)
+        if (imagesToAnalyze.length > 0) this._analysisStarted()
         textAnalizer.startAnalysis(imagesToAnalyze).catch(err => {
             console.error('Error in mutation batch text analysis:', err)
+        }).finally(() => {
+            if (imagesToAnalyze.length > 0) this._analysisFinished()
         })
         this._mutationBatch = []
     }
@@ -1537,6 +1604,17 @@ chrome.runtime.onMessage.addListener((message, sender) => {
             }
             // Blur after blur amount is set
             controller.blurAll()
+            // On whitelisted/disabled sites, html.phobia-disabled CSS rule
+            // (specificity 0,2,2) overrides class-based blur (0,1,1). Force an
+            // inline style with !important — it beats all stylesheet rules.
+            // Hover preview is handled in _attachContainerListeners, which reads
+            // phobia-disabled at event time and sets inline preview/full blur there.
+            if (document.documentElement.classList.contains('phobia-disabled')) {
+                const blurValueStr = document.documentElement.style.getPropertyValue('--blurValueAmount')
+                document.querySelectorAll('[data-phobia-blur]').forEach(el => {
+                    el.style.setProperty('filter', `blur(${blurValueStr})`, 'important')
+                })
+            }
         })
         break
     case 'unblurAll':
@@ -1552,6 +1630,8 @@ chrome.runtime.onMessage.addListener((message, sender) => {
             if (!el.classList.contains('phobia-permanent-unblur')) {
                 el.classList.remove('phobia-blur')
                 el.classList.add('phobia-noblur', 'phobia-permanent-unblur')
+                // Clear any inline filter forced by blurAll on disabled sites
+                el.style.removeProperty('filter')
             }
         })
         // Any new images that appear after this point (lazy-load, infinite scroll)
@@ -1762,8 +1842,11 @@ chrome.runtime.onMessage.addListener((message, sender) => {
                 textAnalizer.addText(document.body.textContent)
                 textAnalizer.addText(document.title)
                 let allImages = controller._imageNodeList._imageNodeList
+                controller._analysisStarted()
                 textAnalizer.startAnalysis(allImages).catch(err => {
                     console.error('Error in targetWordsChanged analysis:', err)
+                }).finally(() => {
+                    controller._analysisFinished()
                 })
             }
         })
