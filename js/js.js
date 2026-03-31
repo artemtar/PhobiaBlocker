@@ -302,7 +302,7 @@ class ImageNode {
     updateBlurStatus(analysisResult, matchedWords = []){
         if(!this.isBlured) this.isBlured = analysisResult
         if(matchedWords.length > 0 && !this._triggerWords) {
-            this._triggerWords = matchedWords
+            this._triggerWords = [...new Set(matchedWords)]
         }
         this.hasBeenAnalyzed = true
     }
