@@ -79,8 +79,18 @@
 const tokenizer = new natural.WordTokenizer()
 const DEFAULT_BLUR_SLIDER_VALUE = 50 // Matches popup.js slider default
 const INTERACTIVE_ROLES = new Set(['button', 'tab', 'menuitem', 'option', 'treeitem', 'link'])
+const NORMALIZE_PARAMS = {
+    whitespace: true,
+    unicode: true,
+    contractions: true,
+    acronyms: true,
+    possessives: true,
+    plurals: true,
+    verbs: true,
+}
 
 let targetWords = []
+let targetWordsNormalized = []
 let lastElementContext
 let phobiaBlockerEnabled = true
 let blurIsAlwaysOn = false
@@ -271,11 +281,38 @@ class ImageNode {
     }
 
     blur() {
-        throw new Error('Method must be implemented.')
+        if (!this._isNodeValid()) return
+        if (!this._imageNode.classList.contains('phobia-permanent-unblur')){
+            this._imageNode.classList.remove('phobia-noblur')
+            this._imageNode.classList.add('phobia-blur')
+            this._imageNode.setAttribute('data-phobia-blur', '1')
+            if (this._container === undefined) {
+                try {
+                    this._findHoverContainer()
+                } catch (e) {
+                    this._container = null
+                }
+            }
+            if (this._container) {
+                this._container.setAttribute('data-phobia-container', '1')
+                this._attachContainerListeners()
+            }
+        }
     }
 
     unblur() {
-        throw new Error('Method must be implemented.')
+        if (!this._isNodeValid()) return
+        this._imageNode.classList.remove('phobia-blur', 'phobia-preview')
+        this._imageNode.classList.add('phobia-noblur')
+        this._imageNode.removeAttribute('data-phobia-blur')
+        this._imageNode.style.removeProperty('filter')
+        this._detachContainerListeners()
+        // Remove container marker when no blurred images remain inside it
+        if (this._container && !this._container.querySelector(
+            'img[data-phobia-blur], video[data-phobia-blur], iframe[data-phobia-blur]'
+        )) {
+            this._container.removeAttribute('data-phobia-container')
+        }
     }
 
     newTextProcessingStarted(){
@@ -329,41 +366,6 @@ class TagImageNode extends ImageNode {
         // confirms the image should stay blurred, or by blur() when blurAll is called.
     }
 
-    blur() {
-        if (!this._isNodeValid()) return
-        if (!this._imageNode.classList.contains('phobia-permanent-unblur')){
-            this._imageNode.classList.remove('phobia-noblur')
-            this._imageNode.classList.add('phobia-blur')
-            this._imageNode.setAttribute('data-phobia-blur', '1')
-            if (this._container === undefined) {
-                try {
-                    this._findHoverContainer()
-                } catch (e) {
-                    this._container = null
-                }
-            }
-            if (this._container) {
-                this._container.setAttribute('data-phobia-container', '1')
-                this._attachContainerListeners()
-            }
-        }
-    }
-
-    unblur() {
-        if (!this._isNodeValid()) return
-        this._imageNode.classList.remove('phobia-blur', 'phobia-preview')
-        this._imageNode.classList.add('phobia-noblur')
-        this._imageNode.removeAttribute('data-phobia-blur')
-        this._imageNode.style.removeProperty('filter')
-        this._detachContainerListeners()
-        // Remove container marker when no blurred images remain inside it
-        if (this._container && !this._container.querySelector(
-            'img[data-phobia-blur], video[data-phobia-blur], iframe[data-phobia-blur]'
-        )) {
-            this._container.removeAttribute('data-phobia-container')
-        }
-    }
-
     textProcessingFinished() {
         super.textProcessingFinished()
         // Analysis complete: if image should stay blurred, add .phobia-blur class now.
@@ -405,40 +407,6 @@ class BgImageNode extends ImageNode {
 class VideoNode extends ImageNode {
     constructor(imageNode){
         super(imageNode)
-    }
-
-    blur() {
-        if (!this._isNodeValid()) return
-        if (!this._imageNode.classList.contains('phobia-permanent-unblur')){
-            this._imageNode.classList.remove('phobia-noblur')
-            this._imageNode.classList.add('phobia-blur')
-            this._imageNode.setAttribute('data-phobia-blur', '1')
-            if (this._container === undefined) {
-                try {
-                    this._findHoverContainer()
-                } catch (e) {
-                    this._container = null
-                }
-            }
-            if (this._container) {
-                this._container.setAttribute('data-phobia-container', '1')
-                this._attachContainerListeners()
-            }
-        }
-    }
-
-    unblur() {
-        if (!this._isNodeValid()) return
-        this._imageNode.classList.remove('phobia-blur', 'phobia-preview')
-        this._imageNode.classList.add('phobia-noblur')
-        this._imageNode.removeAttribute('data-phobia-blur')
-        this._imageNode.style.removeProperty('filter')
-        this._detachContainerListeners()
-        if (this._container && !this._container.querySelector(
-            'img[data-phobia-blur], video[data-phobia-blur], iframe[data-phobia-blur]'
-        )) {
-            this._container.removeAttribute('data-phobia-container')
-        }
     }
 }
 
@@ -484,40 +452,6 @@ class IframeNode extends ImageNode {
             } catch (unblurError) {
                 console.error('PhobiaBlocker: Failed to unblur iframe, keeping blurred for safety', unblurError)
             }
-        }
-    }
-
-    blur() {
-        if (!this._isNodeValid()) return
-        if (!this._imageNode.classList.contains('phobia-permanent-unblur')){
-            this._imageNode.classList.remove('phobia-noblur')
-            this._imageNode.classList.add('phobia-blur')
-            this._imageNode.setAttribute('data-phobia-blur', '1')
-            if (this._container === undefined) {
-                try {
-                    this._findHoverContainer()
-                } catch (e) {
-                    this._container = null
-                }
-            }
-            if (this._container) {
-                this._container.setAttribute('data-phobia-container', '1')
-                this._attachContainerListeners()
-            }
-        }
-    }
-
-    unblur() {
-        if (!this._isNodeValid()) return
-        this._imageNode.classList.remove('phobia-blur', 'phobia-preview')
-        this._imageNode.classList.add('phobia-noblur')
-        this._imageNode.removeAttribute('data-phobia-blur')
-        this._imageNode.style.removeProperty('filter')
-        this._detachContainerListeners()
-        if (this._container && !this._container.querySelector(
-            'img[data-phobia-blur], video[data-phobia-blur], iframe[data-phobia-blur]'
-        )) {
-            this._container.removeAttribute('data-phobia-container')
         }
     }
 }
@@ -612,22 +546,8 @@ class TextAnalizer {
                 return probableMatchingTargetWords
             }
 
-            const normalizeParams = {
-                whitespace: true,
-                unicode: true,
-                contractions: true,
-                acronyms:true,
-                possessives: true,
-                plurals: true,
-                verbs: true,
-            }
-
-            let targetWordsNormalized =[...new Set(nlp(targetWords)
-                .normalize(normalizeParams)
-                .out('array'))]
-
             let wordsToCheckNormalized = nlp(compareTargetsToTextWords(targetWordsNormalized, cleanWordsSet))
-                .normalize(normalizeParams)
+                .normalize(NORMALIZE_PARAMS)
                 .out('array')
 
             const match = wordsToCheckNormalized
@@ -686,6 +606,17 @@ class Controller {
         this._editorContainerCache = new WeakSet() // Cache known editor containers for fast lookup
         this._runningAnalyses = 0
         this._permanentlyUnblurred = false // Set after unblurAll — new images skip NLP and are immediately unblurred
+    }
+
+    _getSemanticContainer(el) {
+        const SEMANTIC_TAGS = new Set(['FIGURE', 'ARTICLE', 'SECTION', 'MAIN', 'ASIDE',
+            'HEADER', 'FOOTER', 'NAV', 'LI', 'BLOCKQUOTE'])
+        let node = el.parentElement
+        while (node && node !== document.body && node !== document.documentElement) {
+            if (SEMANTIC_TAGS.has(node.tagName)) return node
+            node = node.parentElement
+        }
+        return null
     }
 
     _analysisStarted() {
@@ -776,14 +707,37 @@ class Controller {
 
     onLoad(){
         try {
-            let textAnalizer = new TextAnalizer()
             let { newImages, existingImages } = this.updateImageList(document)
-            // Use native textContent for much faster text extraction (10-50x faster than jQuery)
-            textAnalizer.addText(document.body.textContent)
-            textAnalizer.addText(document.title)
             const hasImages = newImages.length > 0
             if (hasImages) this._analysisStarted()
-            textAnalizer.startAnalysis(newImages).catch(err => {
+
+            // Group images by their nearest semantic container so each group is
+            // analyzed against only the text that is visually relevant to it —
+            // not the entire page body. Images without a semantic ancestor fall
+            // into a single '__page__' group that uses the full visible body text.
+            const groups = new Map()
+            for (const imageNode of newImages) {
+                const el = imageNode.getImageNode()
+                const container = this._getSemanticContainer(el)
+                const key = container || '__page__'
+                if (!groups.has(key)) groups.set(key, { container, images: [] })
+                groups.get(key).images.push(imageNode)
+            }
+
+            const analyses = []
+            for (const { container, images } of groups.values()) {
+                const ta = new TextAnalizer()
+                if (container) {
+                    // innerText skips hidden (display:none / visibility:hidden) text
+                    ta.addText(container.innerText || container.textContent || '')
+                } else {
+                    ta.addText(document.body.innerText || document.body.textContent || '')
+                    ta.addText(document.title)
+                }
+                analyses.push(ta.startAnalysis(images))
+            }
+
+            Promise.all(analyses).catch(err => {
                 // FAIL-SAFE: If text analysis fails, images stay blurred (safe default)
                 console.error('PhobiaBlocker: Text analysis failed, images remain blurred', err)
             }).finally(() => {
@@ -1121,16 +1075,17 @@ class Controller {
                         let { newImages } = this.updateImageList(t)
                         allNewImages = allNewImages.concat(newImages)
                     }
-                    // Use full body text — the phobia-related title/caption is often a sibling
-                    // or distant relative of the media element. This matches what onLoad() uses.
-                    if (document.body) textAnalizer.addText(document.body.textContent)
+                    // Use full visible body text (innerText skips hidden elements).
+                    if (document.body) textAnalizer.addText(document.body.innerText || document.body.textContent || '')
                 } else {
                     // class/style changed on existing element — check if it now has a background image.
                     // Use the parent's text as context since bg-image containers rarely have text children.
                     let { newImages, existingImages } = this.updateImageList(t)
                     allNewImages = allNewImages.concat(newImages)
                     allExistingImages = allExistingImages.concat(existingImages)
-                    const textContext = t.parentElement ? t.parentElement.textContent : t.textContent
+                    const textContext = t.parentElement
+                        ? (t.parentElement.innerText || t.parentElement.textContent || '')
+                        : (t.innerText || t.textContent || '')
                     if (textContext) textAnalizer.addText(textContext)
                 }
                 return
@@ -1151,7 +1106,7 @@ class Controller {
                 !this._isComplexEditor(mutation.target) &&
                 !this._isDataTableWithoutImages(mutation.target)) {
                 // Use native textContent (much faster than jQuery .text())
-                textAnalizer.addText(mutation.target.textContent || '')
+                textAnalizer.addText(mutation.target.innerText || mutation.target.textContent || '')
             }
         })
 
@@ -1421,10 +1376,12 @@ let setSettings = () => {
                             console.error('PhobiaBlocker: Word expansion failed, using original words', expandError)
                             targetWords = storage.targetWords.map(w => w.toLowerCase())
                         }
+                        targetWordsNormalized = [...new Set(nlp(targetWords).normalize(NORMALIZE_PARAMS).out('array'))]
                     } else {
                         // No targetWords in storage - use empty array in memory
                         // Don't persist this to storage (popup.js handles initialization)
                         targetWords = []
+                        targetWordsNormalized = []
                     }
 
                     if(storage.phobiaBlockerEnabled != undefined){
@@ -1495,7 +1452,9 @@ let setSettings = () => {
 
 var controller = new Controller()
 
-// Check settings early to disable blur immediately if extension is off or site is whitelisted
+// Fast-path: remove early blur immediately if extension is disabled or site is whitelisted.
+// main() also handles these cases but fires after DOMContentLoaded — potentially hundreds of
+// milliseconds later, during which the early blur IIFE would keep images blurred on opt-out paths.
 setSettings().then(() => {
     // Whitelist takes priority - completely disable extension
     if (isWhitelisted()) {
@@ -1864,8 +1823,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         chrome.storage.sync.get('targetWords', (storage) => {
             if (storage.targetWords) {
                 targetWords = expandTargetWords(storage.targetWords)
+                targetWordsNormalized = [...new Set(nlp(targetWords).normalize(NORMALIZE_PARAMS).out('array'))]
             } else {
                 targetWords = []
+                targetWordsNormalized = []
             }
             // If blacklisted, keep everything blurred regardless of words
             if (isBlacklisted()) {
@@ -1884,7 +1845,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 // Use native textContent (much faster than jQuery)
                 textAnalizer.addText(document.body.textContent)
                 textAnalizer.addText(document.title)
-                let allImages = controller._imageNodeList._imageNodeList
+                let allImages = controller._imageNodeList.getAllImages()
                 controller._analysisStarted()
                 textAnalizer.startAnalysis(allImages).catch(err => {
                     console.error('Error in targetWordsChanged analysis:', err)
