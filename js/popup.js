@@ -150,7 +150,7 @@ document.addEventListener('DOMContentLoaded', () => {
     })
 
     chrome.storage.sync.get('blurValueAmount', (storage) => {
-        let blurValue = storage.blurValueAmount || DEFAULT_BLUR_SLIDER_VALUE
+        let blurValue = storage.blurValueAmount ?? DEFAULT_BLUR_SLIDER_VALUE
         document.getElementById('blurRange').value = blurValue
         // Sync blur amount with all tabs on popup open
         chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -297,14 +297,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.querySelectorAll('.info-icon').forEach(icon => {
         icon.addEventListener('mouseenter', (e) => {
-            const text = e.target.getAttribute('data-tooltip')
+            const target = e.currentTarget
+            const text = target.getAttribute('data-tooltip')
             if (!text) return
 
             tooltipElement.textContent = text
             tooltipElement.classList.add('show')
 
             // Position tooltip
-            const rect = e.target.getBoundingClientRect()
+            const rect = target.getBoundingClientRect()
             const tooltipRect = tooltipElement.getBoundingClientRect()
 
             let left = rect.left + (rect.width / 2) - (tooltipRect.width / 2)

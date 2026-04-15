@@ -4,6 +4,7 @@
 // State
 let whitelistedSites = []
 let blacklistedSites = []
+const DEFAULT_PREVIEW_BLUR_STRENGTH = 5
 
 // Initialize on DOM load
 document.addEventListener('DOMContentLoaded', () => {
@@ -36,7 +37,7 @@ function loadPreviewSettings() {
         const previewStrengthItem = document.getElementById('preview-strength-item')
 
         const enabled = storage.previewEnabled !== undefined ? storage.previewEnabled : true
-        const strength = storage.previewBlurStrength !== undefined ? storage.previewBlurStrength : 10
+        const strength = storage.previewBlurStrength !== undefined ? storage.previewBlurStrength : DEFAULT_PREVIEW_BLUR_STRENGTH
 
         previewSwitch.checked = enabled
         previewSlider.value = strength
@@ -79,16 +80,18 @@ function initializeEventListeners() {
         const previewEnabled = e.target.checked
         const previewStrengthItem = document.getElementById('preview-strength-item')
         previewStrengthItem.style.display = previewEnabled ? '' : 'none'
-        chrome.storage.sync.set({ previewEnabled })
-        notifyPreviewSettingsChanged()
+        chrome.storage.sync.set({ previewEnabled }, () => {
+            notifyPreviewSettingsChanged({ previewEnabled })
+        })
     })
 
     // Preview blur strength slider
     document.getElementById('preview-strength-slider').addEventListener('input', (e) => {
         const strength = parseInt(e.target.value, 10)
         updatePreviewBlurDemo(strength)
-        chrome.storage.sync.set({ previewBlurStrength: strength })
-        notifyPreviewSettingsChanged()
+        chrome.storage.sync.set({ previewBlurStrength: strength }, () => {
+            notifyPreviewSettingsChanged({ previewBlurStrength: strength })
+        })
     })
 
     // Configure shortcuts button
@@ -225,8 +228,8 @@ function loadKeyboardShortcuts() {
         // User-friendly names for commands
         const commandLabels = {
             '_execute_action': 'Open PhobiaBlocker Popup',
-            'blurImages': 'Blur All Visual Content',
-            'unblurImages': 'Unblur All Visual Content'
+            'blur-all': 'Blur All Visual Content',
+            'unblur-all': 'Unblur All Visual Content'
         }
 
         // Display each command with its current shortcut
@@ -379,14 +382,20 @@ function isValidSitePattern(pattern) {
 }
 
 // Notify all tabs that preview settings changed
-function notifyPreviewSettingsChanged() {
+function notifyPreviewSettingsChanged(overrides = {}) {
     chrome.storage.sync.get(['previewEnabled', 'previewBlurStrength'], (storage) => {
+        const previewEnabled = overrides.previewEnabled !== undefined
+            ? overrides.previewEnabled
+            : (storage.previewEnabled !== undefined ? storage.previewEnabled : true)
+        const previewBlurStrength = overrides.previewBlurStrength !== undefined
+            ? overrides.previewBlurStrength
+            : (storage.previewBlurStrength !== undefined ? storage.previewBlurStrength : DEFAULT_PREVIEW_BLUR_STRENGTH)
         chrome.tabs.query({}, (tabs) => {
             tabs.forEach(tab => {
                 chrome.tabs.sendMessage(tab.id, {
                     type: 'previewSettingsChanged',
-                    previewEnabled: storage.previewEnabled !== undefined ? storage.previewEnabled : true,
-                    previewBlurStrength: storage.previewBlurStrength !== undefined ? storage.previewBlurStrength : 10
+                    previewEnabled,
+                    previewBlurStrength
                 }, () => {
                     if (chrome.runtime.lastError) {}
                 })
@@ -420,7 +429,9 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
             document.getElementById('preview-strength-item').style.display = enabled ? '' : 'none'
         }
         if (changes.previewBlurStrength !== undefined) {
-            const strength = changes.previewBlurStrength.newValue !== undefined ? changes.previewBlurStrength.newValue : 5
+            const strength = changes.previewBlurStrength.newValue !== undefined
+                ? changes.previewBlurStrength.newValue
+                : DEFAULT_PREVIEW_BLUR_STRENGTH
             document.getElementById('preview-strength-slider').value = strength
             updatePreviewBlurDemo(strength)
         }

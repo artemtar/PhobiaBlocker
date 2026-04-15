@@ -78,6 +78,7 @@
 
 const tokenizer = new natural.WordTokenizer()
 const DEFAULT_BLUR_SLIDER_VALUE = 50 // Matches popup.js slider default
+const DEFAULT_PREVIEW_BLUR_STRENGTH = 5 // Matches settings.js default
 const INTERACTIVE_ROLES = new Set(['button', 'tab', 'menuitem', 'option', 'treeitem', 'link'])
 const NORMALIZE_PARAMS = {
     whitespace: true,
@@ -97,7 +98,7 @@ let blurIsAlwaysOn = false
 let whitelistedSites = []
 let blacklistedSites = []
 let previewEnabled = true
-let previewBlurStrength = 5
+let previewBlurStrength = DEFAULT_PREVIEW_BLUR_STRENGTH
 
 let _iconStatusTimer = null
 function reportIconStatus(status) {
@@ -337,10 +338,8 @@ class ImageNode {
     }
 
     updateBlurStatus(analysisResult, matchedWords = []){
-        if(!this.isBlured) this.isBlured = analysisResult
-        if(matchedWords.length > 0 && !this._triggerWords) {
-            this._triggerWords = [...new Set(matchedWords)]
-        }
+        this.isBlured = analysisResult
+        this._triggerWords = matchedWords.length > 0 ? [...new Set(matchedWords)] : null
         this.hasBeenAnalyzed = true
     }
 
@@ -521,11 +520,11 @@ class TextAnalizer {
                 imageNode.newTextProcessingStarted()
             })
 
-            let r_wordInAnyLanguage = /^(\b(\p{L}|-)*\b)|$/gmiu // no numbers in the word, common for class names
+            const rWordInAnyLanguage = /^[-\p{L}]+$/u // no numbers in the word, common for class names
             let cleanWords = tokenizer.tokenize(this._text.join(' '))
                 .map(word => word.toLowerCase())
                 .filter(word => word.length > 2)
-                .filter(word => r_wordInAnyLanguage.test(word))
+                .filter(word => rWordInAnyLanguage.test(word))
                 // .filter(word => !stopWords.includes(word))
             let cleanWordsSet = [...new Set(cleanWords)]
 
@@ -627,7 +626,12 @@ class Controller {
     _analysisFinished() {
         this._runningAnalyses = Math.max(0, this._runningAnalyses - 1)
         if (this._runningAnalyses === 0) {
-            const hasDetections = this._imageNodeList.getAllImages().some(img => img.isBlured)
+            const hasDetections = this._imageNodeList.getAllImages().some(img => {
+                const el = img.getImageNode()
+                return el &&
+                    ((el.hasAttribute && el.hasAttribute('data-phobia-blur')) ||
+                    (el.classList && el.classList.contains('phobia-blur')))
+            })
             reportIconStatus(hasDetections ? 'detected' : 'idle')
         }
     }
@@ -1222,7 +1226,9 @@ class Controller {
     }
 
     stop(){
-        this.observer.disconnect()
+        if (this.observer) {
+            this.observer.disconnect()
+        }
         clearTimeout(this._batchTimer)
         this._mutationBatch = []
         this._runningAnalyses = 0
@@ -1298,23 +1304,27 @@ function matchesSitePattern(currentUrl, pattern) {
     try {
         const url = new URL(currentUrl)
         const hostname = url.hostname.toLowerCase()
-        const fullPath = (hostname + url.pathname).toLowerCase()
         pattern = pattern.toLowerCase()
+        const [hostPattern, ...pathParts] = pattern.split('/')
+        const pathPattern = pathParts.length > 0 ? `/${pathParts.join('/')}` : ''
 
-        // Wildcard subdomain match: *.example.com
-        if (pattern.startsWith('*.')) {
-            const baseDomain = pattern.substring(2)
-            return hostname === baseDomain || hostname.endsWith('.' + baseDomain)
+        const hostMatches = (candidate, rule) => {
+            if (rule.startsWith('*.')) {
+                const baseDomain = rule.substring(2)
+                return candidate === baseDomain || candidate.endsWith(`.${baseDomain}`)
+            }
+            return candidate === rule || candidate.endsWith(`.${rule}`)
         }
 
-        // Check if pattern includes path
-        if (pattern.includes('/')) {
-            return fullPath.startsWith(pattern) || fullPath === pattern.split('/')[0]
+        if (!hostMatches(hostname, hostPattern)) {
+            return false
         }
 
-        // Exact hostname match or subdomain match
-        // This makes "google.com" match "www.google.com", "mail.google.com", etc.
-        return hostname === pattern || hostname.endsWith('.' + pattern)
+        if (!pathPattern) {
+            return true
+        }
+
+        return url.pathname === pathPattern || url.pathname.startsWith(`${pathPattern}/`)
     } catch (e) {
         debugLog('SiteRules', 'Error matching pattern', { currentUrl, pattern, error: e.message })
         return false
@@ -1394,10 +1404,9 @@ let setSettings = () => {
                     if (storage.blurValueAmount != undefined) {
                         let blurPixels = Math.pow(storage.blurValueAmount * 0.09, 1.8) * 2
                         document.documentElement.style.setProperty('--blurValueAmount', blurPixels + 'px')
-                    } else if (blurIsAlwaysOn) {
-                        // First time using blur always on - use most aggressive settings
-                        let maxBlurPixels = Math.pow(DEFAULT_BLUR_SLIDER_VALUE * 0.09, 1.8) * 2
-                        document.documentElement.style.setProperty('--blurValueAmount', maxBlurPixels + 'px')
+                    } else {
+                        let defaultBlurPixels = Math.pow(DEFAULT_BLUR_SLIDER_VALUE * 0.09, 1.8) * 2
+                        document.documentElement.style.setProperty('--blurValueAmount', defaultBlurPixels + 'px')
                     }
 
                     // Load debug mode setting
@@ -1612,6 +1621,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     el.style.setProperty('filter', `blur(${blurValueStr})`, 'important')
                 })
             }
+            reportIconStatus('detected')
         })
         break
     case 'unblurAll': {
@@ -1636,6 +1646,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // Any new images that appear after this point (lazy-load, infinite scroll)
         // should also be immediately unblurred without going through NLP analysis.
         controller._permanentlyUnblurred = true
+        reportIconStatus('idle')
         break
     }
     case 'setBlurAmount':
@@ -1664,7 +1675,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                         blurPixels + 'px'
                     )
                 } else {
-                    document.documentElement.style.setProperty('--blurValueAmount', 40 + 'px')
+                    let defaultBlurPixels = Math.pow(DEFAULT_BLUR_SLIDER_VALUE * 0.09, 1.8) * 2
+                    document.documentElement.style.setProperty('--blurValueAmount', defaultBlurPixels + 'px')
                 }
             })
         }
@@ -1724,6 +1736,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 blured.classList.add('phobia-noblur', 'phobia-permanent-unblur')
                 blured.removeAttribute('data-phobia-blur')
                 blured.style.removeProperty('filter')
+                const hasRemainingBlurred = document.querySelector('[data-phobia-blur], .phobia-blur')
+                reportIconStatus(hasRemainingBlurred ? 'detected' : 'idle')
             }
         }
         break
