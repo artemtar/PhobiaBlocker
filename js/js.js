@@ -1073,6 +1073,7 @@ class Controller {
                     if (existingNode) {
                         existingNode.isBlured = false
                         existingNode.hasBeenAnalyzed = false
+                        existingNode.runningTextProcessing = 0 // FIX: Reset counter on src change
                         existingNode.blur()
                         allNewImages.push(existingNode)
                     } else {
@@ -1400,9 +1401,10 @@ let setSettings = () => {
                     if(storage.blurIsAlwaysOn != undefined)
                         blurIsAlwaysOn = storage.blurIsAlwaysOn
 
-                    // Apply blur amount setting
-                    if (storage.blurValueAmount != undefined) {
-                        let blurPixels = Math.pow(storage.blurValueAmount * 0.09, 1.8) * 2
+                    // Apply blur amount setting with validation
+                    let blurVal = storage.blurValueAmount
+                    if (blurVal != undefined && typeof blurVal === 'number' && blurVal >= 0 && blurVal <= 100) {
+                        let blurPixels = Math.pow(blurVal * 0.09, 1.8) * 2
                         document.documentElement.style.setProperty('--blurValueAmount', blurPixels + 'px')
                     } else {
                         let defaultBlurPixels = Math.pow(DEFAULT_BLUR_SLIDER_VALUE * 0.09, 1.8) * 2
@@ -1885,5 +1887,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         applyPreviewCssVar()
         debugLog('MessagePassing', 'Preview settings changed', { previewEnabled, previewBlurStrength })
         break
+    default:
+        console.warn('PhobiaBlocker: Unknown message type', message.type)
     }
 })

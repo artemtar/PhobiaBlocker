@@ -125,27 +125,29 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.getElementById('enabled-switch').addEventListener('click', () => {
         const enabledSwitch = document.getElementById('enabled-switch')
-        chrome.tabs.query({ active: true, currentWindow: true },
-            (tabs) => {
-                chrome.tabs.sendMessage(tabs[0].id, { type: 'phobiaBlockerEnabled', value: enabledSwitch.checked}, () => {
+        chrome.tabs.query({}, (tabs) => {
+            for (let i = 0; i < tabs.length; ++i) {
+                chrome.tabs.sendMessage(tabs[i].id, { type: 'phobiaBlockerEnabled', value: enabledSwitch.checked}, () => {
                     if (chrome.runtime.lastError) {
                         // Silently ignore - content script not available on this page
                     }
                 })
-            })
+            }
+        })
         chrome.storage.sync.set({ 'phobiaBlockerEnabled': enabledSwitch.checked})
     })
 
     document.getElementById('blurIsAlwaysOn-switch').addEventListener('click', () => {
         const blurSwitch = document.getElementById('blurIsAlwaysOn-switch')
-        chrome.tabs.query({ active: true, currentWindow: true },
-            (tabs) => {
-                chrome.tabs.sendMessage(tabs[0].id, { type: 'blurIsAlwaysOn', value: blurSwitch.checked}, () => {
+        chrome.tabs.query({}, (tabs) => {
+            for (let i = 0; i < tabs.length; ++i) {
+                chrome.tabs.sendMessage(tabs[i].id, { type: 'blurIsAlwaysOn', value: blurSwitch.checked}, () => {
                     if (chrome.runtime.lastError) {
                         // Silently ignore - content script not available on this page
                     }
                 })
-            })
+            }
+        })
         chrome.storage.sync.set({ 'blurIsAlwaysOn': blurSwitch.checked})
     })
 
