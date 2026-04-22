@@ -603,6 +603,7 @@ class Controller {
         this._batchProcessInterval = 500 // Process batch every 500ms
         this._maxBatchSize = 10 // Or when we collect 10 mutations
         this._editorContainerCache = new WeakSet() // Cache known editor containers for fast lookup
+        this._editorCacheHits = 0 // Track cache hits to know when to skip re-checking
         this._runningAnalyses = 0
         this._permanentlyUnblurred = false // Set after unblurAll — new images skip NLP and are immediately unblurred
     }

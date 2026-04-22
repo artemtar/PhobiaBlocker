@@ -48,11 +48,11 @@ document.addEventListener('DOMContentLoaded', () => {
         // Notify all tabs that target words changed - they should re-analyze
         chrome.tabs.query({}, (tabs) => {
             for (let i = 0; i < tabs.length; ++i) {
-                chrome.tabs.sendMessage(tabs[i].id, { type: 'targetWordsChanged' }, () => {
-                    if (chrome.runtime.lastError) {
-                        // Silently ignore - content script not available on this page
-                    }
-                })
+                try {
+                    chrome.tabs.sendMessage(tabs[i].id, { type: 'targetWordsChanged' })
+                } catch (e) {
+                    // Tab closed during iteration - ignore
+                }
             }
         })
     }
@@ -82,11 +82,11 @@ document.addEventListener('DOMContentLoaded', () => {
         chrome.tabs.query({ active: true, currentWindow: true },
             (tabs) => {
                 if (tabs && tabs[0]) {
-                    chrome.tabs.sendMessage(tabs[0].id, { type: 'unblurAll' }, () => {
-                        if (chrome.runtime.lastError) {
-                            // Silently ignore - content script not available on this page
-                        }
-                    })
+                    try {
+                        chrome.tabs.sendMessage(tabs[0].id, { type: 'unblurAll' })
+                    } catch (e) {
+                        // Tab closed - ignore
+                    }
                 }
             })
     })
@@ -95,11 +95,11 @@ document.addEventListener('DOMContentLoaded', () => {
         chrome.tabs.query({ active: true, currentWindow: true },
             (tabs) => {
                 if (tabs && tabs[0]) {
-                    chrome.tabs.sendMessage(tabs[0].id, { type: 'blurAll' }, () => {
-                        if (chrome.runtime.lastError) {
-                            // Silently ignore - content script not available on this page
-                        }
-                    })
+                    try {
+                        chrome.tabs.sendMessage(tabs[0].id, { type: 'blurAll' })
+                    } catch (e) {
+                        // Tab closed - ignore
+                    }
                 }
             })
     })
@@ -109,11 +109,11 @@ document.addEventListener('DOMContentLoaded', () => {
         chrome.tabs.query({}, (tabs) => {
             let message = { type: 'setBlurAmount', value: blurValueAmount }
             for (let i = 0; i < tabs.length; ++i) {
-                chrome.tabs.sendMessage(tabs[i].id, message, () => {
-                    if (chrome.runtime.lastError) {
-                        // Silently ignore - content script not available on this page
-                    }
-                })
+                try {
+                    chrome.tabs.sendMessage(tabs[i].id, message)
+                } catch (e) {
+                    // Tab closed - ignore
+                }
             }
         })
     })
@@ -127,11 +127,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const enabledSwitch = document.getElementById('enabled-switch')
         chrome.tabs.query({}, (tabs) => {
             for (let i = 0; i < tabs.length; ++i) {
-                chrome.tabs.sendMessage(tabs[i].id, { type: 'phobiaBlockerEnabled', value: enabledSwitch.checked}, () => {
-                    if (chrome.runtime.lastError) {
-                        // Silently ignore - content script not available on this page
-                    }
-                })
+                try {
+                    chrome.tabs.sendMessage(tabs[i].id, { type: 'phobiaBlockerEnabled', value: enabledSwitch.checked})
+                } catch (e) {
+                    // Tab closed - ignore
+                }
             }
         })
         chrome.storage.sync.set({ 'phobiaBlockerEnabled': enabledSwitch.checked})
@@ -141,11 +141,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const blurSwitch = document.getElementById('blurIsAlwaysOn-switch')
         chrome.tabs.query({}, (tabs) => {
             for (let i = 0; i < tabs.length; ++i) {
-                chrome.tabs.sendMessage(tabs[i].id, { type: 'blurIsAlwaysOn', value: blurSwitch.checked}, () => {
-                    if (chrome.runtime.lastError) {
-                        // Silently ignore - content script not available on this page
-                    }
-                })
+                try {
+                    chrome.tabs.sendMessage(tabs[i].id, { type: 'blurIsAlwaysOn', value: blurSwitch.checked})
+                } catch (e) {
+                    // Tab closed - ignore
+                }
             }
         })
         chrome.storage.sync.set({ 'blurIsAlwaysOn': blurSwitch.checked})
@@ -157,11 +157,11 @@ document.addEventListener('DOMContentLoaded', () => {
         // Sync blur amount with all tabs on popup open
         chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
             if (tabs && tabs[0]) {
-                chrome.tabs.sendMessage(tabs[0].id, { type: 'setBlurAmount', value: blurValue }, () => {
-                    if (chrome.runtime.lastError) {
-                        // Silently ignore - content script not available on this page
-                    }
-                })
+                try {
+                    chrome.tabs.sendMessage(tabs[0].id, { type: 'setBlurAmount', value: blurValue })
+                } catch (e) {
+                    // Tab closed - ignore
+                }
             }
         })
     })
@@ -266,30 +266,34 @@ document.addEventListener('DOMContentLoaded', () => {
     // Query active tab for which words triggered blur on this page
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (!tabs || !tabs[0]) return
-        chrome.tabs.sendMessage(tabs[0].id, { type: 'getTriggeredWords' }, (response) => {
-            const list = document.getElementById('detected-words-list')
-            list.innerHTML = ''
-            if (chrome.runtime.lastError || !response || !response.words.length) {
-                const empty = document.createElement('span')
-                empty.className = 'detected-words-empty'
-                empty.textContent = 'Nothing found on this page'
-                list.appendChild(empty)
-                return
-            }
-            response.words.forEach(({ word, count }) => {
-                const row = document.createElement('div')
-                row.className = 'detected-word-row'
-                const name = document.createElement('span')
-                name.className = 'detected-word-name'
-                name.textContent = word
-                const cnt = document.createElement('span')
-                cnt.className = 'detected-word-count'
-                cnt.textContent = `${count} item${count !== 1 ? 's' : ''}`
-                row.appendChild(name)
-                row.appendChild(cnt)
-                list.appendChild(row)
+        try {
+            chrome.tabs.sendMessage(tabs[0].id, { type: 'getTriggeredWords' }, (response) => {
+                const list = document.getElementById('detected-words-list')
+                list.innerHTML = ''
+                if (chrome.runtime.lastError || !response || !response.words.length) {
+                    const empty = document.createElement('span')
+                    empty.className = 'detected-words-empty'
+                    empty.textContent = 'Nothing found on this page'
+                    list.appendChild(empty)
+                    return
+                }
+                response.words.forEach(({ word, count }) => {
+                    const row = document.createElement('div')
+                    row.className = 'detected-word-row'
+                    const name = document.createElement('span')
+                    name.className = 'detected-word-name'
+                    name.textContent = word
+                    const cnt = document.createElement('span')
+                    cnt.className = 'detected-word-count'
+                    cnt.textContent = `${count} item${count !== 1 ? 's' : ''}`
+                    row.appendChild(cnt)
+                    row.appendChild(name)
+                    list.appendChild(row)
+                })
             })
-        })
+        } catch (e) {
+            // Tab closed - ignore
+        }
     })
 
     // Tooltip functionality
