@@ -36,6 +36,9 @@ function loadPreviewSettings() {
         const previewSlider = document.getElementById('preview-strength-slider')
         const previewStrengthItem = document.getElementById('preview-strength-item')
 
+        // Guard against missing elements (if loaded on wrong page)
+        if (!previewSwitch || !previewSlider || !previewStrengthItem) return
+
         const enabled = storage.previewEnabled !== undefined ? storage.previewEnabled : true
         const strength = storage.previewBlurStrength !== undefined ? storage.previewBlurStrength : DEFAULT_PREVIEW_BLUR_STRENGTH
 
@@ -50,6 +53,7 @@ function loadPreviewSettings() {
 function loadDebugMode() {
     chrome.storage.sync.get('debugMode', (storage) => {
         const debugSwitch = document.getElementById('debug-switch')
+        if (!debugSwitch) return
         debugSwitch.checked = storage.debugMode || false
     })
 }
@@ -279,6 +283,7 @@ function loadSiteRules() {
 // Render whitelist
 function renderWhitelist() {
     const container = document.getElementById('whitelist-container')
+    if (!container) return
     container.innerHTML = ''
 
     whitelistedSites.forEach((site, index) => {
@@ -290,6 +295,7 @@ function renderWhitelist() {
 // Render blacklist
 function renderBlacklist() {
     const container = document.getElementById('blacklist-container')
+    if (!container) return
     container.innerHTML = ''
 
     blacklistedSites.forEach((site, index) => {
