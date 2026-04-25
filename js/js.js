@@ -135,6 +135,7 @@ class ImageNode {
         }
         this._imageNode = imageNode
         this.runningTextProcessing = 0
+        this._analysisGeneration = 0
         this.isBlured = false
         this.hasBeenAnalyzed = false // Track if this image has been analyzed at least once
         this._container = undefined  // undefined = not yet resolved; null = resolved but none found
@@ -318,9 +319,11 @@ class ImageNode {
 
     newTextProcessingStarted(){
         this.runningTextProcessing += 1
+        return this._analysisGeneration
     }
 
-    textProcessingFinished(){
+    textProcessingFinished(generation){
+        if (generation !== undefined && generation !== this._analysisGeneration) return
         this.runningTextProcessing -= 1
 
         // FAIL-SAFE: Only unblur if we're absolutely certain it's safe
@@ -365,8 +368,8 @@ class TagImageNode extends ImageNode {
         // confirms the image should stay blurred, or by blur() when blurAll is called.
     }
 
-    textProcessingFinished() {
-        super.textProcessingFinished()
+    textProcessingFinished(generation) {
+        super.textProcessingFinished(generation)
         // Analysis complete: if image should stay blurred, add .phobia-blur class now.
         // This is the earliest point at which hover preview becomes active.
         if (this.runningTextProcessing <= 0 && (this.isBlured || blurIsAlwaysOn)) {
@@ -394,8 +397,7 @@ class BgImageNode extends ImageNode {
         if (!this._isNodeValid()) return
         this._imageNode.classList.remove('phobia-blur')
         this._imageNode.classList.add('phobia-noblur')
-        // Use !important so the site's own animation JS cannot re-blur the element
-        this._imageNode.style.setProperty('filter', 'none', 'important')
+        this._imageNode.style.removeProperty('filter')
     }
 }
 
@@ -441,10 +443,10 @@ class IframeNode extends ImageNode {
         }
     }
 
-    textProcessingFinished() {
+    textProcessingFinished(generation) {
+        if (generation !== undefined && generation !== this._analysisGeneration) return
         this.runningTextProcessing -= 1
-        // Cross-origin iframe content can't be analyzed - keep blurred as safe default
-        if (this._isCrossOrigin()) return
+        if (this._isCrossOrigin() && !this.hasBeenAnalyzed) return
         if (this.runningTextProcessing <= 0 && !this.isBlured && !blurIsAlwaysOn) {
             try {
                 this.unblur()
@@ -491,6 +493,29 @@ class ImageNodeList {
     getAllImages(){
         return this._imageNodeList
     }
+
+    /**
+     * Remove ImageNodes whose DOM element is no longer in the document.
+     * Detaches container listeners before discarding to prevent event listener leaks.
+     */
+    prune(){
+        this._imageNodeList = this._imageNodeList.filter(node => {
+            const el = node.getImageNode()
+            if (el && el.isConnected) return true
+            try { node._detachContainerListeners() } catch (_) {}
+            return false
+        })
+    }
+
+    /**
+     * Detach all container listeners before discarding this list.
+     * Must be called before replacing _imageNodeList with a new instance.
+     */
+    teardown(){
+        this._imageNodeList.forEach(node => {
+            try { node._detachContainerListeners() } catch (_) {}
+        })
+    }
 }
 
 
@@ -516,8 +541,9 @@ class TextAnalizer {
                 targetWordsCount: targetWords.length
             })
 
+            const generationByNode = new Map()
             dependentImageNodes.forEach((imageNode) => {
-                imageNode.newTextProcessingStarted()
+                generationByNode.set(imageNode, imageNode.newTextProcessingStarted())
             })
 
             const rWordInAnyLanguage = /^[-\p{L}]+$/u // no numbers in the word, common for class names
@@ -545,7 +571,7 @@ class TextAnalizer {
                 return probableMatchingTargetWords
             }
 
-            let wordsToCheckNormalized = nlp(compareTargetsToTextWords(targetWordsNormalized, cleanWordsSet))
+            let wordsToCheckNormalized = nlp(compareTargetsToTextWords(targetWords, cleanWordsSet))
                 .normalize(NORMALIZE_PARAMS)
                 .out('array')
 
@@ -566,7 +592,7 @@ class TextAnalizer {
             dependentImageNodes.forEach((imageNode) => {
                 try {
                     imageNode.updateBlurStatus(analysisResult, match)
-                    imageNode.textProcessingFinished()
+                    imageNode.textProcessingFinished(generationByNode.get(imageNode))
                 } catch (nodeError) {
                     console.error('PhobiaBlocker: textProcessingFinished failed for node', nodeError)
                 }
@@ -606,6 +632,7 @@ class Controller {
         this._editorCacheHits = 0 // Track cache hits to know when to skip re-checking
         this._runningAnalyses = 0
         this._permanentlyUnblurred = false // Set after unblurAll — new images skip NLP and are immediately unblurred
+        this._blurToggleGeneration = 0
     }
 
     _getSemanticContainer(el) {
@@ -982,7 +1009,7 @@ class Controller {
 
         // Cache check: if we've checked this table recently, use cached result
         if (!this._tableImageCache) {
-            this._tableImageCache = new Map()
+            this._tableImageCache = new WeakMap()
         }
 
         let now = Date.now()
@@ -1009,23 +1036,14 @@ class Controller {
             timestamp: now
         })
 
-        // Clean up old cache entries (keep cache under 100 entries)
-        if (this._tableImageCache.size > 100) {
-            let entriesToDelete = []
-            for (let [key, value] of this._tableImageCache.entries()) {
-                if (now - value.timestamp > 5000) {
-                    entriesToDelete.push(key)
-                }
-            }
-            entriesToDelete.forEach(key => this._tableImageCache.delete(key))
-        }
-
         // Return true if table has NO visual content (should skip text analysis)
         return !hasImages
     }
 
     _processMutationBatch(){
         if (this._mutationBatch.length === 0) return
+
+        this._imageNodeList.prune()
 
         // If blurIsAlwaysOn or blacklisted, just find and blur new images without text analysis
         if (blurIsAlwaysOn || isBlacklisted()) {
@@ -1074,7 +1092,8 @@ class Controller {
                     if (existingNode) {
                         existingNode.isBlured = false
                         existingNode.hasBeenAnalyzed = false
-                        existingNode.runningTextProcessing = 0 // FIX: Reset counter on src change
+                        existingNode._analysisGeneration++
+                        existingNode.runningTextProcessing = 0
                         existingNode.blur()
                         allNewImages.push(existingNode)
                     } else {
@@ -1183,6 +1202,8 @@ class Controller {
                             const t = mutation.target
                             const tag = t.tagName
                             if ((tag === 'IMG' || tag === 'VIDEO' || tag === 'IFRAME') && mutation.attributeName !== 'src') return
+                            if (mutation.attributeName === 'style' && t.classList &&
+                                (t.classList.contains('phobia-blur') || t.classList.contains('phobia-noblur'))) return
                         } else if (mutation.type !== 'childList') {
                             return
                         }
@@ -1774,6 +1795,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break
     case 'blurIsAlwaysOn':
         blurIsAlwaysOn = message.value
+        controller._permanentlyUnblurred = false
         // Check site rules first
         if (isWhitelisted()) {
             debugLog('SiteRules', 'Site is whitelisted - ignoring blurIsAlwaysOn change', { url: window.location.href })
@@ -1782,7 +1804,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if(blurIsAlwaysOn){
             // Blacklist or normal operation: blur everything
             // Check if user has set blur amount before, if not use maximum
+            const blurGen = ++controller._blurToggleGeneration
             chrome.storage.sync.get('blurValueAmount', (storage) => {
+                if (blurGen !== controller._blurToggleGeneration) return
                 if (storage.blurValueAmount != undefined) {
                     let blurPixels = Math.pow(storage.blurValueAmount * 0.09, 1.8) * 2
                     document.documentElement.style.setProperty('--blurValueAmount', blurPixels + 'px')
@@ -1802,6 +1826,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 elementsToReset.forEach(el => {
                     el.classList.remove('phobia-blur', 'phobia-noblur')
                 })
+                controller._imageNodeList.teardown()
                 controller._imageNodeList = new ImageNodeList()
                 controller.updateImageList(document)
                 controller.blurAll()
@@ -1810,6 +1835,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         else {
             // Disabling blurIsAlwaysOn
+            ++controller._blurToggleGeneration
             if (isBlacklisted()) {
                 debugLog('SiteRules', 'Site is blacklisted - keeping blur despite blurIsAlwaysOn=false', { url: window.location.href })
                 return
@@ -1825,6 +1851,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             elementsToReset.forEach(el => {
                 el.classList.remove('phobia-blur', 'phobia-noblur')
             })
+            controller._imageNodeList.teardown()
             controller._imageNodeList = new ImageNodeList()
             controller.onLoad()
         }

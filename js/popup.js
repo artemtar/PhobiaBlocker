@@ -211,15 +211,15 @@ document.addEventListener('DOMContentLoaded', () => {
         })
 
         document.getElementById('btn-detected-words').addEventListener('click', () => {
-            const btn = document.getElementById('btn-detected-words')
-            const isExpanded = btn.getAttribute('aria-expanded') === 'true'
+            const area = document.getElementById('detected-words-area')
+            const isExpanded = area.classList.contains('show')
             toggleDetectedWords(isExpanded)
             chrome.storage.sync.set({ 'detectedWordsCollapsed': isExpanded })
         })
 
         document.getElementById('btn-supported-words').addEventListener('click', () => {
-            const btn = document.getElementById('btn-supported-words')
-            const isExpanded = btn.getAttribute('aria-expanded') === 'true'
+            const area = document.getElementById('supported-words-area')
+            const isExpanded = area.classList.contains('show')
             toggleSupportedWords(isExpanded)
             chrome.storage.sync.set({ 'supportedWordsCollapsed': isExpanded })
         })

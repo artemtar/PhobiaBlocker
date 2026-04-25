@@ -53,7 +53,11 @@ zip -r "$ZIP_FILE" . \
   -x "*build*" \
   -x "*/.venv*" \
   -x ".venv*" \
-  -x "*.claude*"
+  -x "*.claude*" \
+  -x "docs/*" \
+  -x ".playwright-mcp/*" \
+  -x "play/*" \
+  -x "*wikipedia-test.png"
 
 echo "Package created: $ZIP_FILE"
 echo "Version bumped from $CURRENT_VERSION to $NEW_VERSION"
