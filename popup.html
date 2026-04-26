@@ -19,11 +19,13 @@
         </button>
     </div>
     <div class="main-area">
+        <div id="site-status-bar" class="site-status-bar"></div>
         <div id="detected-words-container" class="main-area-container">
             <div class="suported-words-collapser">
                 <h3>
                     Detected on this page
-                    <span class="info-icon" data-tooltip="Counts all elements matching your phobia words, including hidden ones. The number may differ from what appears visually on screen, since hidden elements might not be rendered. Only normalized words count is shown, all infliction of a word counted same as one normalized word">
+                    <span id="detected-count-badge" class="count-badge" style="display:none"></span>
+                    <span class="info-icon" data-tooltip="Shows how many visual elements are blurred because of your trigger words. The number includes hidden elements, so it may differ from what you see on screen.">
                         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
                             <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5" fill="none"/>
                             <text x="8" y="12" text-anchor="middle" font-size="11" font-weight="bold" fill="currentColor">i</text>
@@ -35,40 +37,6 @@
             <div id="detected-words-area" class="collapse">
                 <div id="detected-words-list"></div>
             </div>
-        </div>
-        <div class="main-area-container settings-contianer">
-            <div class="setting-info">
-                <h3>
-                    Text Analyzer
-                    <span class="info-icon" data-tooltip="This option scans the page for words that trigger your phobias. This is the most important feature of the app. Because it works hard to keep you safe, it runs best on a standard or newer computer (it might be slow on very basic, low-budget PCs).">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                            <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5" fill="none"/>
-                            <text x="8" y="12" text-anchor="middle" font-size="11" font-weight="bold" fill="currentColor">i</text>
-                        </svg>
-                    </span>
-                </h3>
-            </div>
-            <label class="switch">
-                <input type="checkbox" id="enabled-switch">
-                <span class="slider round"></span>
-            </label>
-        </div>
-        <div class="main-area-container settings-contianer">
-            <div class="setting-info">
-                <h3>
-                    Blur Always On
-                    <span class="info-icon" data-tooltip="Blur all visual content without text analysis for maximum protection (Performance impact: None to Small)">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                            <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5" fill="none"/>
-                            <text x="8" y="12" text-anchor="middle" font-size="11" font-weight="bold" fill="currentColor">i</text>
-                        </svg>
-                    </span>
-                </h3>
-            </div>
-            <label class="switch">
-                <input type="checkbox" id="blurIsAlwaysOn-switch">
-                <span class="slider round"></span>
-            </label>
         </div>
         <div class="main-area-container">
             <h3>Manual Controls</h3>
@@ -91,9 +59,44 @@
                 </div>
             </div>
         </div>
+        <div class="main-area-container settings-contianer">
+            <div class="setting-info">
+                <h3>
+                    Smart Text Detection
+                    <span class="info-icon" data-tooltip="Scans page text for words that trigger your phobias using intelligent word matching. Runs best on a standard or newer computer.">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                            <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5" fill="none"/>
+                            <text x="8" y="12" text-anchor="middle" font-size="11" font-weight="bold" fill="currentColor">i</text>
+                        </svg>
+                    </span>
+                </h3>
+            </div>
+            <label class="switch">
+                <input type="checkbox" id="enabled-switch">
+                <span class="slider round"></span>
+            </label>
+        </div>
+        <div class="main-area-container settings-contianer">
+            <div class="setting-info">
+                <h3>
+                    Always Blur Media
+                    <span class="info-icon" data-tooltip="Skip text analysis and blur all visual content for maximum protection (Performance impact: None to Small)">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                            <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5" fill="none"/>
+                            <text x="8" y="12" text-anchor="middle" font-size="11" font-weight="bold" fill="currentColor">i</text>
+                        </svg>
+                    </span>
+                </h3>
+            </div>
+            <label class="switch">
+                <input type="checkbox" id="blurIsAlwaysOn-switch">
+                <span class="slider round"></span>
+            </label>
+        </div>
         <div class="main-area-container">
             <h3>
                 Blur Amount
+                <span id="blurRangeValue" class="blur-value-badge">50%</span>
                 <span class="info-icon" data-tooltip="Adjust the intensity of the blur effect applied to visual content">
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
                         <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5" fill="none"/>
@@ -106,7 +109,8 @@
         <div class="supported-words-container main-area-container">
             <div class="suported-words-collapser">
                 <h3>
-                    Target Words To Block
+                    Trigger Words
+                    <span id="trigger-count-badge" class="count-badge" style="display:none"></span>
                     <span class="info-icon" data-tooltip="Words related to your phobias that trigger content blurring.">
                         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
                             <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5" fill="none"/>

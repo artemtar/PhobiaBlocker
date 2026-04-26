@@ -26,6 +26,105 @@ document.addEventListener('DOMContentLoaded', () => {
             tag.appendChild(removeBtn)
             container.appendChild(tag)
         })
+        updateTriggerCountBadge()
+    }
+
+    function updateTriggerCountBadge() {
+        const badge = document.getElementById('trigger-count-badge')
+        if (!badge) return
+        if (targetWords.length > 0) {
+            badge.textContent = '(' + targetWords.length + ')'
+            badge.style.display = ''
+        } else {
+            badge.style.display = 'none'
+        }
+    }
+
+    function updateDetectedCountBadge(count) {
+        const badge = document.getElementById('detected-count-badge')
+        if (!badge) return
+        if (count > 0) {
+            badge.textContent = '(' + count + ')'
+            badge.style.display = ''
+        } else {
+            badge.style.display = 'none'
+        }
+    }
+
+    function updateBlurValueDisplay(value) {
+        const display = document.getElementById('blurRangeValue')
+        if (display) display.textContent = value + '%'
+    }
+
+    function showButtonSuccess(btn) {
+        const originalSpan = btn.querySelector('span')
+        const originalText = originalSpan ? originalSpan.textContent : ''
+        btn.classList.add('btn-success')
+        if (originalSpan) originalSpan.textContent = 'Done!'
+        setTimeout(() => {
+            btn.classList.remove('btn-success')
+            if (originalSpan) originalSpan.textContent = originalText
+        }, 1500)
+    }
+
+    function updateSiteStatus() {
+        const bar = document.getElementById('site-status-bar')
+        if (!bar) return
+
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            if (!tabs || !tabs[0] || !tabs[0].url) {
+                bar.className = 'site-status-bar status-unsupported'
+                bar.textContent = 'Unsupported page'
+                return
+            }
+
+            const url = tabs[0].url
+            if (url.startsWith('chrome://') || url.startsWith('chrome-extension://') || url.startsWith('about:')) {
+                bar.className = 'site-status-bar status-unsupported'
+                bar.textContent = 'Unsupported page'
+                return
+            }
+
+            let hostname = ''
+            try { hostname = new URL(url).hostname } catch (e) { return }
+
+            chrome.storage.sync.get(['whitelistedSites', 'blacklistedSites', 'phobiaBlockerEnabled'], (storage) => {
+                const whitelist = storage.whitelistedSites || []
+                const blacklist = storage.blacklistedSites || []
+                const enabled = storage.phobiaBlockerEnabled !== false
+
+                if (!enabled) {
+                    bar.className = 'site-status-bar status-disabled'
+                    bar.textContent = 'Protection off'
+                    return
+                }
+
+                if (matchesSiteList(hostname, blacklist)) {
+                    bar.className = 'site-status-bar status-blacklisted'
+                    bar.textContent = 'Blacklisted — always blurred'
+                    return
+                }
+
+                if (matchesSiteList(hostname, whitelist)) {
+                    bar.className = 'site-status-bar status-whitelisted'
+                    bar.textContent = 'Whitelisted — auto protection paused'
+                    return
+                }
+
+                bar.className = 'site-status-bar status-active'
+                bar.textContent = 'Protection active'
+            })
+        })
+    }
+
+    function matchesSiteList(hostname, list) {
+        return list.some(pattern => {
+            if (pattern.startsWith('*.')) {
+                const domain = pattern.slice(2)
+                return hostname === domain || hostname.endsWith('.' + domain)
+            }
+            return hostname === pattern
+        })
     }
 
     function addTag(word) {
@@ -150,20 +249,26 @@ document.addEventListener('DOMContentLoaded', () => {
         })
 
         document.getElementById('unblurBtn').addEventListener('click', () => {
+            const btn = document.getElementById('unblurBtn')
             chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
                 if (tabs && tabs[0]) {
                     try {
-                        chrome.tabs.sendMessage(tabs[0].id, { type: 'unblurAll' })
+                        chrome.tabs.sendMessage(tabs[0].id, { type: 'unblurAll' }, () => {
+                            if (!chrome.runtime.lastError) showButtonSuccess(btn)
+                        })
                     } catch (e) {}
                 }
             })
         })
 
         document.getElementById('blurBtn').addEventListener('click', () => {
+            const btn = document.getElementById('blurBtn')
             chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
                 if (tabs && tabs[0]) {
                     try {
-                        chrome.tabs.sendMessage(tabs[0].id, { type: 'blurAll' })
+                        chrome.tabs.sendMessage(tabs[0].id, { type: 'blurAll' }, () => {
+                            if (!chrome.runtime.lastError) showButtonSuccess(btn)
+                        })
                     } catch (e) {}
                 }
             })
@@ -171,6 +276,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         document.getElementById('blurRange').addEventListener('input', () => {
             let blurValueAmount = document.getElementById('blurRange').value
+            updateBlurValueDisplay(blurValueAmount)
             chrome.tabs.query({}, (tabs) => {
                 let message = { type: 'setBlurAmount', value: blurValueAmount }
                 for (let i = 0; i < tabs.length; ++i) {
@@ -195,7 +301,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     } catch (e) {}
                 }
             })
-            chrome.storage.sync.set({ 'phobiaBlockerEnabled': enabledSwitch.checked })
+            chrome.storage.sync.set({ 'phobiaBlockerEnabled': enabledSwitch.checked }, () => {
+                updateSiteStatus()
+            })
         })
 
         document.getElementById('blurIsAlwaysOn-switch').addEventListener('click', () => {
@@ -208,6 +316,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             })
             chrome.storage.sync.set({ 'blurIsAlwaysOn': blurSwitch.checked })
+            updateSiteStatus()
         })
 
         document.getElementById('btn-detected-words').addEventListener('click', () => {
@@ -241,8 +350,12 @@ document.addEventListener('DOMContentLoaded', () => {
                         empty.className = 'detected-words-empty'
                         empty.textContent = 'Nothing found on this page'
                         list.appendChild(empty)
+                        updateDetectedCountBadge(0)
                         return
                     }
+                    let totalBlurred = 0
+                    response.words.forEach(w => { totalBlurred += w.count })
+                    updateDetectedCountBadge(totalBlurred)
                     response.words.forEach(({ word, count }) => {
                         const row = document.createElement('div')
                         row.className = 'detected-word-row'
@@ -251,9 +364,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         name.textContent = word
                         const cnt = document.createElement('span')
                         cnt.className = 'detected-word-count'
-                        cnt.textContent = `${count} item${count !== 1 ? 's' : ''}`
-                        row.appendChild(cnt)
+                        cnt.textContent = count
                         row.appendChild(name)
+                        row.appendChild(cnt)
                         list.appendChild(row)
                     })
                 })
@@ -289,6 +402,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         let blurValue = storage.blurValueAmount ?? DEFAULT_BLUR_SLIDER_VALUE
         document.getElementById('blurRange').value = blurValue
+        updateBlurValueDisplay(blurValue)
         chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
             if (tabs && tabs[0]) {
                 try {
@@ -305,5 +419,6 @@ document.addEventListener('DOMContentLoaded', () => {
         setupTooltip()
         setupEventListeners()
         queryActiveTab()
+        updateSiteStatus()
     })
 })

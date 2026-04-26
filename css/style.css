@@ -24,7 +24,8 @@ img.phobia-preview:not(.phobia-permanent-unblur) {
     filter: none !important;
 }
 
-html.phobia-disabled :is(img, video, iframe):not(.phobia-noblur) {
+html.phobia-disabled :is(img, video, iframe):not(.phobia-noblur),
+html.phobia-disabled :is(img, video, iframe)[data-phobia-blur]:hover {
     filter: none !important;
     pointer-events: auto !important;
     cursor: auto !important;

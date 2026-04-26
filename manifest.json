@@ -1,8 +1,8 @@
 {
     "manifest_version": 3,
     "name": "PhobiaBlocker",
-    "version": "1.1.4",
-    "description": "Intelligently blur images on web pages that might contain content related to your specific phobias using NLP text analysis.",
+    "version": "1.2.0",
+    "description": "Blur likely phobia triggers on web pages with smart text analysis, quick controls, and custom site rules.",
     "icons": {
         "16": "icons/icon16.png",
         "48": "icons/icon48.png",

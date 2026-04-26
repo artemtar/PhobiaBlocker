@@ -18,16 +18,135 @@
             <!-- Sidebar Navigation -->
             <nav class="settings-sidebar">
                 <ul class="sidebar-nav">
-                    <li><a href="#about" class="nav-link active">How It Works</a></li>
-                    <li><a href="#site-rules" class="nav-link">Site Rules</a></li>
-                    <li><a href="#shortcuts" class="nav-link">Keyboard Shortcuts</a></li>
+                    <li><a href="#site-rules" class="nav-link active">Site Rules</a></li>
                     <li><a href="#hover-preview" class="nav-link">Hover Preview</a></li>
+                    <li><a href="#shortcuts" class="nav-link">Keyboard Shortcuts</a></li>
+                    <li><a href="#about" class="nav-link">How It Works</a></li>
                     <li><a href="#debug" class="nav-link">Debug Mode</a></li>
                 </ul>
             </nav>
 
             <!-- Content Area -->
             <main class="settings-content">
+                <!-- Site Rules Section -->
+                <section id="site-rules" class="settings-section">
+                    <h2 class="section-title">Site Rules</h2>
+                    <div class="settings-group">
+                        <div class="setting-item-full">
+                            <p class="setting-description">
+                                Control how PhobiaBlocker behaves on specific websites. Add domains or URL patterns to whitelist or blacklist sites.
+                            </p>
+                        </div>
+
+                        <!-- Whitelist -->
+                        <div class="site-rules-subsection">
+                            <h3>Whitelist</h3>
+                            <p class="setting-description">
+                                Websites where PhobiaBlocker <strong>will not run at all</strong>. No blur will be applied, even if "Always Blur Media" is enabled.
+                            </p>
+                            <div class="site-list-container">
+                                <div id="whitelist-container" class="site-list"></div>
+                                <div class="site-input-container">
+                                    <input type="text" id="whitelist-input" class="site-input" placeholder="example.com or *.example.com" maxlength="100">
+                                    <button id="add-whitelist-btn" class="add-site-btn" title="Add to whitelist">
+                                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                                            <path d="M8 3V13M3 8H13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                                        </svg>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="info-box">
+                                <strong>Examples:</strong>
+                                <ul>
+                                    <li><code>example.com</code> - Exact domain match</li>
+                                    <li><code>*.example.com</code> - All subdomains of example.com</li>
+                                    <li><code>example.com/path</code> - Specific path on domain</li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <!-- Blacklist -->
+                        <div class="site-rules-subsection">
+                            <h3>Blacklist</h3>
+                            <p class="setting-description">
+                                Websites where <strong>blur is always applied</strong> to all visual content, regardless of text analysis or other settings.
+                            </p>
+                            <div class="site-list-container">
+                                <div id="blacklist-container" class="site-list"></div>
+                                <div class="site-input-container">
+                                    <input type="text" id="blacklist-input" class="site-input" placeholder="example.com or *.example.com" maxlength="100">
+                                    <button id="add-blacklist-btn" class="add-site-btn" title="Add to blacklist">
+                                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                                            <path d="M8 3V13M3 8H13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                                        </svg>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="info-box">
+                                <strong>Note:</strong> Blacklist takes precedence over whitelist. If a site is on both lists, it will be blacklisted.
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Hover Preview Section -->
+                <section id="hover-preview" class="settings-section">
+                    <h2 class="section-title">Hover Preview</h2>
+                    <div class="settings-group">
+                        <div class="setting-item">
+                            <div class="setting-left">
+                                <label for="preview-switch" class="setting-label">Enable Hover Preview</label>
+                                <p class="setting-description">When hovering over a blurred image, show a partially unblurred preview. Move the mouse away to restore full blur.</p>
+                            </div>
+                            <div class="setting-right">
+                                <label class="switch">
+                                    <input type="checkbox" id="preview-switch" checked>
+                                    <span class="slider"></span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="setting-item" id="preview-strength-item">
+                            <div class="setting-left">
+                                <label for="preview-strength-slider" class="setting-label">Preview Blur Strength</label>
+                                <p class="setting-description">How much blur to apply when hovering. Lower values show more of the image.</p>
+                                <div class="blur-slider-container">
+                                    <input type="range" id="preview-strength-slider" class="blur-slider" min="0" max="20" step="1" value="5">
+                                </div>
+                            </div>
+                            <div class="setting-right">
+                                <div id="preview-blur-demo" class="preview-blur-demo"></div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Keyboard Shortcuts Section -->
+                <section id="shortcuts" class="settings-section">
+                    <h2 class="section-title">Keyboard Shortcuts</h2>
+                    <div class="settings-group">
+                        <div class="setting-item-full">
+                            <p class="setting-description">
+                                PhobiaBlocker provides keyboard shortcuts for quick actions. The shortcuts below reflect your current settings:
+                            </p>
+                            <div class="shortcuts-list" id="shortcuts-list">
+                                <!-- Shortcuts will be loaded dynamically from Chrome settings -->
+                                <div class="shortcut-item">
+                                    <span class="shortcut-label">Loading shortcuts...</span>
+                                    <span class="shortcut-keys">...</span>
+                                </div>
+                            </div>
+                            <div class="info-box">
+                                <strong>Note:</strong> Chrome requires you to configure keyboard shortcuts in the Extensions settings.
+                                Click the button below to customize these shortcuts.
+                            </div>
+                            <button id="configure-shortcuts-btn" class="action-btn">
+                                Configure Shortcuts in Chrome
+                            </button>
+                        </div>
+                    </div>
+                </section>
+
                 <!-- About / How It Works Section -->
                 <section id="about" class="settings-section">
                     <h2 class="section-title">How PhobiaBlocker Works</h2>
@@ -43,11 +162,11 @@
                             </p>
 
                             <div style="background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); padding: 16px; border-radius: 12px; margin-top: 16px; border-left: 4px solid #2196f3;">
-                                <strong style="color: #1976d2; display: block; margin-bottom: 8px;">🔄 How It Works</strong>
+                                <strong style="color: #1976d2; display: block; margin-bottom: 8px;">How It Works</strong>
                                 <div style="color: #2d3748; line-height: 1.8;">
-                                    <div style="display: inline-block; margin: 4px 8px 4px 0;">1️⃣ Blur everything on load</div><br>
-                                    <div style="display: inline-block; margin: 4px 8px;">2️⃣ Run text search with intelligent word extraction</div><br>
-                                    <div style="display: inline-block; margin: 4px 0 4px 8px;">3️⃣ Remove blur if nothing is detected</div>
+                                    <div style="display: inline-block; margin: 4px 8px 4px 0;">1. Blur everything on load</div><br>
+                                    <div style="display: inline-block; margin: 4px 8px;">2. Run text search with intelligent word extraction</div><br>
+                                    <div style="display: inline-block; margin: 4px 0 4px 8px;">3. Remove blur if nothing is detected</div>
                                 </div>
                             </div>
 
@@ -96,125 +215,6 @@
                     </div>
                 </section>
 
-                <!-- Site Rules Section -->
-                <section id="site-rules" class="settings-section">
-                    <h2 class="section-title">Site Rules</h2>
-                    <div class="settings-group">
-                        <div class="setting-item-full">
-                            <p class="setting-description">
-                                Control how PhobiaBlocker behaves on specific websites. Add domains or URL patterns to whitelist or blacklist sites.
-                            </p>
-                        </div>
-
-                        <!-- Whitelist -->
-                        <div class="site-rules-subsection">
-                            <h3>Whitelist</h3>
-                            <p class="setting-description">
-                                Websites where PhobiaBlocker <strong>will not run at all</strong>. No blur will be applied, even if "Blur Always On" is enabled.
-                            </p>
-                            <div class="site-list-container">
-                                <div id="whitelist-container" class="site-list"></div>
-                                <div class="site-input-container">
-                                    <input type="text" id="whitelist-input" class="site-input" placeholder="example.com or *.example.com" maxlength="100">
-                                    <button id="add-whitelist-btn" class="add-site-btn" title="Add to whitelist">
-                                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                                            <path d="M8 3V13M3 8H13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                                        </svg>
-                                    </button>
-                                </div>
-                            </div>
-                            <div class="info-box">
-                                <strong>Examples:</strong>
-                                <ul>
-                                    <li><code>example.com</code> - Exact domain match</li>
-                                    <li><code>*.example.com</code> - All subdomains of example.com</li>
-                                    <li><code>example.com/path</code> - Specific path on domain</li>
-                                </ul>
-                            </div>
-                        </div>
-
-                        <!-- Blacklist -->
-                        <div class="site-rules-subsection">
-                            <h3>Blacklist</h3>
-                            <p class="setting-description">
-                                Websites where <strong>blur is always applied</strong> to all visual content, regardless of text analysis or other settings.
-                            </p>
-                            <div class="site-list-container">
-                                <div id="blacklist-container" class="site-list"></div>
-                                <div class="site-input-container">
-                                    <input type="text" id="blacklist-input" class="site-input" placeholder="example.com or *.example.com" maxlength="100">
-                                    <button id="add-blacklist-btn" class="add-site-btn" title="Add to blacklist">
-                                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                                            <path d="M8 3V13M3 8H13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                                        </svg>
-                                    </button>
-                                </div>
-                            </div>
-                            <div class="info-box">
-                                <strong>Note:</strong> Blacklist takes precedence over whitelist. If a site is on both lists, it will be blacklisted.
-                            </div>
-                        </div>
-                    </div>
-                </section>
-
-                <!-- Keyboard Shortcuts Section -->
-                <section id="shortcuts" class="settings-section">
-                    <h2 class="section-title">Keyboard Shortcuts</h2>
-                    <div class="settings-group">
-                        <div class="setting-item-full">
-                            <p class="setting-description">
-                                PhobiaBlocker provides keyboard shortcuts for quick actions. The shortcuts below reflect your current settings:
-                            </p>
-                            <div class="shortcuts-list" id="shortcuts-list">
-                                <!-- Shortcuts will be loaded dynamically from Chrome settings -->
-                                <div class="shortcut-item">
-                                    <span class="shortcut-label">Loading shortcuts...</span>
-                                    <span class="shortcut-keys">...</span>
-                                </div>
-                            </div>
-                            <div class="info-box">
-                                <strong>Note:</strong> Chrome requires you to configure keyboard shortcuts in the Extensions settings.
-                                Click the button below to customize these shortcuts.
-                            </div>
-                            <button id="configure-shortcuts-btn" class="action-btn">
-                                Configure Shortcuts in Chrome
-                            </button>
-                        </div>
-                    </div>
-                </section>
-
-                <!-- Hover Preview Section -->
-                <section id="hover-preview" class="settings-section">
-                    <h2 class="section-title">Hover Preview</h2>
-                    <div class="settings-group">
-                        <div class="setting-item">
-                            <div class="setting-left">
-                                <label for="preview-switch" class="setting-label">Enable Hover Preview</label>
-                                <p class="setting-description">When hovering over a blurred image, show a partially unblurred preview. Move the mouse away to restore full blur.</p>
-                            </div>
-                            <div class="setting-right">
-                                <label class="switch">
-                                    <input type="checkbox" id="preview-switch" checked>
-                                    <span class="slider"></span>
-                                </label>
-                            </div>
-                        </div>
-
-                        <div class="setting-item" id="preview-strength-item">
-                            <div class="setting-left">
-                                <label for="preview-strength-slider" class="setting-label">Preview Blur Strength</label>
-                                <p class="setting-description">How much blur to apply when hovering. Lower values show more of the image.</p>
-                                <div class="blur-slider-container">
-                                    <input type="range" id="preview-strength-slider" class="blur-slider" min="0" max="20" step="1" value="5">
-                                </div>
-                            </div>
-                            <div class="setting-right">
-                                <div id="preview-blur-demo" class="preview-blur-demo"></div>
-                            </div>
-                        </div>
-                    </div>
-                </section>
-
                 <!-- Debug Mode Section -->
                 <section id="debug" class="settings-section">
                     <h2 class="section-title">Debug Mode</h2>
@@ -222,7 +222,7 @@
                         <div class="setting-item">
                             <div class="setting-left">
                                 <label for="debug-switch" class="setting-label">Enable Debug Logging</label>
-                                <p class="setting-description">Enable verbose console logging for troubleshooting. Check the browser console (F12) to see debug information.</p>
+                                <p class="setting-description">For troubleshooting only. Enable verbose console logging to diagnose issues.</p>
                             </div>
                             <div class="setting-right">
                                 <label class="switch">
@@ -244,7 +244,7 @@
                                     <li><strong>Editor Detection:</strong> Text editors that are skipped to prevent typing lag</li>
                                 </ul>
                                 <p class="debug-note">
-                                    💡 To view debug logs, open Developer Tools (F12 or Cmd+Option+I on Mac) and check the Console tab.
+                                    To view debug logs, open Developer Tools (F12 or Cmd+Option+I on Mac) and check the Console tab.
                                 </p>
                             </div>
                         </div>

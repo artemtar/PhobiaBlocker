@@ -2,7 +2,7 @@
   position: relative;
   display: inline-block;
   width: 48px;
-  height: 16px;
+  height: 24px;
   align-self: center;
 }
 
@@ -30,8 +30,8 @@
   content: "";
   height: 24px;
   width: 24px;
-  left: -2px;
-  bottom: -4px;
+  left: 0;
+  bottom: 0;
   background-color: white;
   -webkit-transition: .3s;
   transition: .3s;
