@@ -12,33 +12,19 @@
             const style = document.createElement('style')
             style.id = 'phobiablocker-early-blur'
             style.textContent = `
-                /* CRITICAL: Blur ALL unprocessed visual content immediately to prevent flash */
-                img:not(.phobia-noblur):not(.phobia-permanent-unblur):not(.phobia-blur),
-                video:not(.phobia-noblur):not(.phobia-permanent-unblur):not(.phobia-blur),
-                iframe:not(.phobia-noblur):not(.phobia-permanent-unblur):not(.phobia-blur) {
+                :is(img, video, iframe):not(.phobia-noblur):not(.phobia-permanent-unblur):not(.phobia-blur) {
                     filter: blur(var(--blurValueAmount, 40px)) !important;
-                    -webkit-filter: blur(var(--blurValueAmount, 40px)) !important;
                     pointer-events: none !important;
                     cursor: default !important;
                 }
-                /* Extension-blurred elements — pointer-events and hover only for elements
-                   explicitly marked by the extension via data-phobia-blur. Using a data
-                   attribute instead of the .blur class prevents false matches on sites
-                   that use "blur" as their own CSS class (e.g. IMDB, Gemini). */
-                img[data-phobia-blur]:not(.phobia-permanent-unblur),
-                video[data-phobia-blur]:not(.phobia-permanent-unblur),
-                iframe[data-phobia-blur]:not(.phobia-permanent-unblur) {
+                :is(img, video, iframe)[data-phobia-blur]:not(.phobia-permanent-unblur) {
                     pointer-events: auto !important;
                     cursor: pointer !important;
                     transition: filter 0.2s ease !important;
                 }
-                /* Hover preview — CSS :hover fallback + JS-driven .phobia-preview class */
-                img[data-phobia-blur]:not(.phobia-permanent-unblur):hover,
-                img.phobia-preview:not(.phobia-permanent-unblur),
-                video[data-phobia-blur]:not(.phobia-permanent-unblur):hover,
-                iframe[data-phobia-blur]:not(.phobia-permanent-unblur):hover {
+                :is(img, video, iframe)[data-phobia-blur]:not(.phobia-permanent-unblur):hover,
+                img.phobia-preview:not(.phobia-permanent-unblur) {
                     filter: blur(var(--previewBlurAmount, 4px)) !important;
-                    -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
                 }
             `
 
@@ -446,7 +432,7 @@ class IframeNode extends ImageNode {
     textProcessingFinished(generation) {
         if (generation !== undefined && generation !== this._analysisGeneration) return
         this.runningTextProcessing -= 1
-        if (this._isCrossOrigin() && !this.hasBeenAnalyzed) return
+        if (this._isCrossOrigin()) return
         if (this.runningTextProcessing <= 0 && !this.isBlured && !blurIsAlwaysOn) {
             try {
                 this.unblur()

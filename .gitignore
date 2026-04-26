@@ -6,3 +6,6 @@ package-lock.json
 build/
 *.zip
 manifest.json.backup
+
+# Playwright MCP browser profile data
+.playwright-mcp/chromium-profile/

@@ -3,132 +3,30 @@
     --filterStrength: blur(var(--blurValueAmount));
 }
 
-/* FLASH PREVENTION: Blur all images by default (before JS processes them) */
-/* This prevents showing unblurred images even for a split second */
-img:not(.phobia-noblur):not(.phobia-permanent-unblur) {
+:is(img, video, iframe):not(.phobia-noblur):not(.phobia-permanent-unblur) {
     filter: var(--filterStrength) !important;
-    -webkit-filter: var(--filterStrength) !important;
-    -ms-filter: var(--filterStrength) !important;
     pointer-events: none;
     cursor: default;
 }
 
-/* Blur images with .phobia-blur class (JS-added) — filter only.
-   pointer-events and hover rules use [data-phobia-blur] instead to avoid matching
-   sites that use "blur" as their own CSS class (e.g. IMDB ipc-image blur). */
-img.phobia-blur {
-    filter: var(--filterStrength) !important;
-    -webkit-filter: var(--filterStrength) !important;
-    -ms-filter: var(--filterStrength) !important;
-}
-
-img[data-phobia-blur]:not(.phobia-permanent-unblur) {
+:is(img, video, iframe)[data-phobia-blur]:not(.phobia-permanent-unblur) {
     pointer-events: auto !important;
     cursor: pointer !important;
     transition: filter 0.2s ease;
 }
 
-img[data-phobia-blur]:not(.phobia-permanent-unblur):hover,
+:is(img, video, iframe)[data-phobia-blur]:not(.phobia-permanent-unblur):hover,
 img.phobia-preview:not(.phobia-permanent-unblur) {
     filter: blur(var(--previewBlurAmount, 4px)) !important;
-    -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
-    -ms-filter: blur(var(--previewBlurAmount, 4px)) !important;
 }
 
-img.phobia-noblur {
+:is(img, video, iframe, div, span, section, article, aside, header, footer, main, figure).phobia-noblur {
     filter: none !important;
-    -webkit-filter: none !important;
-    -ms-filter: none !important;
 }
 
-/* FLASH PREVENTION: Blur all videos by default */
-video:not(.phobia-noblur):not(.phobia-permanent-unblur) {
-    filter: var(--filterStrength) !important;
-    -webkit-filter: var(--filterStrength) !important;
-    -ms-filter: var(--filterStrength) !important;
-    pointer-events: none;
-    cursor: default;
-}
-
-/* Blur videos with .phobia-blur class (JS-added) — filter only */
-video.phobia-blur {
-    filter: var(--filterStrength) !important;
-    -webkit-filter: var(--filterStrength) !important;
-    -ms-filter: var(--filterStrength) !important;
-}
-
-video[data-phobia-blur]:not(.phobia-permanent-unblur) {
-    pointer-events: auto !important;
-    cursor: pointer !important;
-    transition: filter 0.2s ease;
-}
-
-video[data-phobia-blur]:not(.phobia-permanent-unblur):hover {
-    filter: blur(var(--previewBlurAmount, 4px)) !important;
-    -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
-    -ms-filter: blur(var(--previewBlurAmount, 4px)) !important;
-}
-
-video.phobia-noblur {
+html.phobia-disabled :is(img, video, iframe):not(.phobia-noblur) {
     filter: none !important;
-    -webkit-filter: none !important;
-    -ms-filter: none !important;
-}
-
-/* FLASH PREVENTION: Blur all iframes by default */
-iframe:not(.phobia-noblur):not(.phobia-permanent-unblur) {
-    filter: var(--filterStrength) !important;
-    -webkit-filter: var(--filterStrength) !important;
-    -ms-filter: var(--filterStrength) !important;
-    pointer-events: none;
-    cursor: default;
-}
-
-/* Blur iframes with .phobia-blur class (JS-added) — filter only */
-iframe.phobia-blur {
-    filter: var(--filterStrength) !important;
-    -webkit-filter: var(--filterStrength) !important;
-    -ms-filter: var(--filterStrength) !important;
-}
-
-iframe[data-phobia-blur]:not(.phobia-permanent-unblur) {
-    pointer-events: auto !important;
-    cursor: pointer !important;
-    transition: filter 0.2s ease;
-}
-
-iframe[data-phobia-blur]:not(.phobia-permanent-unblur):hover {
-    filter: blur(var(--previewBlurAmount, 4px)) !important;
-    -webkit-filter: blur(var(--previewBlurAmount, 4px)) !important;
-    -ms-filter: blur(var(--previewBlurAmount, 4px)) !important;
-}
-
-iframe.phobia-noblur {
-    filter: none !important;
-    -webkit-filter: none !important;
-    -ms-filter: none !important;
-}
-
-/* Background-image container elements (BgImageNode) — unblur via class.
-   Blur is applied exclusively via JS setProperty(..., 'important') inline style.
-   .phobia-noblur ensures site animation JS (e.g. inline style.filter set by
-   Angular/React) cannot re-blur the element. */
-div.phobia-noblur, span.phobia-noblur, section.phobia-noblur, article.phobia-noblur,
-aside.phobia-noblur, header.phobia-noblur, footer.phobia-noblur, main.phobia-noblur,
-figure.phobia-noblur {
-    filter: none !important;
-    -webkit-filter: none !important;
-}
-
-/* Completely disable all extension effects on whitelisted or disabled pages.
-   Selector specificity (0,2,2) beats the blur rules' (0,2,1), so !important wins here. */
-html.phobia-disabled img:not(.phobia-noblur),
-html.phobia-disabled video:not(.phobia-noblur),
-html.phobia-disabled iframe:not(.phobia-noblur) {
-    filter: none !important;
-    -webkit-filter: none !important;
     pointer-events: auto !important;
     cursor: auto !important;
     transition: none !important;
 }
-
