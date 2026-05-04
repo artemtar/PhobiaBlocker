@@ -179,8 +179,8 @@ class ImageNode {
         this._container = (parent && parent !== document.body) ? parent : null
     }
 
-    _attachContainerListeners() {
-        if (!this._container || this._boundMouseEnter) return
+	    _attachContainerListeners() {
+	        if (!this._container || this._boundMouseEnter) return
 
         const addPreview = () => {
             if (!this._imageNode || !this._imageNode.classList) return
@@ -219,54 +219,138 @@ class ImageNode {
             removePreview()
         }
 
-        this._container.addEventListener('mouseenter', this._boundMouseEnter)
-        this._container.addEventListener('mouseleave', this._boundMouseLeave)
+	        this._container.addEventListener('mouseenter', this._boundMouseEnter)
+	        this._container.addEventListener('mouseleave', this._boundMouseLeave)
 
-        // Attach to absolutely-positioned siblings that
-        // visually cover the container and intercept pointer events before they reach it.
-        const parent = this._container.parentElement
-        if (parent) {
-            this._overlaySiblings = []
-            for (const sibling of parent.children) {
-                if (sibling === this._container) continue
-                try {
-                    const pos = window.getComputedStyle(sibling).position
-                    if (pos === 'absolute' && sibling.querySelectorAll('img, video, iframe').length === 0) {
-                        // For overlay mouseleave: if mouse stays inside parent, keep preview
-                        // and wait for parent to lose focus; otherwise remove immediately.
-                        const overlayLeave = (e) => {
-                            if (!this._imageNode || !this._imageNode.classList) return
-                            const rt = e.relatedTarget
-                            if (rt && parent.contains(rt)) {
-                                // Still inside the card — keep preview; container/parent handles cleanup
-                                parent.addEventListener('mouseleave', removePreview, { once: true })
-                                return
-                            }
-                            removePreview()
-                        }
-                        sibling.addEventListener('mouseenter', addPreview)
-                        sibling.addEventListener('mouseleave', overlayLeave)
-                        this._overlaySiblings.push({ el: sibling, enter: addPreview, leave: overlayLeave })
-                    }
-                } catch (_) { /* skip detached nodes */ }
-            }
-        }
-    }
+	        // Attach to overlays that visually cover the media and intercept pointer events.
+	        // Many sites keep overlays as absolutely-positioned siblings, but on some (e.g. Instagram)
+	        // the overlay can be a sibling of a *higher* ancestor. Walk up a few levels and attach
+	        // to overlay siblings that significantly overlap the media rect.
+	        const targetRect = (() => {
+	            try { return this._imageNode.getBoundingClientRect() } catch (_) { return null }
+	        })()
+	        const targetArea = (targetRect && targetRect.width > 0 && targetRect.height > 0)
+	            ? (targetRect.width * targetRect.height)
+	            : 0
 
-    _detachContainerListeners() {
-        if (!this._container || !this._boundMouseEnter) return
-        this._container.removeEventListener('mouseenter', this._boundMouseEnter)
-        this._container.removeEventListener('mouseleave', this._boundMouseLeave)
-        if (this._overlaySiblings) {
-            for (const { el, enter, leave } of this._overlaySiblings) {
-                el.removeEventListener('mouseenter', enter)
-                el.removeEventListener('mouseleave', leave)
-            }
-            this._overlaySiblings = null
-        }
-        this._boundMouseEnter = null
-        this._boundMouseLeave = null
-    }
+	        const overlayCandidates = new Set()
+	        this._overlaySiblings = []
+
+	        const rectOverlapRatio = (a, b) => {
+	            const left = Math.max(a.left, b.left)
+	            const top = Math.max(a.top, b.top)
+	            const right = Math.min(a.right, b.right)
+	            const bottom = Math.min(a.bottom, b.bottom)
+	            const w = right - left
+	            const h = bottom - top
+	            if (w <= 0 || h <= 0) return 0
+	            const overlap = w * h
+	            return targetArea > 0 ? (overlap / targetArea) : 0
+	        }
+
+	        const attachOverlayListeners = (overlayEl, sharedParent) => {
+	            if (!overlayEl || overlayCandidates.has(overlayEl)) return
+	            overlayCandidates.add(overlayEl)
+
+	            // Use pointerover/pointerout in capture so we still trigger when the pointer
+	            // enters/leaves children inside the overlay (controls, buttons, sliders, etc.).
+	            const onEnter = () => addPreview()
+	            const onLeave = (e) => {
+	                if (!this._imageNode || !this._imageNode.classList) return
+	                const rt = e.relatedTarget
+	                if (rt && overlayEl.contains(rt)) return
+	                if (rt && sharedParent && sharedParent.contains(rt)) {
+	                    sharedParent.addEventListener('mouseleave', removePreview, { once: true })
+	                    return
+	                }
+	                removePreview()
+	            }
+	            overlayEl.addEventListener('pointerover', onEnter, true)
+	            overlayEl.addEventListener('pointerout', onLeave, true)
+	            this._overlaySiblings.push({
+	                el: overlayEl,
+	                enterType: 'pointerover',
+	                leaveType: 'pointerout',
+	                enter: onEnter,
+	                leave: onLeave,
+	                capture: true,
+	            })
+	        }
+
+	        const considerOverlaySibling = (sibling, sharedParent) => {
+	            if (!sibling || sibling === this._container) return
+	            if (!targetRect || targetArea === 0) return
+	            try {
+	                const style = window.getComputedStyle(sibling)
+	                if (style.pointerEvents === 'none') return
+	                if (style.display === 'none' || style.visibility === 'hidden') return
+	                // Skip siblings that are (or contain) real media players/frames.
+	                if (sibling.querySelector('video, iframe')) return
+
+	                const r = sibling.getBoundingClientRect()
+	                if (!r || r.width <= 0 || r.height <= 0) return
+
+	                const siblingArea = r.width * r.height
+	                // Reject huge "page overlays" that happen to overlap (modals, headers, etc.).
+	                if (siblingArea > targetArea * 6) return
+
+	                const overlapRatio = rectOverlapRatio(targetRect, r)
+	                const widthOk = r.width >= targetRect.width * 0.6
+	                const heightOk = r.height >= targetRect.height * 0.6
+	                if (overlapRatio < 0.25 || !widthOk || !heightOk) return
+
+	                attachOverlayListeners(sibling, sharedParent)
+	            } catch (_) { /* skip detached nodes */ }
+	        }
+
+	        // First, check direct siblings (original behavior, but more robust).
+	        const directParent = this._container.parentElement
+	        if (directParent) {
+	            for (const sibling of directParent.children) {
+	                if (sibling === this._container) continue
+	                considerOverlaySibling(sibling, directParent)
+	            }
+	        }
+
+	        // Then, walk up a few levels and look for overlay siblings of higher ancestors.
+	        // Limit levels to avoid attaching too broadly in complex layouts.
+	        let child = this._container
+	        let level = 0
+	        while (child && child.parentElement && child.parentElement !== document.body && level < 8) {
+	            const parent = child.parentElement
+	            // If the parent is a "multi-media shelf", stop climbing to avoid huge scopes.
+	            try {
+	                if (parent.querySelectorAll('img, video, iframe').length > 3) break
+	            } catch (_) { /* ignore */ }
+
+	            for (const sibling of parent.children) {
+	                if (sibling === child) continue
+	                considerOverlaySibling(sibling, parent)
+	            }
+
+	            child = parent
+	            level += 1
+	        }
+	    }
+
+	    _detachContainerListeners() {
+	        if (!this._container || !this._boundMouseEnter) return
+	        this._container.removeEventListener('mouseenter', this._boundMouseEnter)
+	        this._container.removeEventListener('mouseleave', this._boundMouseLeave)
+	        if (this._overlaySiblings) {
+	            for (const { el, enterType, leaveType, enter, leave, capture } of this._overlaySiblings) {
+	                // Back-compat with older stored shapes (if any)
+	                const et = enterType || 'mouseenter'
+	                const lt = leaveType || 'mouseleave'
+	                const cap = Boolean(capture)
+	                el.removeEventListener(et, enter, cap)
+	                el.removeEventListener(lt, leave, cap)
+	            }
+	            this._overlaySiblings = null
+	        }
+	        this._boundMouseEnter = null
+	        this._boundMouseLeave = null
+	    }
 
     blur() {
         if (!this._isNodeValid()) return
@@ -367,6 +451,109 @@ class TagImageNode extends ImageNode {
 class BgImageNode extends ImageNode {
     constructor(imageNode){
         super(imageNode)
+        this._overlayHidden = false
+        this._prevVisibilityValue = null
+        this._prevVisibilityPriority = null
+    }
+
+    _extractCssUrls(cssValue) {
+        if (!cssValue || typeof cssValue !== 'string') return []
+        const urls = []
+        const re = /url\(\s*(['"]?)(.*?)\1\s*\)/gi
+        let m
+        while ((m = re.exec(cssValue)) !== null) {
+            const u = (m[2] || '').trim()
+            if (u) urls.push(u)
+        }
+        return urls
+    }
+
+    _normalizeResourceUrl(urlLike) {
+        if (!urlLike || typeof urlLike !== 'string') return null
+        const trimmed = urlLike.trim()
+        if (!trimmed) return null
+        try {
+            return new URL(trimmed, document.baseURI).href
+        } catch (_) {
+            return trimmed
+        }
+    }
+
+    _isLikelyOverlayDuplicateOfMedia() {
+        if (!this._isNodeValid()) return false
+        const el = this._imageNode
+
+        let style
+        try {
+            style = window.getComputedStyle(el)
+        } catch (_) {
+            return false
+        }
+        if (!style) return false
+
+        const pos = style.position
+        if (pos !== 'absolute' && pos !== 'fixed') return false
+
+        const bg = style.backgroundImage || ''
+        if (!bg || bg === 'none' || !bg.includes('url(')) return false
+
+        const bgUrls = new Set(this._extractCssUrls(bg)
+            .map(u => this._normalizeResourceUrl(u))
+            .filter(Boolean))
+        if (bgUrls.size === 0) return false
+
+        const containers = []
+        const picture = el.closest && el.closest('picture')
+        if (picture) containers.push(picture)
+        if (el.parentElement) containers.push(el.parentElement)
+
+        for (const container of containers) {
+            if (!container || !container.querySelectorAll) continue
+            const mediaEls = container.querySelectorAll('img, video, iframe')
+            if (!mediaEls || mediaEls.length === 0) continue
+            for (const media of mediaEls) {
+                if (!media || el.contains(media)) continue
+                const tag = media.tagName
+                const possibleUrls = []
+                if (tag === 'IMG') {
+                    possibleUrls.push(media.currentSrc || media.getAttribute('src') || '')
+                    const srcset = media.getAttribute('srcset') || ''
+                    if (srcset) possibleUrls.push(...srcset.split(',').map(s => (s.trim().split(/\s+/)[0] || '').trim()))
+                } else if (tag === 'VIDEO') {
+                    possibleUrls.push(media.currentSrc || media.getAttribute('src') || '')
+                    possibleUrls.push(media.getAttribute('poster') || '')
+                } else if (tag === 'IFRAME') {
+                    possibleUrls.push(media.getAttribute('src') || '')
+                }
+                for (const u of possibleUrls) {
+                    const norm = this._normalizeResourceUrl(u)
+                    if (norm && bgUrls.has(norm)) return true
+                }
+            }
+        }
+        return false
+    }
+
+    _hideOverlay() {
+        if (!this._isNodeValid()) return
+        if (this._overlayHidden) return
+        this._prevVisibilityValue = this._imageNode.style.getPropertyValue('visibility')
+        this._prevVisibilityPriority = this._imageNode.style.getPropertyPriority('visibility')
+        this._imageNode.style.setProperty('visibility', 'hidden', 'important')
+        this._overlayHidden = true
+    }
+
+    _restoreOverlayVisibility() {
+        if (!this._isNodeValid()) return
+        if (!this._overlayHidden) return
+        if (!this._prevVisibilityValue) {
+            this._imageNode.style.removeProperty('visibility')
+        } else {
+            this._imageNode.style.setProperty('visibility', this._prevVisibilityValue, this._prevVisibilityPriority || '')
+        }
+        this._overlayHidden = false
+        this._prevVisibilityValue = null
+        this._prevVisibilityPriority = null
     }
 
     blur() {
@@ -374,8 +561,16 @@ class BgImageNode extends ImageNode {
         if (!this._imageNode.classList.contains('phobia-permanent-unblur')){
             this._imageNode.classList.remove('phobia-noblur')
             this._imageNode.classList.add('phobia-blur')
-            // Use !important so the extension's blur wins over site inline-style animations
-            this._imageNode.style.setProperty('filter', 'blur(var(--blurValueAmount, 40px))', 'important')
+            if (this._isLikelyOverlayDuplicateOfMedia()) {
+                // Bumble-style: an absolutely-positioned background-image layer covers a real <img>.
+                // Hiding it avoids "double blur" and reveals the blurred <img> underneath.
+                this._imageNode.style.removeProperty('filter')
+                this._hideOverlay()
+            } else {
+                this._restoreOverlayVisibility()
+                // Use !important so the extension's blur wins over site inline-style animations
+                this._imageNode.style.setProperty('filter', 'blur(var(--blurValueAmount, 40px))', 'important')
+            }
         }
     }
 
@@ -384,6 +579,7 @@ class BgImageNode extends ImageNode {
         this._imageNode.classList.remove('phobia-blur')
         this._imageNode.classList.add('phobia-noblur')
         this._imageNode.style.removeProperty('filter')
+        this._restoreOverlayVisibility()
     }
 }
 
@@ -514,87 +710,45 @@ class TextAnalizer {
         this._text.push(this._regexTextCleanUp(text))
     }
 
-    /**
-     * Search text for any target words, using NLP normalization to compare words
-     * @param {list[ImageNode]} dependentImageNodes Images that will be blured/unblured with this text
-     */
-    async startAnalysis (dependentImageNodes){
-        try {
-            if(!dependentImageNodes || dependentImageNodes.length === 0) return
+    async startAnalysisRaw() {
+        const rWordInAnyLanguage = /^[-\p{L}]+$/u
+        let cleanWords = tokenizer.tokenize(this._text.join(' '))
+            .map(word => word.toLowerCase())
+            .filter(word => word.length > 2)
+            .filter(word => rWordInAnyLanguage.test(word))
+        let cleanWordsSet = [...new Set(cleanWords)]
 
-            debugLog('TextAnalysis', 'Starting text analysis', {
-                imageCount: dependentImageNodes.length,
-                targetWordsCount: targetWords.length
-            })
-
-            const generationByNode = new Map()
-            dependentImageNodes.forEach((imageNode) => {
-                generationByNode.set(imageNode, imageNode.newTextProcessingStarted())
-            })
-
-            const rWordInAnyLanguage = /^[-\p{L}]+$/u // no numbers in the word, common for class names
-            let cleanWords = tokenizer.tokenize(this._text.join(' '))
-                .map(word => word.toLowerCase())
-                .filter(word => word.length > 2)
-                .filter(word => rWordInAnyLanguage.test(word))
-                // .filter(word => !stopWords.includes(word))
-            let cleanWordsSet = [...new Set(cleanWords)]
-
-            // NLP noramlization function is very expensive, therefore analyze only words
-            // that have two first letters in common with target words
-            let compareTargetsToTextWords = (targets, wordsToAnalize) => {
-                let probableMatchingTargetWords = []
-                targets.forEach((target) => {
-                    // Skip if target doesn't have at least 2 characters
-                    if (target.length < 2) return
-
-                    wordsToAnalize.forEach((word) => {
-                        if (word.length >= 2 && word[0] == target[0] && word[1] == target[1]) {
-                            probableMatchingTargetWords.push(word)
-                        }
-                    })
-                })
-                return probableMatchingTargetWords
-            }
-
-            let wordsToCheckNormalized = nlp(compareTargetsToTextWords(targetWords, cleanWordsSet))
-                .normalize(NORMALIZE_PARAMS)
-                .out('array')
-
-            const match = wordsToCheckNormalized
-                .filter(element => targetWordsNormalized.includes(element))
-                .filter(n => n)
-
-            let analysisResult = match.length > 0
-
-            debugLog('TextAnalysis', 'Analysis complete', {
-                targetWords: targetWords.slice(0, 10),
-                textWordsChecked: wordsToCheckNormalized.length,
-                matches: match,
-                shouldBlur: analysisResult,
-                imageCount: dependentImageNodes.length
-            })
-
-            dependentImageNodes.forEach((imageNode) => {
-                try {
-                    imageNode.updateBlurStatus(analysisResult, match)
-                    imageNode.textProcessingFinished(generationByNode.get(imageNode))
-                } catch (nodeError) {
-                    console.error('PhobiaBlocker: textProcessingFinished failed for node', nodeError)
+        let probableMatchingTargetWords = []
+        targetWords.forEach((target) => {
+            if (target.length < 2) return
+            cleanWordsSet.forEach((word) => {
+                if (word.length >= 2 && word[0] == target[0] && word[1] == target[1]) {
+                    probableMatchingTargetWords.push(word)
                 }
             })
+        })
 
-        } catch (error) {
-            console.error('Error in startAnalysis:', error)
-            // If analysis fails, mark images as finished processing so they can unveil
-            dependentImageNodes.forEach((imageNode) => {
-                try {
-                    imageNode.textProcessingFinished()
-                } catch (nodeError) {
-                    console.error('PhobiaBlocker: textProcessingFinished failed in fallback', nodeError)
-                }
-            })
+        let wordsToCheckNormalized = nlp(probableMatchingTargetWords)
+            .normalize(NORMALIZE_PARAMS)
+            .out('array')
+
+        const match = wordsToCheckNormalized
+            .filter(element => targetWordsNormalized.includes(element))
+            .filter(n => n)
+
+        const result = {
+            shouldBlur: match.length > 0,
+            matchedWords: [...new Set(match)]
         }
+
+        debugLog('TextAnalysis', 'Analysis complete', {
+            targetWords: targetWords.slice(0, 10),
+            textWordsChecked: wordsToCheckNormalized.length,
+            matches: match,
+            shouldBlur: result.shouldBlur
+        })
+
+        return result
     }
 
     _regexTextCleanUp(text){
@@ -616,20 +770,190 @@ class Controller {
         this._maxBatchSize = 10 // Or when we collect 10 mutations
         this._editorContainerCache = new WeakSet() // Cache known editor containers for fast lookup
         this._editorCacheHits = 0 // Track cache hits to know when to skip re-checking
+        this._postTypingScanTimer = null
+        this._postTypingScanDelay = 1200
         this._runningAnalyses = 0
         this._permanentlyUnblurred = false // Set after unblurAll — new images skip NLP and are immediately unblurred
         this._blurToggleGeneration = 0
+        this._analysisEpoch = 0
+        this._pageShouldBlur = null
+        this._pageMatchedWords = []
     }
 
-    _getSemanticContainer(el) {
-        const SEMANTIC_TAGS = new Set(['FIGURE', 'ARTICLE', 'SECTION', 'MAIN', 'ASIDE',
-            'HEADER', 'FOOTER', 'NAV', 'LI', 'BLOCKQUOTE'])
-        let node = el.parentElement
-        while (node && node !== document.body && node !== document.documentElement) {
-            if (SEMANTIC_TAGS.has(node.tagName)) return node
-            node = node.parentElement
+    _extractCssUrls(cssValue) {
+        // Extract all url(...) occurrences from CSS background-image (handles quotes).
+        // Example values:
+        //   url("https://a/b.jpg")
+        //   linear-gradient(...), url(/img.png)
+        //   image-set(url(a.png) 1x, url(b.png) 2x)
+        if (!cssValue || typeof cssValue !== 'string') return []
+        const urls = []
+        const re = /url\(\s*(['"]?)(.*?)\1\s*\)/gi
+        let m
+        while ((m = re.exec(cssValue)) !== null) {
+            const u = (m[2] || '').trim()
+            if (u) urls.push(u)
         }
-        return null
+        return urls
+    }
+
+    _normalizeResourceUrl(urlLike) {
+        if (!urlLike || typeof urlLike !== 'string') return null
+        const trimmed = urlLike.trim()
+        if (!trimmed) return null
+        try {
+            return new URL(trimmed, document.baseURI).href
+        } catch (_) {
+            return trimmed
+        }
+    }
+
+    _shouldSkipBgImageNode(el, bgCssValue) {
+        // Skip BgImageNode when the element is likely a "backing layer" for a real
+        // <img>/<video>/<iframe> in the same visual container (common on Bumble, etc.)
+        // to avoid "double blur".
+        if (!el || !el.querySelector) return false
+
+        // Parent-child case (existing behavior)
+        if (el.querySelector('img, video, iframe')) return true
+
+        const bgUrlsRaw = this._extractCssUrls(bgCssValue)
+        if (bgUrlsRaw.length === 0) return false
+        const bgUrls = new Set(bgUrlsRaw
+            .map(u => this._normalizeResourceUrl(u))
+            .filter(Boolean))
+
+        // If this element is an absolutely-positioned overlay that duplicates a sibling
+        // <img>/<video>/<iframe>, do NOT skip it. Instead, BgImageNode.blur() will hide it
+        // so the underlying blurred media becomes visible.
+        let isAbsoluteOverlay = false
+        try {
+            const pos = window.getComputedStyle(el).position
+            isAbsoluteOverlay = (pos === 'absolute' || pos === 'fixed')
+        } catch (_) { /* ignore */ }
+
+        // Candidate containers to look for sibling media:
+        // - closest <picture> (Bumble-like DOM)
+        // - closest data-phobia-container (already-resolved hover container)
+        // - parent / grandparent (generic fallback)
+        const candidates = []
+        const picture = el.closest('picture')
+        if (picture) candidates.push(picture)
+        const phobiaContainer = el.closest('[data-phobia-container]')
+        if (phobiaContainer && phobiaContainer !== picture) candidates.push(phobiaContainer)
+        if (el.parentElement) candidates.push(el.parentElement)
+        if (el.parentElement && el.parentElement.parentElement) candidates.push(el.parentElement.parentElement)
+
+        for (const container of candidates) {
+            if (!container || !container.querySelectorAll) continue
+            const mediaEls = container.querySelectorAll('img, video, iframe')
+            if (!mediaEls || mediaEls.length === 0) continue
+
+            for (const media of mediaEls) {
+                if (!media || el.contains(media)) continue
+                const tag = media.tagName
+                const possibleUrls = []
+                if (tag === 'IMG') {
+                    possibleUrls.push(media.currentSrc || media.getAttribute('src') || '')
+                    const srcset = media.getAttribute('srcset') || ''
+                    if (srcset) possibleUrls.push(...srcset.split(',').map(s => (s.trim().split(/\s+/)[0] || '').trim()))
+                } else if (tag === 'VIDEO') {
+                    possibleUrls.push(media.currentSrc || media.getAttribute('src') || '')
+                    possibleUrls.push(media.getAttribute('poster') || '')
+                } else if (tag === 'IFRAME') {
+                    possibleUrls.push(media.getAttribute('src') || '')
+                }
+                for (const u of possibleUrls) {
+                    const norm = this._normalizeResourceUrl(u)
+                    if (norm && bgUrls.has(norm)) {
+                        // Overlay duplicate: keep BgImageNode so blur() can hide it.
+                        if (isAbsoluteOverlay) return false
+                        return true
+                    }
+                }
+            }
+        }
+
+        return false
+    }
+
+    _invalidatePendingAnalysis() {
+        this._analysisEpoch++
+    }
+
+    _isTextInputElement(el) {
+        if (!el) return false
+        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') return true
+        if (el.isContentEditable) return true
+        try {
+            const role = el.getAttribute && el.getAttribute('role')
+            if (role && role.toLowerCase() === 'textbox') return true
+        } catch (_) {}
+        return false
+    }
+
+    _isTextInputActive() {
+        try {
+            return this._isTextInputElement(document.activeElement)
+        } catch (_) {
+            return false
+        }
+    }
+
+    _nodeHasMediaTags(node) {
+        if (!node || node.nodeType !== Node.ELEMENT_NODE) return false
+        const tag = node.tagName
+        if (tag === 'IMG' || tag === 'VIDEO' || tag === 'IFRAME' || tag === 'PICTURE' || tag === 'SOURCE') return true
+        try {
+            return !!(node.querySelector && node.querySelector('img, video, iframe, picture, source'))
+        } catch (_) {
+            return false
+        }
+    }
+
+    _shouldDeferMutationDuringTyping(mutation) {
+        if (!mutation) return false
+        if (mutation.type === 'attributes') {
+            if (mutation.attributeName === 'src') return false
+            return mutation.attributeName === 'class' || mutation.attributeName === 'style'
+        }
+        if (mutation.type === 'childList') {
+            for (let i = 0; i < mutation.addedNodes.length; i++) {
+                if (this._nodeHasMediaTags(mutation.addedNodes[i])) return false
+            }
+            return true
+        }
+        return false
+    }
+
+    _schedulePostTypingMediaScan() {
+        clearTimeout(this._postTypingScanTimer)
+        this._postTypingScanTimer = setTimeout(async () => {
+            if (this._isTextInputActive()) return
+            let started = false
+            try {
+                const { newImages } = this.updateImageList(document, { includeBackgrounds: false })
+                if (newImages.length === 0) return
+                this._analysisStarted()
+                started = true
+                if (this._pageShouldBlur === null) {
+                    const analysisEpoch = this._analysisEpoch
+                    const result = await this._analyzeWholePage()
+                    if (analysisEpoch === this._analysisEpoch) {
+                        this._applyPageResult(this._imageNodeList.getAllImages(), result)
+                    }
+                } else {
+                    this._applyPageResult(newImages, {
+                        shouldBlur: this._pageShouldBlur,
+                        matchedWords: this._pageMatchedWords
+                    })
+                }
+            } catch (_) {
+                // Best-effort; do not interfere with typing.
+            } finally {
+                if (started) this._analysisFinished()
+            }
+        }, this._postTypingScanDelay)
     }
 
     _analysisStarted() {
@@ -650,9 +974,36 @@ class Controller {
         }
     }
 
-    updateImageList(nodeToCheck){
+    async _analyzeWholePage() {
+        const ta = new TextAnalizer()
+        ta.addText(document.body?.innerText || document.body?.textContent || '')
+        ta.addText(document.title || '')
+        return ta.startAnalysisRaw()
+    }
+
+    _applyPageResult(imageNodes, result) {
+        this._pageShouldBlur = result.shouldBlur
+        this._pageMatchedWords = result.matchedWords
+
+        const generationByNode = new Map()
+        imageNodes.forEach((imageNode) => {
+            generationByNode.set(imageNode, imageNode.newTextProcessingStarted())
+        })
+        imageNodes.forEach((imageNode) => {
+            try {
+                imageNode.updateBlurStatus(result.shouldBlur, result.matchedWords)
+                imageNode.textProcessingFinished(generationByNode.get(imageNode))
+            } catch (nodeError) {
+                console.error('PhobiaBlocker: textProcessingFinished failed for node', nodeError)
+            }
+        })
+    }
+
+    updateImageList(nodeToCheck, options = {}){
         let newImages = []
         let existingImages = []
+        const includeBackgrounds = options.includeBackgrounds !== false
+        const selfOnly = options.selfOnly === true
 
         // Helper function to process a single element
         let checkAndUpdate = (classType, imageNode) => {
@@ -688,19 +1039,24 @@ class Controller {
         } else if (tag === 'IFRAME') {
             if (!this._isEditorIframe(nodeToCheck)) checkAndUpdate(IframeNode, nodeToCheck)
             else { nodeToCheck.classList.add('phobia-noblur'); nodeToCheck.classList.remove('phobia-blur') }
-        } else if (tag) {
-            // Check if nodeToCheck itself is a background-image container
+        } else if (tag && includeBackgrounds) {
             try {
                 const bg = window.getComputedStyle(nodeToCheck).backgroundImage
-                if (bg && bg !== 'none' && bg.includes('url(')) checkAndUpdate(BgImageNode, nodeToCheck)
+                if (bg && bg !== 'none' && bg.includes('url(')) {
+                    if (!this._shouldSkipBgImageNode(nodeToCheck, bg)) checkAndUpdate(BgImageNode, nodeToCheck)
+                }
             } catch (_) { /* skip detached or hidden elements */ }
         }
+
+        if (selfOnly) return { newImages, existingImages }
 
         // Single pass for ALL visual content — replaces four separate loops.
         // img/video/iframe: found by tag name directly.
         // div/span/etc: checked via getComputedStyle for background-image.
         // getComputedStyle is the only way to detect CSS-class-applied background images.
-        const elements = nodeToCheck.querySelectorAll('img, video, iframe, div, span, section, article, aside, header, footer, main, figure')
+        const elements = includeBackgrounds
+            ? nodeToCheck.querySelectorAll('img, video, iframe, div, span, section, article, aside, header, footer, main, figure')
+            : nodeToCheck.querySelectorAll('img, video, iframe')
         for (let i = 0; i < elements.length; i++) {
             const el = elements[i]
             const elTag = el.tagName
@@ -712,10 +1068,12 @@ class Controller {
             } else if (elTag === 'IFRAME') {
                 if (!this._isEditorIframe(el)) checkAndUpdate(IframeNode, el)
                 else { el.classList.add('phobia-noblur'); el.classList.remove('phobia-blur') }
-            } else {
+            } else if (includeBackgrounds) {
                 try {
                     const bg = window.getComputedStyle(el).backgroundImage
-                    if (bg && bg !== 'none' && bg.includes('url(')) checkAndUpdate(BgImageNode, el)
+                    if (bg && bg !== 'none' && bg.includes('url(')) {
+                        if (!this._shouldSkipBgImageNode(el, bg)) checkAndUpdate(BgImageNode, el)
+                    }
                 } catch (_) { /* skip detached or hidden elements */ }
             }
         }
@@ -723,46 +1081,20 @@ class Controller {
         return { newImages, existingImages }
     }
 
-    onLoad(){
+    async onLoad(){
         try {
-            let { newImages, existingImages } = this.updateImageList(document)
+            let { newImages } = this.updateImageList(document)
             const hasImages = newImages.length > 0
             if (hasImages) this._analysisStarted()
 
-            // Group images by their nearest semantic container so each group is
-            // analyzed against only the text that is visually relevant to it —
-            // not the entire page body. Images without a semantic ancestor fall
-            // into a single '__page__' group that uses the full visible body text.
-            const groups = new Map()
-            for (const imageNode of newImages) {
-                const el = imageNode.getImageNode()
-                const container = this._getSemanticContainer(el)
-                const key = container || '__page__'
-                if (!groups.has(key)) groups.set(key, { container, images: [] })
-                groups.get(key).images.push(imageNode)
+            const analysisEpoch = this._analysisEpoch
+            const result = await this._analyzeWholePage()
+            if (analysisEpoch === this._analysisEpoch) {
+                this._applyPageResult(this._imageNodeList.getAllImages(), result)
             }
 
-            const analyses = []
-            for (const { container, images } of groups.values()) {
-                const ta = new TextAnalizer()
-                if (container) {
-                    // innerText skips hidden (display:none / visibility:hidden) text
-                    ta.addText(container.innerText || container.textContent || '')
-                } else {
-                    ta.addText(document.body.innerText || document.body.textContent || '')
-                    ta.addText(document.title)
-                }
-                analyses.push(ta.startAnalysis(images))
-            }
-
-            Promise.all(analyses).catch(err => {
-                // FAIL-SAFE: If text analysis fails, images stay blurred (safe default)
-                console.error('PhobiaBlocker: Text analysis failed, images remain blurred', err)
-            }).finally(() => {
-                // Remove early blur style after initial analysis completes
-                this._removeEarlyBlurStyle()
-                if (hasImages) this._analysisFinished()
-            })
+            this._removeEarlyBlurStyle()
+            if (hasImages) this._analysisFinished()
             this._observerInit()
         } catch (loadError) {
             // FAIL-SAFE: If onLoad completely fails, images stay blurred via CSS
@@ -846,10 +1178,12 @@ class Controller {
 
         // OPTIMIZATION: Cache check first (O(1) lookup)
         let current = target
+        const visited = []
         let depth = 0
-        const maxDepth = 10
+        const maxDepth = 50
 
         while (current && depth < maxDepth) {
+            visited.push(current)
             // Fast path: check if this element is already known to be in an editor
             if (this._editorContainerCache.has(current)) {
                 return true
@@ -857,14 +1191,14 @@ class Controller {
 
             // Check if current element is contenteditable
             if (current.isContentEditable) {
-                this._editorContainerCache.add(current)
+                visited.forEach(v => this._editorContainerCache.add(v))
                 return true
             }
 
             // Check tagName for form elements
             let tagName = current.tagName ? current.tagName.toLowerCase() : ''
             if (tagName === 'form' || tagName === 'textarea' || tagName === 'input') {
-                this._editorContainerCache.add(current)
+                visited.forEach(v => this._editorContainerCache.add(v))
                 return true
             }
 
@@ -872,11 +1206,13 @@ class Controller {
             if (typeof current.className === 'string') {
                 let className = current.className.toLowerCase()
                 if (className.includes('editor') || className.includes('wiki-edit') ||
+                    className.includes('rte') || className.includes('ak-editor') ||
+                    className.includes('prosemirror') || className.includes('fabric-editor') ||
                     className.includes('rte-container') || className.includes('richeditor') ||
                     className.includes('tox-') || className.includes('cke') ||
                     className.includes('mce') || className.includes('tinymce') ||
                     className.includes('wysiwyg') || className.includes('contenteditable')) {
-                    this._editorContainerCache.add(current)
+                    visited.forEach(v => this._editorContainerCache.add(v))
                     return true
                 }
             }
@@ -884,11 +1220,24 @@ class Controller {
             // Check ID for editor patterns
             if (typeof current.id === 'string') {
                 let id = current.id.toLowerCase()
-                if (id.includes('editor') || id.includes('mce') || id.includes('cke')) {
-                    this._editorContainerCache.add(current)
+                if (id.includes('editor') || id.includes('mce') || id.includes('cke') ||
+                    id.includes('rte') || id.includes('content-title')) {
+                    visited.forEach(v => this._editorContainerCache.add(v))
                     return true
                 }
             }
+
+            // data-testid patterns used by modern editors (including Atlassian)
+            try {
+                const testId = current.getAttribute && current.getAttribute('data-testid')
+                if (testId && typeof testId === 'string') {
+                    const v = testId.toLowerCase()
+                    if (v.includes('editor') || v.includes('content-title')) {
+                        visited.forEach(n => this._editorContainerCache.add(n))
+                        return true
+                    }
+                }
+            } catch (_) {}
 
             // Stop at body element
             if (tagName === 'body' || current === document.documentElement) {
@@ -1026,10 +1375,11 @@ class Controller {
         return !hasImages
     }
 
-    _processMutationBatch(){
+    async _processMutationBatch(){
         if (this._mutationBatch.length === 0) return
 
         this._imageNodeList.prune()
+        const typingContext = this._isTextInputActive()
 
         // If blurIsAlwaysOn or blacklisted, just find and blur new images without text analysis
         if (blurIsAlwaysOn || isBlacklisted()) {
@@ -1039,19 +1389,19 @@ class Controller {
                     const t = mutation.target
                     const tag = t.tagName
                     if ((tag === 'IMG' || tag === 'VIDEO' || tag === 'IFRAME') && mutation.attributeName === 'src') {
-                        // src changed: immediately re-blur to prevent flash of already-cleared element
                         const existingNode = this._imageNodeList.getImageNode(t)
                         if (existingNode) existingNode.blur()
                         else this.updateImageList(t)
                     } else {
-                        // class/style changed on existing bg-image container — re-check
-                        this.updateImageList(t)
+                        // Attribute mutations (class/style) are usually about the mutated element itself.
+                        // Avoid scanning large subtrees on every UI class flip.
+                        this.updateImageList(t, { selfOnly: true })
                     }
                     return
                 }
                 mutation.addedNodes.forEach((node) => {
                     if (node.nodeType === Node.ELEMENT_NODE) {
-                        let { newImages } = this.updateImageList(node)
+                        let { newImages } = this.updateImageList(node, { includeBackgrounds: !typingContext })
                         newImages.forEach(img => img.blur())
                     }
                 })
@@ -1060,11 +1410,9 @@ class Controller {
             return
         }
 
-        // Normal mode: do text analysis
-        let textAnalizer = new TextAnalizer()
+        // Normal mode: page-wide analysis
         let allNewImages = []
-        let allExistingImages = []
-        let unanalyzedExistingImages = []
+        let needsFullPageAnalysis = false
 
         this._mutationBatch.forEach((mutation) => {
             if (mutation.type === 'attributes') {
@@ -1072,8 +1420,6 @@ class Controller {
                 const t = mutation.target
                 const tag = t.tagName
                 if ((tag === 'IMG' || tag === 'VIDEO' || tag === 'IFRAME') && mutation.attributeName === 'src') {
-                    // src changed: new content on an existing element. Re-blur immediately to
-                    // prevent a flash from a previously-cleared element, then re-analyze.
                     const existingNode = this._imageNodeList.getImageNode(t)
                     if (existingNode) {
                         existingNode.isBlured = false
@@ -1086,53 +1432,53 @@ class Controller {
                         let { newImages } = this.updateImageList(t)
                         allNewImages = allNewImages.concat(newImages)
                     }
-                    // Use full visible body text (innerText skips hidden elements).
-                    if (document.body) textAnalizer.addText(document.body.innerText || document.body.textContent || '')
-                } else {
-                    // class/style changed on existing element — check if it now has a background image.
-                    // Use the parent's text as context since bg-image containers rarely have text children.
-                    let { newImages, existingImages } = this.updateImageList(t)
-                    allNewImages = allNewImages.concat(newImages)
-                    allExistingImages = allExistingImages.concat(existingImages)
-                    const textContext = t.parentElement
-                        ? (t.parentElement.innerText || t.parentElement.textContent || '')
-                        : (t.innerText || t.textContent || '')
-                    if (textContext) textAnalizer.addText(textContext)
+                    needsFullPageAnalysis = true
+                    return
                 }
+                // For class/style mutations, it's almost always sufficient to check the
+                // mutated element itself (background-image changes); scanning descendants
+                // is prohibitively expensive on large apps like Confluence.
+                let { newImages } = this.updateImageList(t, { selfOnly: true })
+                allNewImages = allNewImages.concat(newImages)
                 return
             }
 
             mutation.addedNodes.forEach((node) => {
                 if (node.nodeType !== Node.ELEMENT_NODE) return
-                let { newImages, existingImages } = this.updateImageList(node)
+                let { newImages } = this.updateImageList(node, { includeBackgrounds: !typingContext })
                 allNewImages = allNewImages.concat(newImages)
-                allExistingImages = allExistingImages.concat(existingImages)
             })
 
-            // Skip text extraction for:
-            // 1. Form fields and editors (to prevent typing lag)
-            // 2. Data tables without images (no visual content to blur)
-            // BUT we still checked for images above, so images in tables will be found
-            if (!this._shouldIgnoreMutation(mutation.target) &&
+            if (!typingContext &&
+                !this._shouldIgnoreMutation(mutation.target) &&
                 !this._isComplexEditor(mutation.target) &&
                 !this._isDataTableWithoutImages(mutation.target)) {
-                // Use native textContent (much faster than jQuery .text())
-                textAnalizer.addText(mutation.target.innerText || mutation.target.textContent || '')
+                needsFullPageAnalysis = true
             }
         })
 
-        // Check which existing images haven't been analyzed yet
-        unanalyzedExistingImages = allExistingImages.filter(img => !img.hasBeenAnalyzed)
+        const dedupedNewImages = [...new Set(allNewImages)]
+        if (dedupedNewImages.length > 0) this._analysisStarted()
 
-        // Analyze NEW images AND existing images that haven't been analyzed yet.
-        let imagesToAnalyze = allNewImages.concat(unanalyzedExistingImages)
-        if (imagesToAnalyze.length > 0) this._analysisStarted()
-        textAnalizer.startAnalysis(imagesToAnalyze).catch(err => {
-            console.error('Error in mutation batch text analysis:', err)
-        }).finally(() => {
-            if (imagesToAnalyze.length > 0) this._analysisFinished()
-        })
-        this._mutationBatch = []
+        try {
+            if (needsFullPageAnalysis || this._pageShouldBlur === null) {
+                const analysisEpoch = this._analysisEpoch
+                const result = await this._analyzeWholePage()
+                if (analysisEpoch === this._analysisEpoch) {
+                    this._applyPageResult(this._imageNodeList.getAllImages(), result)
+                }
+            } else if (dedupedNewImages.length > 0) {
+                this._applyPageResult(dedupedNewImages, {
+                    shouldBlur: this._pageShouldBlur,
+                    matchedWords: this._pageMatchedWords
+                })
+            }
+        } catch (err) {
+            console.error('Error in mutation batch page analysis:', err)
+        } finally {
+            if (dedupedNewImages.length > 0) this._analysisFinished()
+            this._mutationBatch = []
+        }
     }
 
     _observerInit(){
@@ -1144,6 +1490,7 @@ class Controller {
         this.observer = new MutationObserver((mutations) => {
             // Defensive: wrap entire observer in try-catch to prevent breaking pages
             try {
+                const typingContext = this._isTextInputActive()
                 // Aggressively filter mutations before processing
                 mutations.forEach((mutation) => {
                     try {
@@ -1173,8 +1520,28 @@ class Controller {
                         }
 
                         // Skip if mutation is inside an editor container (prevents typing lag)
-                        // Check for common editor container patterns
+                        // But still exempt editor iframes from blur so they remain clickable.
                         if (this._isInsideEditorContainer(target)) {
+                            if (mutation.type === 'childList') {
+                                mutation.addedNodes.forEach((node) => {
+                                    if (node.nodeType !== Node.ELEMENT_NODE) return
+                                    const iframes = node.tagName === 'IFRAME' ? [node]
+                                        : (node.querySelectorAll ? [...node.querySelectorAll('iframe')] : [])
+                                    iframes.forEach((iframe) => {
+                                        if (this._isEditorIframe(iframe)) {
+                                            iframe.classList.add('phobia-noblur')
+                                            iframe.classList.remove('phobia-blur')
+                                        }
+                                    })
+                                })
+                            }
+                            return
+                        }
+
+                        // Extra guard: while the user is typing, defer most non-media UI churn
+                        // (class/style flips and non-media childList updates) to avoid typing lag.
+                        if (typingContext && this._shouldDeferMutationDuringTyping(mutation)) {
+                            this._schedulePostTypingMediaScan()
                             return
                         }
 
@@ -1563,18 +1930,24 @@ if (document.readyState === 'loading') {
 document.addEventListener('contextmenu', (event) => {lastElementContext = event.target}, true)
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    let responded = false
+    const respond = (payload) => {
+        if (responded) return
+        responded = true
+        try { sendResponse(payload) } catch (_) { /* ignore */ }
+    }
     switch (message.type) {
     case 'getTriggeredWords': {
         // If extension is disabled on this site, nothing is visually blurred — report nothing
         if (document.documentElement.classList.contains('phobia-disabled')) {
-            sendResponse({ words: [] })
+            respond({ words: [] })
             return true
         }
         // If blur amount is 0px, nothing is visually blurred — report nothing
         const blurAmountStr = document.documentElement.style.getPropertyValue('--blurValueAmount')
         const blurAmount = parseFloat(blurAmountStr)
         if (!isNaN(blurAmount) && blurAmount <= 0) {
-            sendResponse({ words: [] })
+            respond({ words: [] })
             return true
         }
         const wordCounts = new Map()
@@ -1595,69 +1968,89 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const words = [...wordCounts.entries()]
             .map(([word, count]) => ({ word, count }))
             .sort((a, b) => b.count - a.count)
-        sendResponse({ words })
+        respond({ words })
         return true
     }
-    case 'blurAll':
-        controller._permanentlyUnblurred = false
-        // Remove permamentUnblur from all elements so blur() can re-apply
-        document.querySelectorAll('.phobia-permanent-unblur').forEach(el => {
-            el.classList.remove('phobia-permanent-unblur', 'phobia-noblur')
-        })
-        // Check if user has set blur amount before, if not use maximum
-        chrome.storage.sync.get('blurValueAmount', (storage) => {
-            if (storage.blurValueAmount != undefined) {
-                let blurPixels = Math.pow(storage.blurValueAmount * 0.09, 1.8) * 2
-                document.documentElement.style.setProperty('--blurValueAmount', blurPixels + 'px')
-            } else {
-                // First time - use most aggressive settings
-                let maxBlurPixels = Math.pow(DEFAULT_BLUR_SLIDER_VALUE * 0.09, 1.8) * 2
-                document.documentElement.style.setProperty('--blurValueAmount', maxBlurPixels + 'px')
-            }
+    case 'blurAll': {
+        try {
+            controller._invalidatePendingAnalysis()
+            controller._permanentlyUnblurred = false
+            // Remove permamentUnblur from all elements so blur() can re-apply
+            document.querySelectorAll('.phobia-permanent-unblur').forEach(el => {
+                el.classList.remove('phobia-permanent-unblur', 'phobia-noblur')
+            })
+            // Check if user has set blur amount before, if not use maximum
+            chrome.storage.sync.get('blurValueAmount', (storage) => {
+                try {
+                    if (storage && storage.blurValueAmount != undefined) {
+                        let blurPixels = Math.pow(storage.blurValueAmount * 0.09, 1.8) * 2
+                        document.documentElement.style.setProperty('--blurValueAmount', blurPixels + 'px')
+                    } else {
+                        // First time - use most aggressive settings
+                        let maxBlurPixels = Math.pow(DEFAULT_BLUR_SLIDER_VALUE * 0.09, 1.8) * 2
+                        document.documentElement.style.setProperty('--blurValueAmount', maxBlurPixels + 'px')
+                    }
+                    // Populate image list if empty (e.g., if page loaded with extension disabled)
+                    if (controller._imageNodeList.getAllImages().length === 0) {
+                        controller.updateImageList(document)
+                    }
+                    // Blur after blur amount is set
+                    controller.blurAll()
+                    // On whitelisted/disabled sites, html.phobia-disabled CSS rule
+                    // (specificity 0,2,2) overrides class-based blur (0,1,1). Force an
+                    // inline style with !important — it beats all stylesheet rules.
+                    // Hover preview is handled in _attachContainerListeners, which reads
+                    // phobia-disabled at event time and sets inline preview/full blur there.
+                    if (document.documentElement.classList.contains('phobia-disabled')) {
+                        const blurValueStr = document.documentElement.style.getPropertyValue('--blurValueAmount')
+                        document.querySelectorAll('[data-phobia-blur]').forEach(el => {
+                            el.style.setProperty('filter', `blur(${blurValueStr})`, 'important')
+                        })
+                    }
+                    reportIconStatus('detected')
+                    respond({ ok: true })
+                } catch (e) {
+                    console.error('PhobiaBlocker: blurAll handler failed', e)
+                    respond({ ok: false })
+                }
+            })
+        } catch (e) {
+            console.error('PhobiaBlocker: blurAll handler failed (sync)', e)
+            respond({ ok: false })
+        }
+        return true
+    }
+    case 'unblurAll': {
+        try {
+            controller._invalidatePendingAnalysis()
             // Populate image list if empty (e.g., if page loaded with extension disabled)
             if (controller._imageNodeList.getAllImages().length === 0) {
                 controller.updateImageList(document)
             }
-            // Blur after blur amount is set
-            controller.blurAll()
-            // On whitelisted/disabled sites, html.phobia-disabled CSS rule
-            // (specificity 0,2,2) overrides class-based blur (0,1,1). Force an
-            // inline style with !important — it beats all stylesheet rules.
-            // Hover preview is handled in _attachContainerListeners, which reads
-            // phobia-disabled at event time and sets inline preview/full blur there.
-            if (document.documentElement.classList.contains('phobia-disabled')) {
-                const blurValueStr = document.documentElement.style.getPropertyValue('--blurValueAmount')
-                document.querySelectorAll('[data-phobia-blur]').forEach(el => {
-                    el.style.setProperty('filter', `blur(${blurValueStr})`, 'important')
-                })
-            }
-            reportIconStatus('detected')
-        })
-        break
-    case 'unblurAll': {
-        // Populate image list if empty (e.g., if page loaded with extension disabled)
-        if (controller._imageNodeList.getAllImages().length === 0) {
-            controller.updateImageList(document)
+            // Collect ALL visual elements BEFORE controller.unBlurAll() removes the phobia-blur
+            // class. BgImageNode divs are identified only by .phobia-blur — if we query after
+            // unBlurAll() the class is gone and the selector misses them.
+            const toMarkPermanent = [...document.querySelectorAll('img, video, iframe, .phobia-blur')]
+            controller.unBlurAll()
+            // Mark ALL collected elements as permanently unblurred so that:
+            // 1. Subsequent NLP analysis cannot re-blur them (blur() checks phobia-permanent-unblur)
+            // 2. Hover preview does not apply (CSS rules exclude .phobia-permanent-unblur)
+            toMarkPermanent.forEach(el => {
+                el.classList.remove('phobia-blur')
+                el.classList.add('phobia-noblur', 'phobia-permanent-unblur')
+                el.removeAttribute('data-phobia-blur')
+                el.style.removeProperty('filter')
+            })
+            // Any new images that appear after this point (lazy-load, infinite scroll)
+            // should also be immediately unblurred without going through NLP analysis.
+            controller._permanentlyUnblurred = true
+            reportIconStatus('idle')
+            respond({ ok: true })
+        } catch (e) {
+            console.error('PhobiaBlocker: unblurAll handler failed', e)
+            respond({ ok: false })
         }
-        // Collect ALL visual elements BEFORE controller.unBlurAll() removes the phobia-blur
-        // class. BgImageNode divs are identified only by .phobia-blur — if we query after
-        // unBlurAll() the class is gone and the selector misses them.
-        const toMarkPermanent = [...document.querySelectorAll('img, video, iframe, .phobia-blur')]
-        controller.unBlurAll()
-        // Mark ALL collected elements as permanently unblurred so that:
-        // 1. Subsequent NLP analysis cannot re-blur them (blur() checks phobia-permanent-unblur)
-        // 2. Hover preview does not apply (CSS rules exclude .phobia-permanent-unblur)
-        toMarkPermanent.forEach(el => {
-            el.classList.remove('phobia-blur')
-            el.classList.add('phobia-noblur', 'phobia-permanent-unblur')
-            el.removeAttribute('data-phobia-blur')
-            el.style.removeProperty('filter')
-        })
-        // Any new images that appear after this point (lazy-load, infinite scroll)
-        // should also be immediately unblurred without going through NLP analysis.
-        controller._permanentlyUnblurred = true
-        reportIconStatus('idle')
-        break
+        return true
     }
     case 'setBlurAmount':
         // Check if site is whitelisted - if so, keep blur at 0
@@ -1781,6 +2174,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break
     case 'blurIsAlwaysOn':
         blurIsAlwaysOn = message.value
+        controller._invalidatePendingAnalysis()
         controller._permanentlyUnblurred = false
         // Check site rules first
         if (isWhitelisted()) {
@@ -1839,11 +2233,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             })
             controller._imageNodeList.teardown()
             controller._imageNodeList = new ImageNodeList()
+            controller._pageShouldBlur = null
             controller.onLoad()
         }
         break
     case 'targetWordsChanged':
+        controller._invalidatePendingAnalysis()
         controller._permanentlyUnblurred = false
+        controller._pageShouldBlur = null
         // Target words changed - reload and re-analyze
         // Check site rules first
         if (isWhitelisted()) {
@@ -1871,13 +2268,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             })
             // Re-analyze if extension is enabled
             if (phobiaBlockerEnabled && !blurIsAlwaysOn) {
-                let textAnalizer = new TextAnalizer()
-                // Use native textContent (much faster than jQuery)
-                textAnalizer.addText(document.body.textContent)
-                textAnalizer.addText(document.title)
-                let allImages = controller._imageNodeList.getAllImages()
+                const analysisEpoch = controller._analysisEpoch
                 controller._analysisStarted()
-                textAnalizer.startAnalysis(allImages).catch(err => {
+                controller._analyzeWholePage().then(result => {
+                    if (analysisEpoch === controller._analysisEpoch) {
+                        controller._applyPageResult(controller._imageNodeList.getAllImages(), result)
+                    }
+                }).catch(err => {
                     console.error('Error in targetWordsChanged analysis:', err)
                 }).finally(() => {
                     controller._analysisFinished()

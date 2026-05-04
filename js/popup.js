@@ -253,8 +253,9 @@ document.addEventListener('DOMContentLoaded', () => {
             chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
                 if (tabs && tabs[0]) {
                     try {
-                        chrome.tabs.sendMessage(tabs[0].id, { type: 'unblurAll' }, () => {
-                            if (!chrome.runtime.lastError) showButtonSuccess(btn)
+                        chrome.tabs.sendMessage(tabs[0].id, { type: 'unblurAll' }, (response) => {
+                            if (chrome.runtime.lastError) return
+                            if (response && response.ok) showButtonSuccess(btn)
                         })
                     } catch (e) {}
                 }
@@ -266,8 +267,9 @@ document.addEventListener('DOMContentLoaded', () => {
             chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
                 if (tabs && tabs[0]) {
                     try {
-                        chrome.tabs.sendMessage(tabs[0].id, { type: 'blurAll' }, () => {
-                            if (!chrome.runtime.lastError) showButtonSuccess(btn)
+                        chrome.tabs.sendMessage(tabs[0].id, { type: 'blurAll' }, (response) => {
+                            if (chrome.runtime.lastError) return
+                            if (response && response.ok) showButtonSuccess(btn)
                         })
                     } catch (e) {}
                 }
