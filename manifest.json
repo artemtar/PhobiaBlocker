@@ -17,21 +17,22 @@
         "default_popup": "popup.html",
         "default_title": "PhobiaBlocker"
     },
-    "content_scripts": [{
-        "matches": [
-            "<all_urls>"
-        ],
-        "js": [
-            "js/compromise.min.js",
-            "js/natural.js",
-            "js/stopWords.js",
-            "js/js.js"
-        ],
-        "css": [
-            "css/style.css"
-        ],
-        "run_at": "document_start"
-    }],
+    "content_scripts": [
+        {
+            "matches": ["<all_urls>"],
+            "js": ["js/early-blur.js"],
+            "css": ["css/early-blur.css"],
+            "all_frames": true,
+            "run_at": "document_start"
+        },
+        {
+            "matches": ["<all_urls>"],
+            "js": ["js/js.js"],
+            "css": ["css/style.css"],
+            "all_frames": true,
+            "run_at": "document_start"
+        }
+    ],
     "web_accessible_resources": [{
         "resources": ["css/style.css"],
         "matches": ["<all_urls>"]
@@ -61,6 +62,7 @@
     },
     "permissions": [
         "contextMenus",
+        "offscreen",
         "storage"
     ],
     "host_permissions": [

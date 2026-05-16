@@ -43,12 +43,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function updateDetectedCountBadge(count) {
         const badge = document.getElementById('detected-count-badge')
         if (!badge) return
-        if (count > 0) {
-            badge.textContent = '(' + count + ')'
-            badge.style.display = ''
-        } else {
-            badge.style.display = 'none'
-        }
+        badge.style.display = 'none'
     }
 
     function updateBlurValueDisplay(value) {
@@ -146,15 +141,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function updateStorage() {
-        chrome.storage.sync.set({ targetWords: targetWords })
-        chrome.tabs.query({}, (tabs) => {
-            for (let i = 0; i < tabs.length; ++i) {
-                try {
-                    chrome.tabs.sendMessage(tabs[i].id, { type: 'targetWordsChanged' })
-                } catch (e) {
-                    // Tab closed - ignore
+        chrome.storage.sync.set({ targetWords: targetWords }, () => {
+            chrome.tabs.query({}, (tabs) => {
+                for (let i = 0; i < tabs.length; ++i) {
+                    try {
+                        chrome.tabs.sendMessage(tabs[i].id, { type: 'targetWordsChanged' })
+                    } catch (e) {
+                        // Tab closed - ignore
+                    }
                 }
-            }
+            })
         })
     }
 
@@ -344,7 +340,7 @@ document.addEventListener('DOMContentLoaded', () => {
         chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
             if (!tabs || !tabs[0]) return
             try {
-                chrome.tabs.sendMessage(tabs[0].id, { type: 'getTriggeredWords' }, (response) => {
+                chrome.tabs.sendMessage(tabs[0].id, { type: 'getTriggeredWords' }, { frameId: 0 }, (response) => {
                     const list = document.getElementById('detected-words-list')
                     list.innerHTML = ''
                     if (chrome.runtime.lastError || !response || !response.words.length) {
@@ -355,20 +351,14 @@ document.addEventListener('DOMContentLoaded', () => {
                         updateDetectedCountBadge(0)
                         return
                     }
-                    let totalBlurred = 0
-                    response.words.forEach(w => { totalBlurred += w.count })
-                    updateDetectedCountBadge(totalBlurred)
-                    response.words.forEach(({ word, count }) => {
+                    updateDetectedCountBadge(0)
+                    response.words.forEach(({ word }) => {
                         const row = document.createElement('div')
                         row.className = 'detected-word-row'
                         const name = document.createElement('span')
                         name.className = 'detected-word-name'
                         name.textContent = word
-                        const cnt = document.createElement('span')
-                        cnt.className = 'detected-word-count'
-                        cnt.textContent = count
                         row.appendChild(name)
-                        row.appendChild(cnt)
                         list.appendChild(row)
                     })
                 })
