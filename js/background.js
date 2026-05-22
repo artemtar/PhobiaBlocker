@@ -83,8 +83,16 @@ chrome.runtime.onInstalled.addListener((details) => {
 
 // Handle context menu clicks
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-    if (info.menuItemId === 'phobia-blocker-unblur') {
-        chrome.tabs.sendMessage(tab.id, { target: 'content', type: 'unblur' }).catch(() => {})
+    if (info.menuItemId === 'phobia-blocker-unblur' && tab && tab.id !== undefined) {
+        const options = typeof info.frameId === 'number' ? { frameId: info.frameId } : undefined
+        chrome.tabs.sendMessage(
+            tab.id,
+            { target: 'content', type: 'unblur' },
+            options,
+            () => {
+                if (chrome.runtime.lastError) {}
+            }
+        )
     }
 })
 

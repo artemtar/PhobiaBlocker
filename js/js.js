@@ -69,6 +69,7 @@ function isInternalMutationTarget(node) {
 }
 
 let lastElementContext
+let lastContextMenuPoint = null
 let phobiaBlockerEnabled = true
 let blurIsAlwaysOn = false
 let whitelistedSites = []
@@ -243,8 +244,8 @@ class ImageNode {
         this._container = (parent && parent !== document.body) ? parent : null
     }
 
-	    _attachContainerListeners() {
-	        if (!this._container || this._boundMouseEnter) return
+    _attachContainerListeners() {
+        if (!this._container || this._boundMouseEnter) return
 
         const readFullBlurValue = () => {
             const rootStyle = document.documentElement && document.documentElement.style
@@ -349,139 +350,139 @@ class ImageNode {
             removePreview()
         }
 
-	        this._container.addEventListener('mouseenter', this._boundMouseEnter)
-	        this._container.addEventListener('mousemove', this._boundMouseMove)
-	        this._container.addEventListener('mouseleave', this._boundMouseLeave)
+        this._container.addEventListener('mouseenter', this._boundMouseEnter)
+        this._container.addEventListener('mousemove', this._boundMouseMove)
+        this._container.addEventListener('mouseleave', this._boundMouseLeave)
 
-	        // Attach to overlays that visually cover the media and intercept pointer events.
-	        // Many sites keep overlays as absolutely-positioned siblings, but on some (e.g. Instagram)
-	        // the overlay can be a sibling of a *higher* ancestor. Walk up a few levels and attach
-	        // to overlay siblings that significantly overlap the media rect.
-	        const targetRect = (() => {
-	            try { return this._imageNode.getBoundingClientRect() } catch (_) { return null }
-	        })()
-	        const targetArea = (targetRect && targetRect.width > 0 && targetRect.height > 0)
-	            ? (targetRect.width * targetRect.height)
-	            : 0
+        // Attach to overlays that visually cover the media and intercept pointer events.
+        // Many sites keep overlays as absolutely-positioned siblings, but on some (e.g. Instagram)
+        // the overlay can be a sibling of a *higher* ancestor. Walk up a few levels and attach
+        // to overlay siblings that significantly overlap the media rect.
+        const targetRect = (() => {
+            try { return this._imageNode.getBoundingClientRect() } catch (_) { return null }
+        })()
+        const targetArea = (targetRect && targetRect.width > 0 && targetRect.height > 0)
+            ? (targetRect.width * targetRect.height)
+            : 0
 
-	        const overlayCandidates = new Set()
-	        this._overlaySiblings = []
+        const overlayCandidates = new Set()
+        this._overlaySiblings = []
 
-	        const rectOverlapRatio = (a, b) => {
-	            const left = Math.max(a.left, b.left)
-	            const top = Math.max(a.top, b.top)
-	            const right = Math.min(a.right, b.right)
-	            const bottom = Math.min(a.bottom, b.bottom)
-	            const w = right - left
-	            const h = bottom - top
-	            if (w <= 0 || h <= 0) return 0
-	            const overlap = w * h
-	            return targetArea > 0 ? (overlap / targetArea) : 0
-	        }
+        const rectOverlapRatio = (a, b) => {
+            const left = Math.max(a.left, b.left)
+            const top = Math.max(a.top, b.top)
+            const right = Math.min(a.right, b.right)
+            const bottom = Math.min(a.bottom, b.bottom)
+            const w = right - left
+            const h = bottom - top
+            if (w <= 0 || h <= 0) return 0
+            const overlap = w * h
+            return targetArea > 0 ? (overlap / targetArea) : 0
+        }
 
-	        const attachOverlayListeners = (overlayEl, sharedParent) => {
-	            if (!overlayEl || overlayCandidates.has(overlayEl)) return
-	            overlayCandidates.add(overlayEl)
+        const attachOverlayListeners = (overlayEl, sharedParent) => {
+            if (!overlayEl || overlayCandidates.has(overlayEl)) return
+            overlayCandidates.add(overlayEl)
 
-	            // Use pointerover/pointerout in capture so we still trigger when the pointer
-	            // enters/leaves children inside the overlay (controls, buttons, sliders, etc.).
-		            const onEnter = (e) => addPreview(e)
-		            const onLeave = (e) => {
-		                if (!this._imageNode || !this._imageNode.classList) return
-	                const rt = e.relatedTarget
-	                if (rt && overlayEl.contains(rt)) return
-	                if (rt && sharedParent && sharedParent.contains(rt)) {
-	                    if (pointInsidePreviewRegion(e)) {
-	                        scheduleParentLeave(sharedParent)
-	                        return
-	                    }
-	                    removePreview()
-	                    return
-	                }
-	                removePreview()
-		            }
-	            overlayEl.addEventListener('pointerover', onEnter, true)
-	            overlayEl.addEventListener('pointerout', onLeave, true)
-	            this._overlaySiblings.push({
-	                el: overlayEl,
-	                enterType: 'pointerover',
-	                leaveType: 'pointerout',
-	                enter: onEnter,
-	                leave: onLeave,
-	                capture: true,
-	            })
-	        }
+            // Use pointerover/pointerout in capture so we still trigger when the pointer
+            // enters/leaves children inside the overlay (controls, buttons, sliders, etc.).
+            const onEnter = (e) => addPreview(e)
+            const onLeave = (e) => {
+                if (!this._imageNode || !this._imageNode.classList) return
+                const rt = e.relatedTarget
+                if (rt && overlayEl.contains(rt)) return
+                if (rt && sharedParent && sharedParent.contains(rt)) {
+                    if (pointInsidePreviewRegion(e)) {
+                        scheduleParentLeave(sharedParent)
+                        return
+                    }
+                    removePreview()
+                    return
+                }
+                removePreview()
+            }
+            overlayEl.addEventListener('pointerover', onEnter, true)
+            overlayEl.addEventListener('pointerout', onLeave, true)
+            this._overlaySiblings.push({
+                el: overlayEl,
+                enterType: 'pointerover',
+                leaveType: 'pointerout',
+                enter: onEnter,
+                leave: onLeave,
+                capture: true,
+            })
+        }
 
-	        const considerOverlaySibling = (sibling, sharedParent) => {
-	            if (!sibling || sibling === this._container) return
-	            if (!targetRect || targetArea === 0) return
-	            try {
-	                const considerOverlayElement = (candidate) => {
-	                    if (!candidate || candidate === this._container || overlayCandidates.has(candidate)) return false
-	                    const style = window.getComputedStyle(candidate)
-	                    if (style.pointerEvents === 'none') return false
-	                    if (style.display === 'none' || style.visibility === 'hidden') return false
-	                    if (candidate.querySelector && candidate.querySelector('video, iframe')) return false
+        const considerOverlaySibling = (sibling, sharedParent) => {
+            if (!sibling || sibling === this._container) return
+            if (!targetRect || targetArea === 0) return
+            try {
+                const considerOverlayElement = (candidate) => {
+                    if (!candidate || candidate === this._container || overlayCandidates.has(candidate)) return false
+                    const style = window.getComputedStyle(candidate)
+                    if (style.pointerEvents === 'none') return false
+                    if (style.display === 'none' || style.visibility === 'hidden') return false
+                    if (candidate.querySelector && candidate.querySelector('video, iframe')) return false
 
-	                    const r = candidate.getBoundingClientRect()
-	                    if (!r || r.width <= 0 || r.height <= 0) return false
+                    const r = candidate.getBoundingClientRect()
+                    if (!r || r.width <= 0 || r.height <= 0) return false
 
-	                    const candidateArea = r.width * r.height
-	                    // Reject huge "page overlays" that happen to overlap (modals, headers, etc.).
-	                    if (candidateArea > targetArea * 6) return false
+                    const candidateArea = r.width * r.height
+                    // Reject huge "page overlays" that happen to overlap (modals, headers, etc.).
+                    if (candidateArea > targetArea * 6) return false
 
-	                    const overlapRatio = rectOverlapRatio(targetRect, r)
-	                    const widthOk = r.width >= targetRect.width * 0.6
-	                    const heightOk = r.height >= targetRect.height * 0.6
-	                    if (overlapRatio < 0.25 || !widthOk || !heightOk) return false
+                    const overlapRatio = rectOverlapRatio(targetRect, r)
+                    const widthOk = r.width >= targetRect.width * 0.6
+                    const heightOk = r.height >= targetRect.height * 0.6
+                    if (overlapRatio < 0.25 || !widthOk || !heightOk) return false
 
-	                    attachOverlayListeners(candidate, sharedParent)
-	                    return true
-	                }
+                    attachOverlayListeners(candidate, sharedParent)
+                    return true
+                }
 
-	                if (considerOverlayElement(sibling)) return
+                if (considerOverlayElement(sibling)) return
 
-	                // Instagram/Threads often uses a non-interactive overlay shell
-	                // (pointer-events:none) with nested interactive controls. The shell
-	                // overlaps the media, but only the child receives pointer events.
-	                if (sibling.querySelectorAll) {
-	                    const descendants = sibling.querySelectorAll('[role], a, button, [tabindex], [aria-label]')
-	                    for (let i = 0; i < descendants.length; i++) {
-	                        considerOverlayElement(descendants[i])
-	                    }
-	                }
-	            } catch (_) { /* skip detached nodes */ }
-	        }
+                // Instagram/Threads often uses a non-interactive overlay shell
+                // (pointer-events:none) with nested interactive controls. The shell
+                // overlaps the media, but only the child receives pointer events.
+                if (sibling.querySelectorAll) {
+                    const descendants = sibling.querySelectorAll('[role], a, button, [tabindex], [aria-label]')
+                    for (let i = 0; i < descendants.length; i++) {
+                        considerOverlayElement(descendants[i])
+                    }
+                }
+            } catch (_) { /* skip detached nodes */ }
+        }
 
-	        // First, check direct siblings (original behavior, but more robust).
-	        const directParent = this._container.parentElement
-	        if (directParent) {
-	            for (const sibling of directParent.children) {
-	                if (sibling === this._container) continue
-	                considerOverlaySibling(sibling, directParent)
-	            }
-	        }
+        // First, check direct siblings (original behavior, but more robust).
+        const directParent = this._container.parentElement
+        if (directParent) {
+            for (const sibling of directParent.children) {
+                if (sibling === this._container) continue
+                considerOverlaySibling(sibling, directParent)
+            }
+        }
 
-	        // Then, walk up a few levels and look for overlay siblings of higher ancestors.
-	        // Limit levels to avoid attaching too broadly in complex layouts.
-	        let child = this._container
-	        let level = 0
-	        while (child && child.parentElement && child.parentElement !== document.body && level < 8) {
-	            const parent = child.parentElement
-	            // If the parent is a "multi-media shelf", stop climbing to avoid huge scopes.
-	            try {
-	                if (parent.querySelectorAll('img, video, iframe').length > 3) break
-	            } catch (_) { /* ignore */ }
+        // Then, walk up a few levels and look for overlay siblings of higher ancestors.
+        // Limit levels to avoid attaching too broadly in complex layouts.
+        let child = this._container
+        let level = 0
+        while (child && child.parentElement && child.parentElement !== document.body && level < 8) {
+            const parent = child.parentElement
+            // If the parent is a "multi-media shelf", stop climbing to avoid huge scopes.
+            try {
+                if (parent.querySelectorAll('img, video, iframe').length > 3) break
+            } catch (_) { /* ignore */ }
 
-	            for (const sibling of parent.children) {
-	                if (sibling === child) continue
-	                considerOverlaySibling(sibling, parent)
-	            }
+            for (const sibling of parent.children) {
+                if (sibling === child) continue
+                considerOverlaySibling(sibling, parent)
+            }
 
-	            child = parent
-	            level += 1
-	        }
-	    }
+            child = parent
+            level += 1
+        }
+    }
 
     _detachContainerListeners() {
         if (!this._container || !this._boundMouseEnter) return
@@ -2442,7 +2443,159 @@ if (document.readyState === 'loading') {
     main()
 }
 
-document.addEventListener('contextmenu', (event) => {lastElementContext = event.target}, true)
+const CONTEXT_UNBLUR_MARKED_SELECTOR = '.phobia-blur, [data-phobia-blur]'
+const CONTEXT_UNBLUR_MEDIA_SELECTOR = [
+    'img:not(.phobia-noblur):not(.phobia-permanent-unblur)',
+    'video:not(.phobia-noblur):not(.phobia-permanent-unblur)',
+    'iframe:not(.phobia-noblur):not(.phobia-permanent-unblur)'
+].join(', ')
+const CONTEXT_UNBLUR_BG_SELECTOR = 'div, span, section, article, aside, header, footer, main, figure'
+
+function contextUnblurHasPoint(point) {
+    return point &&
+        typeof point.clientX === 'number' &&
+        typeof point.clientY === 'number' &&
+        (point.clientX !== 0 || point.clientY !== 0)
+}
+
+function contextUnblurRect(el) {
+    try {
+        const style = window.getComputedStyle(el)
+        if (!style || style.display === 'none' || style.visibility === 'hidden') return null
+        const rect = el.getBoundingClientRect()
+        if (!rect || rect.width <= 0 || rect.height <= 0) return null
+        return rect
+    } catch (_) {
+        return null
+    }
+}
+
+function contextUnblurElementArea(el) {
+    const rect = contextUnblurRect(el)
+    return rect ? rect.width * rect.height : Number.MAX_SAFE_INTEGER
+}
+
+function contextUnblurPointInside(el, point) {
+    const rect = contextUnblurRect(el)
+    if (!rect) return false
+    return point.clientX >= rect.left && point.clientX <= rect.right &&
+        point.clientY >= rect.top && point.clientY <= rect.bottom
+}
+
+function contextUnblurHasBackgroundImage(el) {
+    try {
+        const bg = window.getComputedStyle(el).backgroundImage
+        return Boolean(bg && bg !== 'none' && bg.includes('url('))
+    } catch (_) {
+        return false
+    }
+}
+
+function contextUnblurIsCandidate(el) {
+    if (!el || !el.classList) return false
+    if (el.classList.contains('phobia-permanent-unblur')) return false
+    if (el.classList.contains('phobia-blur') || el.hasAttribute('data-phobia-blur')) return true
+    if (el.classList.contains('phobia-noblur')) return false
+    if (el.matches && el.matches('img, video, iframe')) return true
+    return contextUnblurHasBackgroundImage(el)
+}
+
+function contextUnblurAddCandidate(el, candidates, seen) {
+    if (!contextUnblurIsCandidate(el) || seen.has(el)) return
+    seen.add(el)
+    candidates.push(el)
+}
+
+function contextUnblurCollectFromRoot(root, candidates, seen) {
+    if (!root || root.nodeType !== Node.ELEMENT_NODE) return
+    contextUnblurAddCandidate(root, candidates, seen)
+
+    if (!root.querySelectorAll) return
+    root.querySelectorAll(`${CONTEXT_UNBLUR_MARKED_SELECTOR}, ${CONTEXT_UNBLUR_MEDIA_SELECTOR}`)
+        .forEach(el => contextUnblurAddCandidate(el, candidates, seen))
+    root.querySelectorAll(CONTEXT_UNBLUR_BG_SELECTOR)
+        .forEach(el => contextUnblurAddCandidate(el, candidates, seen))
+}
+
+function contextUnblurCollectGlobalCandidates(controllerRef) {
+    const candidates = []
+    const seen = new Set()
+
+    try {
+        controllerRef._imageNodeList.getAllImages().forEach(imageNode => {
+            contextUnblurAddCandidate(imageNode.getImageNode(), candidates, seen)
+        })
+    } catch (_) { /* ignore partially initialized controller state */ }
+
+    document.querySelectorAll(`${CONTEXT_UNBLUR_MARKED_SELECTOR}, ${CONTEXT_UNBLUR_MEDIA_SELECTOR}`)
+        .forEach(el => contextUnblurAddCandidate(el, candidates, seen))
+    document.querySelectorAll(CONTEXT_UNBLUR_BG_SELECTOR)
+        .forEach(el => contextUnblurAddCandidate(el, candidates, seen))
+
+    return candidates
+}
+
+function contextUnblurChooseSmallest(candidates) {
+    if (!candidates || candidates.length === 0) return null
+    return candidates
+        .slice()
+        .sort((a, b) => contextUnblurElementArea(a) - contextUnblurElementArea(b))[0]
+}
+
+function contextUnblurResolveFromPoint(controllerRef, point) {
+    if (!contextUnblurHasPoint(point)) return null
+    const candidates = contextUnblurCollectGlobalCandidates(controllerRef)
+        .filter(el => contextUnblurPointInside(el, point))
+    return contextUnblurChooseSmallest(candidates)
+}
+
+function contextUnblurResolveFromContextTarget(target) {
+    if (!target || target.nodeType !== Node.ELEMENT_NODE) return null
+
+    let node = target
+    let depth = 0
+    while (node && node !== document.body && depth < 8) {
+        const candidates = []
+        const seen = new Set()
+        contextUnblurCollectFromRoot(node, candidates, seen)
+        const chosen = contextUnblurChooseSmallest(candidates)
+        if (chosen) return chosen
+        node = node.parentElement
+        depth += 1
+    }
+
+    return null
+}
+
+function resolveContextUnblurTarget(controllerRef) {
+    return contextUnblurResolveFromPoint(controllerRef, lastContextMenuPoint) ||
+        contextUnblurResolveFromContextTarget(lastElementContext)
+}
+
+function permanentlyUnblurSingleElement(controllerRef, el) {
+    if (!el || !el.classList) return false
+
+    const imageNode = controllerRef._imageNodeList.getImageNode(el)
+    if (imageNode) imageNode.unblur()
+    else markInternalMutationTarget(el)
+
+    el.classList.remove('phobia-blur', 'phobia-preview')
+    el.classList.add('phobia-noblur', 'phobia-permanent-unblur')
+    el.removeAttribute('data-phobia-blur')
+    el.style.removeProperty('filter')
+
+    const hasRemainingBlurred = document.querySelector('[data-phobia-blur], .phobia-blur')
+    reportIconStatus(hasRemainingBlurred ? 'detected' : 'idle')
+    return true
+}
+
+document.addEventListener('contextmenu', (event) => {
+    lastElementContext = event.target
+    lastContextMenuPoint = {
+        clientX: event.clientX,
+        clientY: event.clientY,
+    }
+}, true)
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message && message.target && message.target !== 'content') return
@@ -2598,66 +2751,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             })
         }
         break
-    case 'unblur':
-        if (lastElementContext) {
-            let blured = null
-
-            // Check if the clicked element itself is blurred
-            if (lastElementContext.classList && lastElementContext.classList.contains('phobia-blur')) {
-                blured = lastElementContext
-            }
-            // Check children with blur class
-            else {
-                blured = lastElementContext.querySelector('.phobia-blur')
-            }
-            // Check siblings if nothing found
-            if (!blured && lastElementContext.parentElement) {
-                const siblings = Array.from(lastElementContext.parentElement.children)
-                blured = siblings.find(sibling =>
-                    sibling !== lastElementContext &&
-                    sibling.classList &&
-                    sibling.classList.contains('phobia-blur')
-                )
-            }
-            // Check parent if still nothing found
-            if (!blured && lastElementContext.parentElement) {
-                const parent = lastElementContext.parentElement
-                if (parent.classList && parent.classList.contains('phobia-blur')) {
-                    blured = parent
-                }
-            }
-            // Check if parent has blurred children
-            if (!blured && lastElementContext.parentElement) {
-                blured = lastElementContext.parentElement.querySelector('.phobia-blur')
-            }
-
-            // Last resort: element may be CSS-blurred without a .blur class (image hasn't been
-            // analyzed yet, or pointer-events:none caused the click to land on a parent).
-            // Walk up to grandparent looking for any img/video/iframe that isn't already unblurred.
-            if (!blured) {
-                const CSS_BLURRED = 'img:not(.phobia-noblur):not(.phobia-permanent-unblur), video:not(.phobia-noblur):not(.phobia-permanent-unblur), iframe:not(.phobia-noblur):not(.phobia-permanent-unblur)'
-                const TAGS = ['IMG', 'VIDEO', 'IFRAME']
-                let node = lastElementContext
-                for (; node; node = node.parentElement) {
-                    if (TAGS.includes(node.nodeName) && !node.classList.contains('phobia-noblur') && !node.classList.contains('phobia-permanent-unblur')) {
-                        blured = node
-                        break
-                    }
-                    const found = node.querySelector ? node.querySelector(CSS_BLURRED) : null
-                    if (found) { blured = found; break }
-                }
-            }
-
-            if (blured) {
-                blured.classList.remove('phobia-blur')
-                blured.classList.add('phobia-noblur', 'phobia-permanent-unblur')
-                blured.removeAttribute('data-phobia-blur')
-                blured.style.removeProperty('filter')
-                const hasRemainingBlurred = document.querySelector('[data-phobia-blur], .phobia-blur')
-                reportIconStatus(hasRemainingBlurred ? 'detected' : 'idle')
-            }
+    case 'unblur': {
+        try {
+            const target = resolveContextUnblurTarget(controller)
+            const unblurred = permanentlyUnblurSingleElement(controller, target)
+            lastElementContext = null
+            lastContextMenuPoint = null
+            respond({ ok: true, unblurred })
+        } catch (e) {
+            console.error('PhobiaBlocker: unblur handler failed', e)
+            respond({ ok: false, unblurred: false })
         }
-        break
+        return true
+    }
     case 'phobiaBlockerEnabled':
         phobiaBlockerEnabled = message.value
         if(!phobiaBlockerEnabled){
