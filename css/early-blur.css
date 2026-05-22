@@ -16,6 +16,13 @@
     cursor: default;
 }
 
+:is(div, span, section, article, aside, header, footer, main, figure)[style*="background-image"]:not(.phobia-noblur):not(.phobia-permanent-unblur),
+:is(div, span, section, article, aside, header, footer, main, figure)[style*="background: url("]:not(.phobia-noblur):not(.phobia-permanent-unblur),
+:is(div, span, section, article, aside, header, footer, main, figure)[style*="background:url("]:not(.phobia-noblur):not(.phobia-permanent-unblur) {
+    filter: var(--filterStrength) !important;
+    cursor: default;
+}
+
 /* In the TOP frame only, keep unprocessed media non-interactive to prevent
  * hover-preview flashes before analysis marks nodes with data-phobia-blur. */
 :root[data-phobiablocker-frame="top"] :is(img, video):not(.phobia-noblur):not(.phobia-permanent-unblur):not([data-phobia-blur]) {

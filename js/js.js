@@ -273,14 +273,19 @@ class ImageNode {
             if (!relatedTarget || !this._overlaySiblings) return false
             return this._overlaySiblings.some(({ el }) => el === relatedTarget || el.contains(relatedTarget))
         }
+        const usesInlinePreviewFilter = () => {
+            const tag = this._imageNode && this._imageNode.tagName
+            return document.documentElement.classList.contains('phobia-disabled') ||
+                (tag !== 'IMG' && tag !== 'VIDEO' && tag !== 'IFRAME')
+        }
 
         const addPreview = (event) => {
             if (!this._imageNode || !this._imageNode.classList) return
             if (!pointInsidePreviewRegion(event)) return
             this._imageNode.classList.add('phobia-preview')
-            // On disabled sites, html.phobia-disabled overrides CSS preview rules,
-            // so force the preview blur via inline style instead.
-            if (document.documentElement.classList.contains('phobia-disabled')) {
+            // On disabled sites and background-image nodes, stylesheet preview rules
+            // are either overridden or do not target the element. Use inline filter.
+            if (usesInlinePreviewFilter()) {
                 const previewVal = previewEnabled ? `${previewBlurStrength}px`
                     : readFullBlurValue()
                 this._imageNode.style.setProperty('filter', `blur(${previewVal})`, 'important')
@@ -290,8 +295,9 @@ class ImageNode {
             if (!this._imageNode || !this._imageNode.classList) return
             this._imageNode.classList.remove('phobia-preview')
             // Restore full blur inline style only if the element is still force-blurred
-            if (document.documentElement.classList.contains('phobia-disabled')
-                    && this._imageNode.hasAttribute('data-phobia-blur')) {
+            if (usesInlinePreviewFilter() &&
+                    (this._imageNode.hasAttribute('data-phobia-blur') ||
+                    this._imageNode.classList.contains('phobia-blur'))) {
                 this._imageNode.style.setProperty('filter', `blur(${readFullBlurValue()})`, 'important')
             }
         }
@@ -410,25 +416,40 @@ class ImageNode {
 	            if (!sibling || sibling === this._container) return
 	            if (!targetRect || targetArea === 0) return
 	            try {
-	                const style = window.getComputedStyle(sibling)
-	                if (style.pointerEvents === 'none') return
-	                if (style.display === 'none' || style.visibility === 'hidden') return
-	                // Skip siblings that are (or contain) real media players/frames.
-	                if (sibling.querySelector('video, iframe')) return
+	                const considerOverlayElement = (candidate) => {
+	                    if (!candidate || candidate === this._container || overlayCandidates.has(candidate)) return false
+	                    const style = window.getComputedStyle(candidate)
+	                    if (style.pointerEvents === 'none') return false
+	                    if (style.display === 'none' || style.visibility === 'hidden') return false
+	                    if (candidate.querySelector && candidate.querySelector('video, iframe')) return false
 
-	                const r = sibling.getBoundingClientRect()
-	                if (!r || r.width <= 0 || r.height <= 0) return
+	                    const r = candidate.getBoundingClientRect()
+	                    if (!r || r.width <= 0 || r.height <= 0) return false
 
-	                const siblingArea = r.width * r.height
-	                // Reject huge "page overlays" that happen to overlap (modals, headers, etc.).
-	                if (siblingArea > targetArea * 6) return
+	                    const candidateArea = r.width * r.height
+	                    // Reject huge "page overlays" that happen to overlap (modals, headers, etc.).
+	                    if (candidateArea > targetArea * 6) return false
 
-	                const overlapRatio = rectOverlapRatio(targetRect, r)
-	                const widthOk = r.width >= targetRect.width * 0.6
-	                const heightOk = r.height >= targetRect.height * 0.6
-	                if (overlapRatio < 0.25 || !widthOk || !heightOk) return
+	                    const overlapRatio = rectOverlapRatio(targetRect, r)
+	                    const widthOk = r.width >= targetRect.width * 0.6
+	                    const heightOk = r.height >= targetRect.height * 0.6
+	                    if (overlapRatio < 0.25 || !widthOk || !heightOk) return false
 
-	                attachOverlayListeners(sibling, sharedParent)
+	                    attachOverlayListeners(candidate, sharedParent)
+	                    return true
+	                }
+
+	                if (considerOverlayElement(sibling)) return
+
+	                // Instagram/Threads often uses a non-interactive overlay shell
+	                // (pointer-events:none) with nested interactive controls. The shell
+	                // overlaps the media, but only the child receives pointer events.
+	                if (sibling.querySelectorAll) {
+	                    const descendants = sibling.querySelectorAll('[role], a, button, [tabindex], [aria-label]')
+	                    for (let i = 0; i < descendants.length; i++) {
+	                        considerOverlayElement(descendants[i])
+	                    }
+	                }
 	            } catch (_) { /* skip detached nodes */ }
 	        }
 
@@ -711,6 +732,17 @@ class BgImageNode extends ImageNode {
             markInternalMutationTarget(this._imageNode)
             this._imageNode.classList.remove('phobia-noblur')
             this._imageNode.classList.add('phobia-blur')
+            if (this._container === undefined) {
+                try {
+                    this._findHoverContainer()
+                } catch (e) {
+                    this._container = null
+                }
+            }
+            if (this._container) {
+                this._container.setAttribute('data-phobia-container', '1')
+                this._attachContainerListeners()
+            }
             if (this._isLikelyOverlayDuplicateOfMedia()) {
                 // Bumble-style: an absolutely-positioned background-image layer covers a real <img>.
                 // Hiding it avoids "double blur" and reveals the blurred <img> underneath.
@@ -727,10 +759,16 @@ class BgImageNode extends ImageNode {
     unblur() {
         if (!this._isNodeValid()) return
         markInternalMutationTarget(this._imageNode)
-        this._imageNode.classList.remove('phobia-blur')
+        this._imageNode.classList.remove('phobia-blur', 'phobia-preview')
         this._imageNode.classList.add('phobia-noblur')
         this._imageNode.style.removeProperty('filter')
         this._restoreOverlayVisibility()
+        this._detachContainerListeners()
+        if (this._container && !this._container.querySelector(
+            'img[data-phobia-blur], video[data-phobia-blur], iframe[data-phobia-blur], .phobia-blur'
+        )) {
+            this._container.removeAttribute('data-phobia-container')
+        }
     }
 }
 
