@@ -23,6 +23,7 @@
             this._targetWords = new Set()
             this._titleTokens = []
             this._root = null
+            this._recentAdded = null
             this._onDirectMatch = typeof options.onDirectMatch === 'function'
                 ? options.onDirectMatch
                 : null
@@ -39,8 +40,12 @@
             return this.getWords()
         }
 
+        // Returns { changed, added }. `added` holds only tokens whose page-wide
+        // count rose from zero, so the controller can tell a genuinely new word
+        // apart from re-indexing that produced the same vocabulary.
         applyMutations(records) {
             let changed = false
+            this._recentAdded = new Set()
 
             for (const mutation of Array.isArray(records) ? records : []) {
                 if (!mutation || !mutation.target) continue
@@ -74,7 +79,9 @@
                 })
             }
 
-            return changed
+            const added = this._recentAdded
+            this._recentAdded = null
+            return { changed, added }
         }
 
         getWords() {
@@ -160,31 +167,53 @@
             return changed
         }
 
+        // Walks only the removed subtree. The previous implementation scanned
+        // every indexed text node per removed node, which is quadratic on pages
+        // that churn their DOM (feeds, infinite scroll).
         _removeSubtree(node) {
             if (!node) return false
             if (node.nodeType === Node.TEXT_NODE) return this.removeTextNode(node)
+            if (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.DOCUMENT_NODE) return false
+
+            const textNodes = []
+            try {
+                const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT)
+                let current = walker.nextNode()
+                while (current) {
+                    textNodes.push(current)
+                    current = walker.nextNode()
+                }
+            } catch (_) {
+                return false
+            }
 
             let changed = false
-            for (const textNode of [...this._textTokens.keys()]) {
-                try {
-                    if (node === textNode || (node.contains && node.contains(textNode))) {
-                        changed = this.removeTextNode(textNode) || changed
-                    }
-                } catch (_) { /* Detached nodes are already absent from the index. */ }
-            }
+            textNodes.forEach((textNode) => {
+                changed = this.removeTextNode(textNode) || changed
+            })
             return changed
         }
 
+        // Diff-based: indexTextNode already compares old and new tokens per node
+        // and reports no change when the vocabulary is identical, so a class or
+        // style toggle that does not alter visible text costs nothing downstream.
         _reindexSubtree(node) {
-            const removed = this._removeSubtree(node)
-            const added = this._indexSubtree(node)
-            return removed || added
+            if (node && node.nodeType === Node.ELEMENT_NODE && this._shouldSkipElement(node)) {
+                return this._removeSubtree(node)
+            }
+            return this._indexSubtree(node)
         }
 
         _addTokens(tokens) {
             tokens.forEach((word) => {
-                this._tokenCounts.set(word, (this._tokenCounts.get(word) || 0) + 1)
+                const previous = this._tokenCounts.get(word) || 0
+                if (previous === 0 && this._recentAdded) this._recentAdded.add(word)
+                this._tokenCounts.set(word, previous + 1)
             })
+        }
+
+        getTokenCount(word) {
+            return this._tokenCounts.get(word) || 0
         }
 
         _removeTokens(tokens) {

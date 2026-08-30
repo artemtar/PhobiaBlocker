@@ -5,10 +5,15 @@
 
 :root :is(img, video, iframe) {
     filter: blur(40px) !important;
-    cursor: default;
 }
 
-:root[data-phobiablocker-frame="top"]:not(.phobia-disabled) :is(img, video):not([data-phobiablocker-media]) {
+/*
+ * Suppress interaction only until the controller finishes its first pass.
+ * Once the document is marked ready the page owns pointer events again, so
+ * unregistered media can never be left permanently unclickable.
+ */
+:root[data-phobiablocker-frame="top"]:not(.phobia-disabled):not([data-phobiablocker-background-ready])
+    :is(img, video):not([data-phobiablocker-media]) {
     pointer-events: none !important;
 }
 

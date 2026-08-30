@@ -31,7 +31,15 @@ const OBSERVED_ATTRIBUTES = Object.freeze([
     'href', 'rel', 'media', 'disabled', 'type',
     BACKGROUND_READY_ATTR, BACKGROUND_SCANNING_ATTR,
 ])
-const STYLESHEET_POLL_INTERVAL_MS = 1000
+const STYLESHEET_POLL_INTERVAL_MS = 2000
+// Coalesce analysis across a burst of mutations instead of re-analysing the
+// whole page once per batch.
+const ANALYSIS_DEBOUNCE_MS = 200
+// Resize fires continuously while a window is dragged; one rescan is enough.
+const RESIZE_DEBOUNCE_MS = 200
+const SETTINGS_READ_TIMEOUT_MS = 3000
+const SETTINGS_READ_ATTEMPTS = 3
+const MAX_BACKGROUND_SCAN_RETRIES = 3
 const MEDIA_RESOURCE_EVENTS = Object.freeze(['load', 'loadstart', 'loadedmetadata', 'loadeddata', 'emptied'])
 const IFRAME_NAVIGATION_ATTRIBUTES = Object.freeze(['src', 'srcdoc', 'sandbox'])
 const IFRAME_NAVIGATION_START_EVENTS = Object.freeze(['pagehide', 'unload'])
@@ -168,11 +176,13 @@ function getMediaFingerprint(element, knownBackgroundImage = null) {
                     source.getAttribute('type'),
                 ])
                 : []
+            // currentSrc is deliberately excluded: it changes when a responsive
+            // srcset or lazy loader swaps resolution, which would silently
+            // invalidate a reveal the user asked for on the same image.
             return JSON.stringify([
                 'img',
                 element.getAttribute('src'),
                 element.getAttribute('srcset'),
-                element.currentSrc,
                 pictureSources,
             ])
         }
@@ -185,7 +195,6 @@ function getMediaFingerprint(element, knownBackgroundImage = null) {
                 'video',
                 element.getAttribute('src'),
                 element.poster,
-                element.currentSrc,
                 sources,
             ])
         }
@@ -279,6 +288,10 @@ class VisualNode {
         this.backgroundImage = ''
         this.isBlurred = true
         this.matchedWords = []
+        // Last projection actually written to the DOM. Repeated requests for the
+        // same state become no-ops, which is what stops mutation batches from
+        // rewriting every node's class and inline filter over and over.
+        this._renderState = null
         this._previewTarget = null
         this._onMouseEnter = null
         this._onMouseLeave = null
@@ -378,10 +391,19 @@ class VisualNode {
         this._restorePageStyle('background-image')
     }
 
+    // Forces the next blur/unblur to rewrite the DOM. Called when the page
+    // itself touched our element, so a repair still happens even though the
+    // requested state has not changed.
+    invalidateRendering() {
+        this._renderState = null
+    }
+
     blur(matchedWords = []) {
         if (!this.element || this.element.isConnected === false) return
         this.isBlurred = true
         this.matchedWords = [...matchedWords]
+        if (this._renderState === 'blur') return
+        this._renderState = 'blur'
         markInternalMutationTarget(this.element)
         this._setProjectionClass('phobia-noblur', false)
         this._setProjectionClass('phobia-permanent-unblur', false)
@@ -400,8 +422,11 @@ class VisualNode {
 
     unblur(options = {}) {
         if (!this.element || this.element.isConnected === false) return
+        const nextState = options.explicit === true ? 'unblur-explicit' : 'unblur'
         this.isBlurred = false
         this.matchedWords = []
+        if (this._renderState === nextState) return
+        this._renderState = nextState
         markInternalMutationTarget(this.element)
         this._setProjectionClass('phobia-blur', false)
         this._setProjectionClass('phobia-preview', false)
@@ -419,6 +444,7 @@ class VisualNode {
 
     clearRendering() {
         if (!this.element) return
+        this._renderState = null
         markInternalMutationTarget(this.element)
         this._detachPreview()
         this._projectionClasses.forEach((name) => {
@@ -647,7 +673,11 @@ class WordCoverManager {
         return true
     }
 
+    // "Unblur all" must stay unblurred. Deactivating stops the text index from
+    // re-covering the same words on the next mutation; a settings change calls
+    // configure() again and turns covering back on.
     revealAll() {
+        this._active = false
         this.unwrapAll()
     }
 
@@ -701,12 +731,14 @@ class Controller {
         this._stylesheetFingerprint = ''
         this._backgroundLinks = new WeakSet()
         this._backgroundPhase = 'pending'
+        this._backgroundRetries = 0
         this._mediaEventListenersAttached = false
         this._iframeLifecycleListenerAttached = false
         this._iframeLifecycleObserver = null
         this._onMediaResourceEvent = event => this._handleMediaResourceEvent(event)
         this._onIframeLifecycleLoad = event => this._handleIframeLifecycleLoad(event)
-        this._onGlobalBackgroundStateEvent = () => this._scheduleFullBackgroundRescan()
+        this._globalRescanTimer = null
+        this._onGlobalBackgroundStateEvent = () => this._scheduleDebouncedRescan()
         this._earlyCoverReleased = false
         this._wordCoverManager = new WordCoverManager()
         this._pageTextIndex = new PageTextIndex({
@@ -744,9 +776,11 @@ class Controller {
     cancelPendingAnalysis() {
         clearTimeout(this._analysisTimer)
         clearTimeout(this._backgroundTimer)
+        clearTimeout(this._globalRescanTimer)
         clearInterval(this._stylesheetPollTimer)
         this._analysisTimer = null
         this._backgroundTimer = null
+        this._globalRescanTimer = null
         this._stylesheetPollTimer = null
         if (this._observer) this._observer.disconnect()
         this._detachMediaResourceListeners()
@@ -1117,6 +1151,8 @@ class Controller {
         const documentRoot = document.documentElement
         const touched = new Set()
         if (!root || !documentRoot) return { nodes: touched, success: false }
+        // Disabled protection must not register or project onto anything.
+        if (this.mode === PROTECTION_MODE.DISABLED) return { nodes: touched, success: false }
 
         if (full) {
             this._setBackgroundPhase('scanning')
@@ -1164,6 +1200,7 @@ class Controller {
             nodesToApply.forEach(node => this._applyResultToNode(node, this._currentVisualResult()))
             if (full) {
                 this._stylesheetFingerprint = this._computeStylesheetFingerprint()
+                this._backgroundRetries = 0
                 this._setBackgroundPhase('ready')
             }
             return { nodes: touched, success: true }
@@ -1171,9 +1208,19 @@ class Controller {
             this._registry.all().forEach((node) => {
                 if (node.kind === 'background') node.blur()
             })
-            this._setBackgroundPhase('pending')
             console.error('PhobiaBlocker: computed background discovery failed; backgrounds remain suppressed', error)
-            if (!full) this._scheduleFullBackgroundRescan()
+
+            // A failed full scan leaves the page-wide background-image:none rule
+            // in force, so retry a bounded number of times and then accept the
+            // page as ready rather than suppressing every background forever.
+            if (full && this._backgroundRetries >= MAX_BACKGROUND_SCAN_RETRIES) {
+                this._backgroundRetries = 0
+                this._setBackgroundPhase('ready')
+                return { nodes: touched, success: false }
+            }
+            this._backgroundRetries++
+            this._setBackgroundPhase('pending')
+            this._scheduleFullBackgroundRescan()
             return { nodes: touched, success: false }
         }
     }
@@ -1183,6 +1230,17 @@ class Controller {
             return FAIL_CLOSED_RESULT
         }
         return this._pageAnalysisResult
+    }
+
+    // resize fires for every frame of a window drag; collapse the burst into
+    // one rescan instead of one full getComputedStyle sweep per event.
+    _scheduleDebouncedRescan() {
+        if (this.mode === PROTECTION_MODE.DISABLED) return
+        clearTimeout(this._globalRescanTimer)
+        this._globalRescanTimer = setTimeout(() => {
+            this._globalRescanTimer = null
+            this._scheduleFullBackgroundRescan()
+        }, RESIZE_DEBOUNCE_MS)
     }
 
     _scheduleFullBackgroundRescan() {
@@ -1239,22 +1297,16 @@ class Controller {
                 hash = Math.imul(hash, 16777619)
             }
         }
-        const visitRules = (rules) => {
-            for (const rule of Array.from(rules || [])) {
-                update(rule.cssText)
-                if (rule.conditionText) {
-                    update(rule.conditionText)
-                    try { update(matchMedia(rule.conditionText).matches) } catch (_) { update('invalid-media') }
-                }
-                if (rule.cssRules) visitRules(rule.cssRules)
-            }
-        }
         const stylesheets = [
             ...Array.from(document.styleSheets || []),
             ...Array.from(document.adoptedStyleSheets || []),
         ]
 
-        update(`${window.innerWidth}x${window.innerHeight}@${window.devicePixelRatio}`)
+        // Deliberately cheap: identity, enabled state, media match and rule
+        // count per sheet. That still detects sheets being added, removed,
+        // toggled, media-flipped, or edited through insertRule/deleteRule,
+        // without hashing every rule's cssText on every poll. Viewport size is
+        // excluded because the debounced resize listener already rescans.
         stylesheets.forEach((sheet) => {
             if (!sheet || seen.has(sheet)) return
             seen.add(sheet)
@@ -1265,7 +1317,7 @@ class Controller {
                 try { update(matchMedia(sheet.media.mediaText).matches) } catch (_) { update('invalid-media') }
             }
             try {
-                visitRules(sheet.cssRules)
+                update(sheet.cssRules ? sheet.cssRules.length : 0)
             } catch (_) {
                 update('inaccessible')
             }
@@ -1575,15 +1627,21 @@ class Controller {
                 }
             }
             const visual = this._registry.get(element)
-            if (visual) touched.add(visual)
+            if (visual) {
+                // Only class and style can disturb the projection, so only those
+                // force a rewrite. Invalidating on every observed attribute
+                // (src, poster, rel, ...) rewrote nodes that were already correct.
+                if (mutation.attributeName === 'class' || mutation.attributeName === 'style') {
+                    visual.invalidateRendering()
+                }
+                touched.add(visual)
+            }
         })
 
         this._registry.prune()
-        touched.forEach((node) => {
-            if (!this.isExplicitlyRevealed(node.element)) node.blur()
-        })
 
-        const textChanged = this._pageTextIndex.applyMutations(records)
+        const textResult = this._pageTextIndex.applyMutations(records)
+        const newWordsAppeared = textResult.added instanceof Set && textResult.added.size > 0
 
         if (stylesheetChanged) {
             this._scheduleFullBackgroundRescan()
@@ -1594,7 +1652,11 @@ class Controller {
             return
         }
 
-        if (textChanged) {
+        // Only vocabulary that is new to the page can flip the verdict, so a
+        // re-index that yielded the same words needs no analysis and no
+        // re-blur. When new words do appear we stay fail-closed until the
+        // analysis returns.
+        if (newWordsAppeared) {
             this.protectAllKnownVisuals()
             this._scheduleAnalysis()
             return
@@ -1611,7 +1673,7 @@ class Controller {
             const result = await this.analyzeCurrentPage(generation)
             if (generation !== this._policyGeneration || this.mode !== PROTECTION_MODE.ANALYZE) return
             this.applyPageResult(result)
-        }, 0)
+        }, ANALYSIS_DEBOUNCE_MS)
     }
 
     _ensureFrameMarker() {
@@ -1644,10 +1706,42 @@ function conservativeSettings() {
     }
 }
 
+function withTimeout(promise, timeoutMs, label) {
+    let timeoutId = null
+    return Promise.race([
+        promise,
+        new Promise((_, reject) => {
+            timeoutId = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs)
+        }),
+    ]).finally(() => {
+        if (timeoutId !== null) clearTimeout(timeoutId)
+    })
+}
+
+// A settings read that never settles used to leave the page fail-closed
+// forever: every image blurred and, before the CSS fix, unclickable. Bound each
+// attempt so the fail-closed path is always reached instead of hanging.
+async function readSettingsWithRetry() {
+    let lastError = null
+    for (let attempt = 1; attempt <= SETTINGS_READ_ATTEMPTS; attempt++) {
+        try {
+            return await withTimeout(
+                Storage.getWithDefaults(Object.keys(DEFAULTS)),
+                SETTINGS_READ_TIMEOUT_MS,
+                'Settings read'
+            )
+        } catch (error) {
+            lastError = error
+            console.warn(`PhobiaBlocker: settings read attempt ${attempt} failed`, error)
+        }
+    }
+    throw lastError || new Error('Settings read failed')
+}
+
 async function readAndApplySettings() {
     const readGeneration = ++settingsReadGeneration
     try {
-        const settings = await Storage.getWithDefaults(Object.keys(DEFAULTS))
+        const settings = await readSettingsWithRetry()
         if (readGeneration !== settingsReadGeneration) return
         const mode = Policy.resolveProtectionMode(settings, location.href)
         await controller.applyProtectionMode(mode, settings)
@@ -1737,9 +1831,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'getTriggeredWords': {
         if (!isTopFrameContext()) return false
         const result = controller._pageAnalysisResult
-        const words = controller.mode === PROTECTION_MODE.DISABLED || !result.shouldBlur
-            ? []
-            : [...new Set(result.matchedWords)].map(word => ({ word, count: 1 }))
+        const hidden = controller.mode === PROTECTION_MODE.DISABLED || !result.shouldBlur
+        // matchedInputWords are the words as they actually appear on the page,
+        // so they can be counted against the token index. matchedWords are
+        // NLP-normalised forms and only serve as a display fallback.
+        const source = result.matchedInputWords.length > 0
+            ? result.matchedInputWords
+            : result.matchedWords
+        const words = hidden ? [] : [...new Set(source)].map(word => ({
+            word,
+            count: controller._pageTextIndex.getTokenCount(word) || 1,
+        }))
         sendResponse({ words: words.sort((a, b) => a.word.localeCompare(b.word)) })
         return true
     }

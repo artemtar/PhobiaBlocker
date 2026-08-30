@@ -194,12 +194,17 @@ async function updateSiteStatus() {
     const isBlacklisted = settings.blacklistedSites.some(rule => popupPolicy.matchesSiteRule(url, rule))
     const isWhitelisted = settings.whitelistedSites.some(rule => popupPolicy.matchesSiteRule(url, rule))
     const mode = popupPolicy.resolveProtectionMode(settings, url)
+    const hasTriggers = popupPolicy.normalizeTargetWords(settings.targetWords).valid.length > 0
     if (isBlacklisted) {
         setStatus('status-blacklisted', 'Blacklisted — always blurred')
     } else if (isWhitelisted) {
         setStatus('status-whitelisted', 'Whitelisted — auto protection paused')
     } else if (mode === popupPolicy.PROTECTION_MODE.DISABLED) {
         setStatus('status-disabled', 'Protection off')
+    } else if (mode === popupPolicy.PROTECTION_MODE.ANALYZE && !hasTriggers) {
+        // Without triggers there is nothing to match, so nothing gets blurred.
+        // Say so plainly rather than claiming protection is active.
+        setStatus('status-disabled', 'No trigger words — nothing will be blurred')
     } else if (mode === popupPolicy.PROTECTION_MODE.ALWAYS_BLUR) {
         setStatus('status-active', 'Protection active — always blurred')
     } else {

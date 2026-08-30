@@ -91,10 +91,15 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 
 // Create context menu and initialize storage on extension install/update
 chrome.runtime.onInstalled.addListener((details) => {
-    chrome.contextMenus.create({
-        id: 'phobia-blocker-unblur',
-        title: 'Unblur',
-        contexts: ['all']
+    // removeAll first: onInstalled also fires on update and on reload during
+    // development, where a bare create() fails with a duplicate-id error.
+    chrome.contextMenus.removeAll(() => {
+        void chrome.runtime.lastError
+        chrome.contextMenus.create({
+            id: 'phobia-blocker-unblur',
+            title: 'Unblur',
+            contexts: ['all']
+        }, () => { void chrome.runtime.lastError })
     })
 
     if (details.reason !== 'install') return
@@ -302,8 +307,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             }
         }
 
-        if (!Array.isArray(_cachedTargetWords) || _cachedTargetWords.length === 0) {
+        // An unreadable list stays fail-closed.
+        if (!Array.isArray(_cachedTargetWords)) {
             return { results: requestedScopes.map(scope => failClosedResult(scope.id)) }
+        }
+
+        // A successfully read but empty trigger list is not a failure: there is
+        // nothing to match, so nothing should be blurred. Treating this as
+        // fail-closed blurred every image on every site the user visited.
+        if (_cachedTargetWords.length === 0) {
+            return {
+                results: requestedScopes.map(scope => ({
+                    id: scope.id,
+                    shouldBlur: false,
+                    matchedWords: [],
+                    matchedInputWords: [],
+                })),
+            }
         }
 
         const response = await sendOffscreenMessage({
