@@ -293,6 +293,7 @@ class VisualNode {
         // rewriting every node's class and inline filter over and over.
         this._renderState = null
         this._previewTarget = null
+        this._previewActive = false
         this._onMouseEnter = null
         this._onMouseLeave = null
         markInternalMutationTarget(this.element)
@@ -418,6 +419,9 @@ class VisualNode {
         }
         this._setStyleProjection('filter', this.controller.blurFilter, 'important')
         this._attachPreview()
+        // A re-render while the pointer is still over the element must not drop
+        // back to full blur; re-assert the preview instead.
+        if (this._previewActive) this._applyPreviewFilter()
     }
 
     unblur(options = {}) {
@@ -459,21 +463,31 @@ class VisualNode {
         this._styleProjections.clear()
     }
 
+    _applyPreviewFilter() {
+        if (!this.element) return
+        const settings = this.controller.settings
+        const previewValue = settings.previewEnabled
+            ? `${settings.previewBlurStrength}px`
+            : this.controller.blurPixels
+        markInternalMutationTarget(this.element)
+        this._setProjectionClass('phobia-preview', true)
+        this._setStyleProjection('filter', `blur(${previewValue})`, 'important')
+    }
+
+    // Listeners live on the blurred element itself. Binding them to the parent
+    // meant a wrapper smaller than the image — an inline <a> around a tall
+    // thumbnail is the common case — reported mouseleave while the pointer was
+    // still over the image, cancelling the preview.
     _attachPreview() {
         if (this._previewTarget || !this.element) return
-        const parent = this.element.parentElement
-        this._previewTarget = parent && parent !== document.body ? parent : this.element
+        this._previewTarget = this.element
         this._onMouseEnter = () => {
             if (!this.isBlurred || !this.element) return
-            const settings = this.controller.settings
-            const previewValue = settings.previewEnabled
-                ? `${settings.previewBlurStrength}px`
-                : this.controller.blurPixels
-            markInternalMutationTarget(this.element)
-            this._setProjectionClass('phobia-preview', true)
-            this._setStyleProjection('filter', `blur(${previewValue})`, 'important')
+            this._previewActive = true
+            this._applyPreviewFilter()
         }
         this._onMouseLeave = () => {
+            this._previewActive = false
             if (!this.isBlurred || !this.element) return
             markInternalMutationTarget(this.element)
             this._setProjectionClass('phobia-preview', false)
@@ -484,6 +498,7 @@ class VisualNode {
     }
 
     _detachPreview() {
+        this._previewActive = false
         if (!this._previewTarget) return
         this._previewTarget.removeEventListener('mouseenter', this._onMouseEnter)
         this._previewTarget.removeEventListener('mouseleave', this._onMouseLeave)
@@ -732,6 +747,7 @@ class Controller {
         this._backgroundLinks = new WeakSet()
         this._backgroundPhase = 'pending'
         this._backgroundRetries = 0
+        this._hasCompletedBackgroundScan = false
         this._mediaEventListenersAttached = false
         this._iframeLifecycleListenerAttached = false
         this._iframeLifecycleObserver = null
@@ -1201,6 +1217,7 @@ class Controller {
             if (full) {
                 this._stylesheetFingerprint = this._computeStylesheetFingerprint()
                 this._backgroundRetries = 0
+                this._hasCompletedBackgroundScan = true
                 this._setBackgroundPhase('ready')
             }
             return { nodes: touched, success: true }
@@ -1246,7 +1263,12 @@ class Controller {
     _scheduleFullBackgroundRescan() {
         if (this.mode === PROTECTION_MODE.DISABLED) return
         if (this._backgroundTimer !== null || this._backgroundPhase === 'scanning') return
-        this._setBackgroundPhase('pending')
+        // Only suppress backgrounds before the first successful scan. Dropping to
+        // 'pending' here yields to the event loop with the page-wide
+        // background-image:none rule in force, which blanks every background for
+        // a frame on each rescan. After one good scan the per-element decisions
+        // still hold, so leave them projected until the new scan replaces them.
+        if (!this._hasCompletedBackgroundScan) this._setBackgroundPhase('pending')
         this._backgroundTimer = setTimeout(() => {
             this._backgroundTimer = null
             this._scanBackgrounds(document, { full: true })
