@@ -25,6 +25,20 @@
     transform: translateY(-2px);
 }
 
+.tag-invalid {
+    background: #fff1f0;
+    border: 1px solid #b42318;
+    color: #b42318;
+}
+
+.tag-invalid:hover {
+    background: #fee4e2;
+}
+
+.tag-invalid .tag-remove {
+    color: #b42318;
+}
+
 .tag-remove {
     background: none;
     border: none;
@@ -90,4 +104,10 @@
 
 .add-word-btn:active {
     transform: scale(0.95);
+}
+
+.word-error {
+    color: #b42318;
+    font-size: 0.8rem;
+    margin: 8px 0 0;
 }

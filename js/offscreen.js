@@ -1,5 +1,10 @@
+/* global nlp */
+
 (() => {
     'use strict'
+
+    const policy = globalThis.PhobiaBlockerPolicy
+    if (!policy) throw new Error('PhobiaBlockerPolicy must load before offscreen.js')
 
     const NORMALIZE_PARAMS = Object.freeze({
         whitespace: true,
@@ -12,6 +17,11 @@
     })
 
     const WORD_RE = /^[-\p{L}]+$/u
+    const FAIL_CLOSED_RESULT = Object.freeze({
+        shouldBlur: true,
+        matchedWords: [],
+        matchedInputWords: [],
+    })
 
     let targetArtifacts = {
         key: '',
@@ -70,10 +80,18 @@
     }
 
     function rebuildTargetWordArtifacts(rawWords) {
-        const key = JSON.stringify(rawWords ?? [])
+        if (!Array.isArray(rawWords)) {
+            throw new TypeError('Analysis target words must be an array')
+        }
+
+        const validatedTargets = policy.normalizeTargetWords(rawWords).valid
+        if (validatedTargets.length === 0) {
+            throw new TypeError('Analysis requires at least one valid target word')
+        }
+        const key = JSON.stringify(validatedTargets)
         if (key === targetArtifacts.key) return
 
-        const expandedRawTargets = expandTargetWords(rawWords)
+        const expandedRawTargets = expandTargetWords(validatedTargets)
         const normalizedWords = expandedRawTargets.length > 0
             ? normalizeWords(nlp(expandedRawTargets).normalize(NORMALIZE_PARAMS).out('array'))
             : []
@@ -87,21 +105,33 @@
         }
     }
 
+    function normalizePageWord(word) {
+        try {
+            return normalizeWords(
+                nlp(word)
+                    .normalize(NORMALIZE_PARAMS)
+                    .out('array')
+            )
+        } catch (_) {
+            return normalizeWords([word])
+        }
+    }
+
     function analyzeWords(words) {
         if (!Array.isArray(words) || targetArtifacts.normalizedTargetSet.size === 0) {
-            return { shouldBlur: false, matchedWords: [] }
+            return { ...FAIL_CLOSED_RESULT }
         }
 
         const uniqueWords = normalizeWords(words)
         if (uniqueWords.length === 0) {
-            return { shouldBlur: false, matchedWords: [] }
+            return { shouldBlur: false, matchedWords: [], matchedInputWords: [] }
         }
 
         const prefixFilteredWords = uniqueWords.filter((word) =>
             targetArtifacts.prefixSet.has(word.slice(0, 2))
         )
         if (prefixFilteredWords.length === 0) {
-            return { shouldBlur: false, matchedWords: [] }
+            return { shouldBlur: false, matchedWords: [], matchedInputWords: [] }
         }
 
         const normalizedPageWords = normalizeWords(
@@ -110,13 +140,24 @@
                 .out('array')
         )
 
-        const matchedWords = [...new Set(
+        const matchedWords = new Set(
             normalizedPageWords.filter((word) => targetArtifacts.normalizedTargetSet.has(word))
-        )]
+        )
+        const matchedInputWords = new Set()
+
+        prefixFilteredWords.forEach((word) => {
+            const normalizedPageWords = normalizePageWord(word)
+            const normalizedMatches = normalizedPageWords.filter((normalizedWord) =>
+                targetArtifacts.normalizedTargetSet.has(normalizedWord)
+            )
+            if (normalizedMatches.length === 0) return
+            matchedInputWords.add(word)
+        })
 
         return {
-            shouldBlur: matchedWords.length > 0,
-            matchedWords,
+            shouldBlur: matchedWords.size > 0,
+            matchedWords: [...matchedWords],
+            matchedInputWords: [...matchedInputWords],
         }
     }
 
@@ -134,14 +175,36 @@
         if (!message || message.target !== 'offscreen') return
 
         if (message.type === 'PB_ANALYZE_SCOPES') {
-            rebuildTargetWordArtifacts(message.targetWords)
-            sendResponse({ results: analyzeScopes(message.scopes) })
+            try {
+                rebuildTargetWordArtifacts(message.targetWords)
+                if (!Array.isArray(message.scopes) || message.scopes.some(scope => (
+                    !scope || typeof scope.id !== 'number' || !Array.isArray(scope.words) ||
+                    scope.words.some(word => typeof word !== 'string')
+                ))) {
+                    throw new TypeError('Analysis scopes must contain numeric IDs and string word arrays')
+                }
+                sendResponse({ results: analyzeScopes(message.scopes) })
+            } catch (error) {
+                console.error('PhobiaBlocker: invalid scoped analysis request', error)
+                const scopes = Array.isArray(message.scopes) ? message.scopes : []
+                sendResponse({
+                    results: scopes
+                        .filter(scope => scope && typeof scope.id === 'number')
+                        .map(scope => ({ id: scope.id, ...FAIL_CLOSED_RESULT })),
+                })
+            }
             return
         }
 
         if (message.type === 'PB_ANALYZE_WORDS') {
-            rebuildTargetWordArtifacts(message.targetWords)
-            sendResponse(analyzeWords(message.words))
+            try {
+                rebuildTargetWordArtifacts(message.targetWords)
+                if (!Array.isArray(message.words)) throw new TypeError('Analysis words must be an array')
+                sendResponse(analyzeWords(message.words))
+            } catch (error) {
+                console.error('PhobiaBlocker: invalid analysis request', error)
+                sendResponse({ ...FAIL_CLOSED_RESULT })
+            }
             return
         }
 

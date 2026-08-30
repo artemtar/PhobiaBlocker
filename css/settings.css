@@ -180,6 +180,16 @@ body {
     flex: 0 0 auto;
 }
 
+.settings-error {
+    color: #b42318;
+    background: #fff1f0;
+    border: 1px solid #fda29b;
+    border-radius: var(--border-radius-small);
+    font-size: 0.875rem;
+    margin-bottom: var(--spacing-medium);
+    padding: 10px 12px;
+}
+
 /* Toggle Switch (from popup.html) */
 .switch {
     position: relative;

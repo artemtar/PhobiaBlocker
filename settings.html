@@ -19,6 +19,7 @@
             <nav class="settings-sidebar">
                 <ul class="sidebar-nav">
                     <li><a href="#site-rules" class="nav-link active">Site Rules</a></li>
+                    <li><a href="#protection" class="nav-link">Protection</a></li>
                     <li><a href="#hover-preview" class="nav-link">Hover Preview</a></li>
                     <li><a href="#shortcuts" class="nav-link">Keyboard Shortcuts</a></li>
                     <li><a href="#about" class="nav-link">How It Works</a></li>
@@ -28,6 +29,8 @@
 
             <!-- Content Area -->
             <main class="settings-content">
+                <p id="settings-error" class="settings-error" role="alert" hidden></p>
+
                 <!-- Site Rules Section -->
                 <section id="site-rules" class="settings-section">
                     <h2 class="section-title">Site Rules</h2>
@@ -58,9 +61,9 @@
                             <div class="info-box">
                                 <strong>Examples:</strong>
                                 <ul>
-                                    <li><code>example.com</code> - Exact domain match</li>
-                                    <li><code>*.example.com</code> - All subdomains of example.com</li>
-                                    <li><code>example.com/path</code> - Specific path on domain</li>
+                                    <li><code>example.com</code> - This domain and its subdomains</li>
+                                    <li><code>*.example.com</code> - Same domain and subdomain behavior</li>
+                                    <li><code>example.com/path</code> - This case-sensitive path and its descendants</li>
                                 </ul>
                             </div>
                         </div>
@@ -84,6 +87,31 @@
                             </div>
                             <div class="info-box">
                                 <strong>Note:</strong> Blacklist takes precedence over whitelist. If a site is on both lists, it will be blacklisted.
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Protection Section -->
+                <section id="protection" class="settings-section">
+                    <h2 class="section-title">Protection</h2>
+                    <div class="settings-group">
+                        <div class="setting-item">
+                            <div class="setting-left">
+                                <label for="cross-origin-iframe-switch" class="setting-label">Keep unchecked embedded content blurred</label>
+                                <p class="setting-description">
+                                    Videos, maps, posts, and advertisements can be embedded from another website.
+                                    PhobiaBlocker cannot reliably inspect what is inside them.
+                                    Keep this on for stronger protection: embeds stay blurred until you reveal them manually.
+                                    Turn it off for easier browsing: embeds appear when the rest of the page is safe,
+                                    but they could still contain something you asked PhobiaBlocker to hide.
+                                </p>
+                            </div>
+                            <div class="setting-right">
+                                <label class="switch">
+                                    <input type="checkbox" id="cross-origin-iframe-switch">
+                                    <span class="slider"></span>
+                                </label>
                             </div>
                         </div>
                     </div>
@@ -255,6 +283,8 @@
         </div>
     </div>
 
+    <script src="js/shared-policy.js"></script>
+    <script src="js/storage.js"></script>
     <script src="js/settings.js"></script>
 </body>
 </html>

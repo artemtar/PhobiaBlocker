@@ -1,266 +1,290 @@
-// Early blur injector (MV3 content script).
-// Purpose: apply a last-in-cascade blur style at document_start without loading NLP libs.
-// This file must stay dependency-free (no compromise/natural).
-
 (() => {
-    const STYLE_ID = 'phobiablocker-early-blur'
-    const FRAME_ATTR = 'data-phobiablocker-frame'
+    'use strict'
 
-    const DEFAULT_BLUR_SLIDER_VALUE = 50 // Matches popup.js slider default
-    const DEFAULT_PREVIEW_BLUR_STRENGTH = 5 // Matches settings.js default
+    const Policy = globalThis.PhobiaBlockerPolicy
+    const Storage = globalThis.PhobiaBlockerStorage
+    if (!Policy || !Storage) {
+        console.error('PhobiaBlocker: shared policy or storage module is unavailable; keeping protection active')
+        return
+    }
 
+    const WORD_RE = /[-\p{L}]+/gu
     const PB_CSS_VARS = Object.freeze({
         blurNs: '--phobiablocker-blurValueAmount',
         blurLegacy: '--blurValueAmount',
         previewNs: '--phobiablocker-previewBlurAmount',
         previewLegacy: '--previewBlurAmount',
     })
-
-    const EARLY_BLUR_CSS = `
-:root {
-    --blurValueAmount: 40px;
-    --filterStrength: blur(var(--phobiablocker-blurValueAmount, var(--blurValueAmount, 40px)));
-}
-
-/* Apply blur broadly, but keep pointer-events gating separate so we can
- * avoid breaking iframe interaction (and optionally avoid disabling media
- * pointer-events in subframes). */
-:is(img, video):not(.phobia-noblur):not(.phobia-permanent-unblur) {
-    filter: var(--filterStrength) !important;
-    cursor: default;
-}
-
-:is(iframe):not(.phobia-noblur):not(.phobia-permanent-unblur) {
-    filter: var(--filterStrength) !important;
-    cursor: default;
-}
-
-:is(div, span, section, article, aside, header, footer, main, figure)[style*="background-image"]:not(.phobia-noblur):not(.phobia-permanent-unblur),
-:is(div, span, section, article, aside, header, footer, main, figure)[style*="background: url("]:not(.phobia-noblur):not(.phobia-permanent-unblur),
-:is(div, span, section, article, aside, header, footer, main, figure)[style*="background:url("]:not(.phobia-noblur):not(.phobia-permanent-unblur) {
-    filter: var(--filterStrength) !important;
-    cursor: default;
-}
-
-/* In the TOP frame only, keep unprocessed media non-interactive to prevent
- * hover-preview flashes before analysis marks nodes with data-phobia-blur. */
-:root[data-phobiablocker-frame="top"] :is(img, video):not(.phobia-noblur):not(.phobia-permanent-unblur):not([data-phobia-blur]) {
-    pointer-events: none !important;
-}
-
-:is(img, video, iframe)[data-phobia-blur]:not(.phobia-permanent-unblur) {
-    pointer-events: auto !important;
-    cursor: pointer !important;
-    transition: filter 0.2s ease;
-}
-
-:is(img, video, iframe).phobia-preview:not(.phobia-permanent-unblur) {
-    filter: blur(var(--phobiablocker-previewBlurAmount, var(--previewBlurAmount, 4px))) !important;
-}
-
-:is(img, video, iframe, div, span, section, article, aside, header, footer, main, figure).phobia-noblur {
-    filter: none !important;
-}
-
-html.phobia-disabled :is(img, video, iframe):not(.phobia-noblur) {
-    filter: none !important;
-    pointer-events: auto !important;
-    cursor: auto !important;
-    transition: none !important;
-}
-`.trim()
-
     const state = {
-        phobiaBlockerEnabled: true,
-        blurIsAlwaysOn: false,
-        blurValueAmount: undefined,
-        whitelistedSites: [],
-        blacklistedSites: [],
-        previewEnabled: true,
-        previewBlurStrength: DEFAULT_PREVIEW_BLUR_STRENGTH,
+        mode: Policy.PROTECTION_MODE.ALWAYS_BLUR,
+        targetWords: new Set(),
+        wordCoverEnabled: false,
     }
 
-    function _getRoot() {
+    let observer = null
+    let projectionObserver = null
+    let handedOff = false
+    const earlyCovers = new Set()
+
+    function getRoot() {
         return document.documentElement || document.querySelector('html')
     }
 
-    function _setRootCssVar(name, value, priority) {
-        const root = _getRoot()
+    function setRootCssVar(name, value) {
+        const root = getRoot()
         if (!root || !root.style) return
         try {
-            root.style.setProperty(name, value, priority || '')
-        } catch (_) {}
+            if (root.style.getPropertyValue(name) === value) return
+            root.style.setProperty(name, value)
+        } catch (_) { /* Keep stylesheet defaults. */ }
     }
 
-    function setBlurCssValue(value, priority) {
-        _setRootCssVar(PB_CSS_VARS.blurNs, value, priority)
-        _setRootCssVar(PB_CSS_VARS.blurLegacy, value, priority)
+    function computeBlurPixels(value) {
+        const sliderValue = typeof value === 'number' ? value : Policy.DEFAULTS.blurValueAmount
+        return Math.pow(sliderValue * 0.09, 1.8) * 2
     }
 
-    function setPreviewBlurCssValue(value, priority) {
-        _setRootCssVar(PB_CSS_VARS.previewNs, value, priority)
-        _setRootCssVar(PB_CSS_VARS.previewLegacy, value, priority)
+    function applyVisualSettings(settings) {
+        const blurValue = `${computeBlurPixels(settings.blurValueAmount)}px`
+        const previewValue = settings.previewEnabled
+            ? `${settings.previewBlurStrength}px`
+            : `var(${PB_CSS_VARS.blurNs}, var(${PB_CSS_VARS.blurLegacy}, 40px))`
+        setRootCssVar(PB_CSS_VARS.blurNs, blurValue)
+        setRootCssVar(PB_CSS_VARS.blurLegacy, blurValue)
+        setRootCssVar(PB_CSS_VARS.previewNs, previewValue)
+        setRootCssVar(PB_CSS_VARS.previewLegacy, previewValue)
     }
 
-    function _computeBlurPixels(sliderValue) {
-        const v = typeof sliderValue === 'number' ? sliderValue : DEFAULT_BLUR_SLIDER_VALUE
-        return Math.pow(v * 0.09, 1.8) * 2
-    }
-
-    function _ensureFrameMarker() {
-        const root = _getRoot()
+    function ensureFrameMarker() {
+        const root = getRoot()
         if (!root) return
-        let isTop = true
-        try { isTop = (window.top === window) } catch (_) { isTop = true }
-        root.setAttribute(FRAME_ATTR, isTop ? 'top' : 'sub')
+        let isTop = false
+        try { isTop = window.top === window } catch (_) { /* Treat inaccessible parents as subframes. */ }
+        root.setAttribute('data-phobiablocker-frame', isTop ? 'top' : 'sub')
     }
 
-    function _injectEarlyStyle() {
-        const root = _getRoot()
-        if (!root) return
-        if (document.getElementById(STYLE_ID)) return
-
-        const styleEl = document.createElement('style')
-        styleEl.id = STYLE_ID
-        styleEl.textContent = EARLY_BLUR_CSS
-        ;(document.head || root).appendChild(styleEl)
-    }
-
-    function _removeEarlyStyle() {
-        const styleEl = document.getElementById(STYLE_ID)
-        if (styleEl) styleEl.remove()
-    }
-
-    function matchesSitePattern(currentUrl, pattern) {
-        try {
-            const url = new URL(currentUrl)
-            const hostname = url.hostname.toLowerCase()
-            const rule = String(pattern || '').toLowerCase()
-            const [hostPattern, ...pathParts] = rule.split('/')
-            const pathPattern = pathParts.length > 0 ? `/${pathParts.join('/')}` : ''
-
-            const hostMatches = (candidate, r) => {
-                if (r.startsWith('*.')) {
-                    const base = r.substring(2)
-                    return candidate === base || candidate.endsWith(`.${base}`)
-                }
-                return candidate === r || candidate.endsWith(`.${r}`)
-            }
-
-            if (!hostPattern || !hostMatches(hostname, hostPattern)) return false
-            if (!pathPattern) return true
-            return url.pathname === pathPattern || url.pathname.startsWith(`${pathPattern}/`)
-        } catch (_) {
-            return false
+    function isExcludedTextNode(node) {
+        const parent = node && node.parentElement
+        if (!parent) return true
+        if (parent.closest && parent.closest([
+            'script', 'style', 'noscript', 'input', 'textarea', 'select', 'option',
+            'form', '[contenteditable="true"]', '[hidden]', '[aria-hidden="true"]',
+        ].join(', '))) return true
+        let current = parent
+        while (current) {
+            if (earlyCovers.has(current)) return true
+            current = current.parentElement
         }
+        return parent.isContentEditable
     }
 
-    function _isWhitelisted() {
-        const currentUrl = window.location.href
-        return (state.whitelistedSites || []).some((p) => matchesSitePattern(currentUrl, p))
+    function coverColorFor(parent) {
+        try {
+            const color = getComputedStyle(parent).color
+            if (color && color !== 'rgba(0, 0, 0, 0)' && color !== 'transparent') return color
+        } catch (_) { /* Use the CSS currentColor fallback. */ }
+        return 'currentColor'
     }
 
-    function _isBlacklisted() {
-        const currentUrl = window.location.href
-        return (state.blacklistedSites || []).some((p) => matchesSitePattern(currentUrl, p))
+    function createCover(word, parent) {
+        const cover = document.createElement('span')
+        cover.className = 'phobia-word-cover'
+        cover.setAttribute('data-phobia-word-cover', '1')
+        cover.setAttribute('data-phobiablocker-early-word-cover', '1')
+        cover.setAttribute('title', 'Covered by PhobiaBlocker')
+        cover.setAttribute('aria-label', 'Covered by PhobiaBlocker')
+        cover.style.setProperty('--phobiablocker-word-cover-color', coverColorFor(parent))
+        cover.textContent = word
+        earlyCovers.add(cover)
+        return cover
     }
 
-    function _applyState() {
-        const root = _getRoot()
-        if (!root) return
+    function canCoverWords() {
+        return !handedOff && state.mode !== Policy.PROTECTION_MODE.DISABLED &&
+            state.wordCoverEnabled && state.targetWords.size > 0
+    }
 
-        _ensureFrameMarker()
-        _injectEarlyStyle()
+    function coverTextNode(textNode) {
+        if (!canCoverWords() || isExcludedTextNode(textNode)) return
+        const text = textNode.nodeValue || ''
+        const fragment = document.createDocumentFragment()
+        let lastIndex = 0
+        let changed = false
+        let match
 
-        const blacklisted = _isBlacklisted()
-        const whitelisted = _isWhitelisted()
+        WORD_RE.lastIndex = 0
+        while ((match = WORD_RE.exec(text)) !== null) {
+            const normalized = match[0].normalize('NFKC').toLowerCase()
+            if (!state.targetWords.has(normalized)) continue
+            changed = true
+            if (match.index > lastIndex) {
+                fragment.appendChild(document.createTextNode(text.slice(lastIndex, match.index)))
+            }
+            fragment.appendChild(createCover(match[0], textNode.parentElement))
+            lastIndex = match.index + match[0].length
+        }
+        WORD_RE.lastIndex = 0
 
-        // Match js/js.js precedence:
-        // - blacklist overrides everything (always blur)
-        // - whitelist disables completely
-        // - global disabled disables unless blacklisted
-        const shouldDisable = whitelisted || (!state.phobiaBlockerEnabled && !blacklisted)
+        if (!changed || !textNode.parentNode) return
+        if (lastIndex < text.length) fragment.appendChild(document.createTextNode(text.slice(lastIndex)))
+        textNode.parentNode.replaceChild(fragment, textNode)
+    }
 
-        if (shouldDisable) {
-            root.classList.add('phobia-disabled')
-            setBlurCssValue('0px')
-            setPreviewBlurCssValue('0px')
-            _removeEarlyStyle()
+    function coverSubtree(node) {
+        if (!node || !canCoverWords()) return
+        if (node.nodeType === Node.TEXT_NODE) {
+            coverTextNode(node)
+            return
+        }
+        if (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.DOCUMENT_NODE) return
+
+        const textNodes = []
+        try {
+            const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT)
+            let current = walker.nextNode()
+            while (current) {
+                textNodes.push(current)
+                current = walker.nextNode()
+            }
+        } catch (_) {
+            return
+        }
+        textNodes.forEach(coverTextNode)
+    }
+
+    function unwrapEarlyCovers() {
+        Array.from(earlyCovers).forEach((cover) => {
+            earlyCovers.delete(cover)
+            if (!cover.parentNode) return
+            const parent = cover.parentNode
+            parent.replaceChild(document.createTextNode(cover.textContent || ''), cover)
+            try { parent.normalize() } catch (_) { /* Detached parents need no normalization. */ }
+        })
+    }
+
+    function stopCovering(unwrap = false) {
+        if (observer) observer.disconnect()
+        observer = null
+        if (unwrap) unwrapEarlyCovers()
+    }
+
+    function startCovering() {
+        if (!canCoverWords()) {
+            stopCovering(true)
             return
         }
 
-        root.classList.remove('phobia-disabled')
-        _injectEarlyStyle()
+        coverSubtree(document.body || document.documentElement)
+        if (observer) return
 
-        const blurPixels = _computeBlurPixels(state.blurValueAmount)
-        setBlurCssValue(`${blurPixels}px`)
+        observer = new MutationObserver((mutations) => {
+            mutations.forEach((mutation) => {
+                if (mutation.type === 'attributes') {
+                    const cover = mutation.target
+                    if (earlyCovers.has(cover) && !cover.classList.contains('phobia-word-cover')) {
+                        cover.classList.add('phobia-word-cover')
+                    }
+                    return
+                }
+                if (mutation.type === 'characterData') {
+                    coverTextNode(mutation.target)
+                    return
+                }
+                mutation.addedNodes.forEach(coverSubtree)
+            })
+        })
+        observer.observe(document, {
+            childList: true,
+            characterData: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['class'],
+        })
+    }
 
-        if (state.previewEnabled === false) {
-            setPreviewBlurCssValue('var(--phobiablocker-blurValueAmount, var(--blurValueAmount, 40px))')
-        } else {
-            const strength = typeof state.previewBlurStrength === 'number'
-                ? state.previewBlurStrength
-                : DEFAULT_PREVIEW_BLUR_STRENGTH
-            setPreviewBlurCssValue(`${strength}px`)
+    function syncRootProjection() {
+        const root = getRoot()
+        if (!root) return
+        const disabled = state.mode === Policy.PROTECTION_MODE.DISABLED
+        root.classList.toggle('phobia-disabled', disabled)
+
+        if (disabled) {
+            if (root.hasAttribute('data-phobiablocker-background-scanning')) {
+                root.removeAttribute('data-phobiablocker-background-scanning')
+            }
+            if (root.getAttribute('data-phobiablocker-background-ready') !== '1') {
+                root.setAttribute('data-phobiablocker-background-ready', '1')
+            }
+            return
+        }
+        if (root.hasAttribute('data-phobiablocker-background-ready')) {
+            root.removeAttribute('data-phobiablocker-background-ready')
+        }
+        if (root.hasAttribute('data-phobiablocker-background-scanning')) {
+            root.removeAttribute('data-phobiablocker-background-scanning')
         }
     }
 
-    function _loadInitialState() {
+    function startProjectionObserver() {
+        const root = getRoot()
+        if (!root || projectionObserver) return
+        projectionObserver = new MutationObserver(() => {
+            if (!handedOff) syncRootProjection()
+        })
+        projectionObserver.observe(root, {
+            attributes: true,
+            attributeFilter: [
+                'class', 'style',
+                'data-phobiablocker-background-ready',
+                'data-phobiablocker-background-scanning',
+            ],
+        })
+    }
+
+    function applyMode(mode) {
+        const root = getRoot()
+        if (!root) return
+        state.mode = mode
+        syncRootProjection()
+
+        if (mode === Policy.PROTECTION_MODE.DISABLED) {
+            stopCovering(true)
+            return
+        }
+
+        startCovering()
+    }
+
+    async function initialize() {
+        const root = getRoot()
+        if (root) {
+            syncRootProjection()
+            startProjectionObserver()
+        }
+        ensureFrameMarker()
+
         try {
-            chrome.storage.sync.get([
-                'phobiaBlockerEnabled',
-                'blurIsAlwaysOn',
-                'blurValueAmount',
-                'whitelistedSites',
-                'blacklistedSites',
-                'previewEnabled',
-                'previewBlurStrength',
-            ], (storage) => {
-                if (storage && typeof storage === 'object') {
-                    if (storage.phobiaBlockerEnabled !== undefined) state.phobiaBlockerEnabled = Boolean(storage.phobiaBlockerEnabled)
-                    if (storage.blurIsAlwaysOn !== undefined) state.blurIsAlwaysOn = Boolean(storage.blurIsAlwaysOn)
-                    if (storage.blurValueAmount !== undefined) state.blurValueAmount = Number(storage.blurValueAmount)
-                    if (Array.isArray(storage.whitelistedSites)) state.whitelistedSites = storage.whitelistedSites
-                    if (Array.isArray(storage.blacklistedSites)) state.blacklistedSites = storage.blacklistedSites
-                    if (storage.previewEnabled !== undefined) state.previewEnabled = Boolean(storage.previewEnabled)
-                    if (storage.previewBlurStrength !== undefined) state.previewBlurStrength = Number(storage.previewBlurStrength)
-                }
-                _applyState()
-            })
-        } catch (_) {
-            // Storage not available: fail-safe is "blur on" via injected CSS default.
-            _applyState()
+            const settings = await Storage.getWithDefaults(Object.keys(Policy.DEFAULTS))
+            if (handedOff) return
+            applyVisualSettings(settings)
+            state.targetWords = new Set(Policy.normalizeTargetWords(settings.targetWords).valid)
+            state.wordCoverEnabled = settings.wordCoverEnabled
+            applyMode(Policy.resolveProtectionMode(settings, location.href))
+        } catch (error) {
+            if (handedOff) return
+            console.error('PhobiaBlocker: initial settings read failed; keeping media blurred', error)
+            state.targetWords = new Set()
+            state.wordCoverEnabled = false
+            applyMode(Policy.PROTECTION_MODE.ALWAYS_BLUR)
         }
     }
 
-    function _listenForChanges() {
-        try {
-            chrome.storage.onChanged.addListener((changes, areaName) => {
-                if (areaName !== 'sync') return
-                let touched = false
+    window.addEventListener('phobiablocker:word-cover-manager-ready', () => {
+        handedOff = true
+        if (projectionObserver) projectionObserver.disconnect()
+        projectionObserver = null
+        stopCovering(true)
+    }, { once: true })
 
-                const setIf = (key, assignFn) => {
-                    if (!Object.prototype.hasOwnProperty.call(changes, key)) return
-                    assignFn(changes[key].newValue)
-                    touched = true
-                }
-
-                setIf('phobiaBlockerEnabled', (v) => { state.phobiaBlockerEnabled = Boolean(v) })
-                setIf('blurIsAlwaysOn', (v) => { state.blurIsAlwaysOn = Boolean(v) })
-                setIf('blurValueAmount', (v) => { state.blurValueAmount = v === undefined ? undefined : Number(v) })
-                setIf('whitelistedSites', (v) => { state.whitelistedSites = Array.isArray(v) ? v : [] })
-                setIf('blacklistedSites', (v) => { state.blacklistedSites = Array.isArray(v) ? v : [] })
-                setIf('previewEnabled', (v) => { state.previewEnabled = Boolean(v) })
-                setIf('previewBlurStrength', (v) => { state.previewBlurStrength = v === undefined ? DEFAULT_PREVIEW_BLUR_STRENGTH : Number(v) })
-
-                if (touched) _applyState()
-            })
-        } catch (_) {}
-    }
-
-    // Execute as early as possible.
-    _ensureFrameMarker()
-    _injectEarlyStyle()
-    _loadInitialState()
-    _listenForChanges()
+    void initialize()
 })()
