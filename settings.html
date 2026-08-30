@@ -3,282 +3,270 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PhobiaBlocker Settings</title>
-    <link rel="stylesheet" href="css/bootstrap.css">
+    <title>PhobiaBlocker settings</title>
+    <link rel="stylesheet" href="css/theme.css">
     <link rel="stylesheet" href="css/settings.css">
 </head>
 <body>
     <div class="settings-container">
-        <!-- Header -->
         <header class="settings-header">
-            <h1>PhobiaBlocker Settings</h1>
+            <h1>
+                <span class="settings-wordmark-mark" aria-hidden="true">
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 3l7 3v5c0 4.4-2.9 8.4-7 9.6-4.1-1.2-7-5.2-7-9.6V6l7-3z"/>
+                    </svg>
+                </span>
+                PhobiaBlocker settings
+            </h1>
+            <span class="settings-version">Version <span id="version-number">…</span></span>
         </header>
 
         <div class="settings-main">
-            <!-- Sidebar Navigation -->
             <nav class="settings-sidebar">
                 <ul class="sidebar-nav">
-                    <li><a href="#site-rules" class="nav-link active">Site Rules</a></li>
+                    <li><a href="#site-rules" class="nav-link active">Site rules</a></li>
                     <li><a href="#protection" class="nav-link">Protection</a></li>
-                    <li><a href="#hover-preview" class="nav-link">Hover Preview</a></li>
-                    <li><a href="#shortcuts" class="nav-link">Keyboard Shortcuts</a></li>
-                    <li><a href="#about" class="nav-link">How It Works</a></li>
-                    <li><a href="#debug" class="nav-link">Debug Mode</a></li>
+                    <li><a href="#hover-preview" class="nav-link">Hover preview</a></li>
+                    <li><a href="#shortcuts" class="nav-link">Keyboard shortcuts</a></li>
+                    <li><a href="#about" class="nav-link">How it works</a></li>
+                    <li><a href="#debug" class="nav-link">Debug mode</a></li>
                 </ul>
             </nav>
 
-            <!-- Content Area -->
             <main class="settings-content">
                 <p id="settings-error" class="settings-error" role="alert" hidden></p>
 
-                <!-- Site Rules Section -->
                 <section id="site-rules" class="settings-section">
-                    <h2 class="section-title">Site Rules</h2>
+                    <h2 class="section-title">Site rules</h2>
                     <div class="settings-group">
-                        <div class="setting-item-full">
-                            <p class="setting-description">
-                                Control how PhobiaBlocker behaves on specific websites. Add domains or URL patterns to whitelist or blacklist sites.
-                            </p>
-                        </div>
-
-                        <!-- Whitelist -->
                         <div class="site-rules-subsection">
-                            <h3>Whitelist</h3>
+                            <h3>
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                    <path d="M12 3l7 3v5c0 4.4-2.9 8.4-7 9.6-4.1-1.2-7-5.2-7-9.6V6l7-3z"/>
+                                    <path d="M4 4l16 16"/>
+                                </svg>
+                                Whitelist
+                            </h3>
                             <p class="setting-description">
-                                Websites where PhobiaBlocker <strong>will not run at all</strong>. No blur will be applied, even if "Always Blur Media" is enabled.
+                                PhobiaBlocker won't run at all on these sites. Nothing is blurred, even with "always blur" on.
                             </p>
                             <div class="site-list-container">
                                 <div id="whitelist-container" class="site-list"></div>
                                 <div class="site-input-container">
-                                    <input type="text" id="whitelist-input" class="site-input" placeholder="example.com or *.example.com" maxlength="100">
-                                    <button id="add-whitelist-btn" class="add-site-btn" title="Add to whitelist">
-                                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                                    <input type="text" id="whitelist-input" class="pb-input site-input" placeholder="example.com or *.example.com" maxlength="100">
+                                    <button id="add-whitelist-btn" class="add-site-btn" title="Add to whitelist" aria-label="Add to whitelist">
+                                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                                             <path d="M8 3V13M3 8H13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                                         </svg>
                                     </button>
                                 </div>
                             </div>
                             <div class="info-box">
-                                <strong>Examples:</strong>
+                                <strong>Patterns</strong>
                                 <ul>
-                                    <li><code>example.com</code> - This domain and its subdomains</li>
-                                    <li><code>*.example.com</code> - Same domain and subdomain behavior</li>
-                                    <li><code>example.com/path</code> - This case-sensitive path and its descendants</li>
+                                    <li><code>example.com</code> — this domain and its subdomains</li>
+                                    <li><code>*.example.com</code> — same domain and subdomain behaviour</li>
+                                    <li><code>example.com/path</code> — this case-sensitive path and everything under it</li>
                                 </ul>
                             </div>
                         </div>
 
-                        <!-- Blacklist -->
                         <div class="site-rules-subsection">
-                            <h3>Blacklist</h3>
+                            <h3>
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                    <path d="M12 3l7 3v5c0 4.4-2.9 8.4-7 9.6-4.1-1.2-7-5.2-7-9.6V6l7-3z"/>
+                                    <path d="M9.5 12l1.8 1.8 3.4-3.6"/>
+                                </svg>
+                                Blacklist
+                            </h3>
                             <p class="setting-description">
-                                Websites where <strong>blur is always applied</strong> to all visual content, regardless of text analysis or other settings.
+                                All visual content stays blurred on these sites, whatever the text analysis says.
                             </p>
                             <div class="site-list-container">
                                 <div id="blacklist-container" class="site-list"></div>
                                 <div class="site-input-container">
-                                    <input type="text" id="blacklist-input" class="site-input" placeholder="example.com or *.example.com" maxlength="100">
-                                    <button id="add-blacklist-btn" class="add-site-btn" title="Add to blacklist">
-                                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                                    <input type="text" id="blacklist-input" class="pb-input site-input" placeholder="example.com or *.example.com" maxlength="100">
+                                    <button id="add-blacklist-btn" class="add-site-btn" title="Add to blacklist" aria-label="Add to blacklist">
+                                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                                             <path d="M8 3V13M3 8H13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                                         </svg>
                                     </button>
                                 </div>
                             </div>
                             <div class="info-box">
-                                <strong>Note:</strong> Blacklist takes precedence over whitelist. If a site is on both lists, it will be blacklisted.
+                                <strong>Note</strong> — the blacklist wins. A site on both lists is blacklisted.
                             </div>
                         </div>
                     </div>
                 </section>
 
-                <!-- Protection Section -->
                 <section id="protection" class="settings-section">
                     <h2 class="section-title">Protection</h2>
                     <div class="settings-group">
                         <div class="setting-item">
                             <div class="setting-left">
-                                <label for="cross-origin-iframe-switch" class="setting-label">Keep unchecked embedded content blurred</label>
+                                <label for="cross-origin-iframe-switch" class="setting-label">Keep embedded content blurred</label>
                                 <p class="setting-description">
-                                    Videos, maps, posts, and advertisements can be embedded from another website.
-                                    PhobiaBlocker cannot reliably inspect what is inside them.
-                                    Keep this on for stronger protection: embeds stay blurred until you reveal them manually.
-                                    Turn it off for easier browsing: embeds appear when the rest of the page is safe,
-                                    but they could still contain something you asked PhobiaBlocker to hide.
+                                    Videos, maps, posts and ads are often embedded from another site, and PhobiaBlocker
+                                    can't reliably see inside them.
+                                </p>
+                                <p class="setting-description">
+                                    On, embeds stay blurred until you reveal them. Off, they appear once the rest of the
+                                    page looks safe — but they could still hold something you asked to hide.
                                 </p>
                             </div>
                             <div class="setting-right">
-                                <label class="switch">
+                                <label class="pb-switch">
                                     <input type="checkbox" id="cross-origin-iframe-switch">
-                                    <span class="slider"></span>
+                                    <span class="pb-switch-track"></span>
                                 </label>
                             </div>
                         </div>
                     </div>
                 </section>
 
-                <!-- Hover Preview Section -->
                 <section id="hover-preview" class="settings-section">
-                    <h2 class="section-title">Hover Preview</h2>
+                    <h2 class="section-title">Hover preview</h2>
                     <div class="settings-group">
                         <div class="setting-item">
                             <div class="setting-left">
-                                <label for="preview-switch" class="setting-label">Enable Hover Preview</label>
-                                <p class="setting-description">When hovering over a blurred image, show a partially unblurred preview. Move the mouse away to restore full blur.</p>
+                                <label for="preview-switch" class="setting-label">Enable hover preview</label>
+                                <p class="setting-description">Hovering a blurred image shows a partially unblurred peek. Move away to restore full blur.</p>
                             </div>
                             <div class="setting-right">
-                                <label class="switch">
+                                <label class="pb-switch">
                                     <input type="checkbox" id="preview-switch" checked>
-                                    <span class="slider"></span>
+                                    <span class="pb-switch-track"></span>
                                 </label>
                             </div>
                         </div>
 
                         <div class="setting-item" id="preview-strength-item">
                             <div class="setting-left">
-                                <label for="preview-strength-slider" class="setting-label">Preview Blur Strength</label>
-                                <p class="setting-description">How much blur to apply when hovering. Lower values show more of the image.</p>
+                                <label for="preview-strength-slider" class="setting-label">Preview blur strength</label>
+                                <p class="setting-description">How much blur stays while hovering. Lower shows more of the image.</p>
                                 <div class="blur-slider-container">
-                                    <input type="range" id="preview-strength-slider" class="blur-slider" min="0" max="20" step="1" value="5">
+                                    <input type="range" id="preview-strength-slider" class="pb-range blur-slider" min="0" max="20" step="1" value="5">
                                 </div>
                             </div>
                             <div class="setting-right">
-                                <div id="preview-blur-demo" class="preview-blur-demo"></div>
+                                <div id="preview-blur-demo" class="preview-blur-demo" role="img" aria-label="Preview blur strength example"></div>
                             </div>
                         </div>
                     </div>
                 </section>
 
-                <!-- Keyboard Shortcuts Section -->
                 <section id="shortcuts" class="settings-section">
-                    <h2 class="section-title">Keyboard Shortcuts</h2>
+                    <h2 class="section-title">Keyboard shortcuts</h2>
                     <div class="settings-group">
                         <div class="setting-item-full">
-                            <p class="setting-description">
-                                PhobiaBlocker provides keyboard shortcuts for quick actions. The shortcuts below reflect your current settings:
-                            </p>
+                            <p class="setting-description">These reflect your current Chrome settings.</p>
                             <div class="shortcuts-list" id="shortcuts-list">
-                                <!-- Shortcuts will be loaded dynamically from Chrome settings -->
                                 <div class="shortcut-item">
-                                    <span class="shortcut-label">Loading shortcuts...</span>
-                                    <span class="shortcut-keys">...</span>
+                                    <span class="shortcut-label">Loading shortcuts…</span>
+                                    <span class="shortcut-keys">…</span>
                                 </div>
                             </div>
                             <div class="info-box">
-                                <strong>Note:</strong> Chrome requires you to configure keyboard shortcuts in the Extensions settings.
-                                Click the button below to customize these shortcuts.
+                                Chrome only lets you change these from its own extensions page.
                             </div>
                             <button id="configure-shortcuts-btn" class="action-btn">
-                                Configure Shortcuts in Chrome
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/>
+                                </svg>
+                                Configure in Chrome
                             </button>
                         </div>
                     </div>
                 </section>
 
-                <!-- About / How It Works Section -->
                 <section id="about" class="settings-section">
-                    <h2 class="section-title">How PhobiaBlocker Works</h2>
+                    <h2 class="section-title">How it works</h2>
                     <div class="settings-group">
                         <div class="about-section">
                             <h3>Overview</h3>
                             <p>
-                                PhobiaBlocker is a Chrome extension that blurs visual media on web pages that may contain triggers related to your specific phobias.
-                                It uses Natural Language Processing to analyze text around images, videos, and iframes to determine if they should be hidden.
+                                PhobiaBlocker blurs images, videos and embeds on pages that may contain triggers for your
+                                specific phobias. It reads the page's text to decide what to hide.
                             </p>
                             <p>
-                                If PhobiaBlocker detects any target words, all visual content on the page will stay blurred to protect you from unwanted content.
+                                If any of your trigger words appear anywhere on a page, all visual content on that page
+                                stays blurred.
                             </p>
+                            <ol class="about-steps">
+                                <li>Blur everything as the page loads</li>
+                                <li>Search the text for your trigger words</li>
+                                <li>Remove the blur only if nothing is found</li>
+                            </ol>
 
-                            <div style="background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); padding: 16px; border-radius: 12px; margin-top: 16px; border-left: 4px solid #2196f3;">
-                                <strong style="color: #1976d2; display: block; margin-bottom: 8px;">How It Works</strong>
-                                <div style="color: #2d3748; line-height: 1.8;">
-                                    <div style="display: inline-block; margin: 4px 8px 4px 0;">1. Blur everything on load</div><br>
-                                    <div style="display: inline-block; margin: 4px 8px;">2. Run text search with intelligent word extraction</div><br>
-                                    <div style="display: inline-block; margin: 4px 0 4px 8px;">3. Remove blur if nothing is detected</div>
-                                </div>
-                            </div>
-
-                            <h3>Natural Language Processing (NLP) how it Works?</h3>
-                            <p>
-                                PhobiaBlocker uses the <strong>compromise.js</strong> library to analyze text content on the page using AI to search the matches. This allows the extension to understand word variations:
-                            </p>
+                            <h3>Word matching</h3>
+                            <p>Matching uses the <strong>compromise</strong> NLP library, so word variations are covered:</p>
                             <ul>
-                                <li><strong>Plurals:</strong> "cat" matches "cats"</li>
-                                <li><strong>Verb forms:</strong> "rise" matches "rise", "rose", "rissen"</li>
-                                <li><strong>Irregular plurals:</strong> "mouse" matches "mice"</li>
-                                <li><strong>Possessives:</strong> "spider" matches "spider's"</li>
-                                <li><strong>Case insensitive:</strong> "SPIDER", "Spider", "spider" all match</li>
-                            </ul>
-                            <h3>Flash Prevention & Fail-Safe Design</h3>
-                            <p>
-                                PhobiaBlocker uses a <strong>blur-first, unveil-after-analysis</strong> approach to ensure you never see triggering content:
-                            </p>
-                            <ul>
-                                <li><strong>CSS-based blur:</strong> All visual content is blurred immediately when the page loads, before JavaScript even starts executing</li>
-                                <li><strong>Fast analysis:</strong> The extension analyzes text content and determines which images are safe</li>
-                                <li><strong>Fail-safe default:</strong> If anything goes wrong (analysis fails, errors occur, etc.), content stays blurred for your protection</li>
+                                <li><strong>Plurals</strong> — "cat" matches "cats"</li>
+                                <li><strong>Verb forms</strong> — "rise" matches "rose", "risen"</li>
+                                <li><strong>Irregular plurals</strong> — "mouse" matches "mice"</li>
+                                <li><strong>Possessives</strong> — "spider" matches "spider's"</li>
+                                <li><strong>Any case</strong> — "SPIDER", "Spider" and "spider" all match</li>
                             </ul>
 
-                            <h3>Supported Content Types</h3>
-                            <p>PhobiaBlocker can blur:</p>
+                            <h3>Fail-safe design</h3>
+                            <p>The order matters: content is hidden first and revealed only after analysis clears it.</p>
                             <ul>
-                                <li><strong>Images:</strong> Regular <code>&lt;img&gt;</code> tags, including GIFs</li>
-                                <li><strong>Background images:</strong> Elements with CSS <code>background-image</code></li>
-                                <li><strong>Videos:</strong> <code>&lt;video&gt;</code> elements</li>
-                                <li><strong>Embedded content:</strong> <code>&lt;iframe&gt;</code> elements (YouTube, Vimeo, etc.)</li>
+                                <li><strong>CSS blur first</strong> — applied as the page loads, before any script runs</li>
+                                <li><strong>Then analysis</strong> — the text is checked against your words</li>
+                                <li><strong>Errors keep the blur</strong> — if anything fails, content stays hidden</li>
                             </ul>
 
-                            <h3>Dynamic Content Support</h3>
-                            <p>
-                                PhobiaBlocker uses a <strong>MutationObserver</strong> to detect when new content is added to the page (infinite scroll, single-page apps, etc.)
-                                and automatically analyzes and blurs it as needed. The extension intelligently skips mutations inside text editors to prevent typing lag.
-                            </p>
+                            <h3>What gets blurred</h3>
+                            <ul>
+                                <li><strong>Images</strong> — <code>&lt;img&gt;</code> including GIFs</li>
+                                <li><strong>Background images</strong> — any CSS <code>background-image</code></li>
+                                <li><strong>Videos</strong> — <code>&lt;video&gt;</code> elements</li>
+                                <li><strong>Embeds</strong> — <code>&lt;iframe&gt;</code> such as YouTube or Vimeo</li>
+                            </ul>
 
-                            <h3>Version Information</h3>
+                            <h3>Dynamic pages</h3>
                             <p>
-                                <strong>Version:</strong> <span id="version-number">Loading...</span><br>
-                                <strong>Manifest Version:</strong> 3 (Modern Chrome Extension API)
+                                New content from infinite scroll or single-page apps is picked up automatically and
+                                blurred as it arrives.
                             </p>
                         </div>
                     </div>
                 </section>
 
-                <!-- Debug Mode Section -->
                 <section id="debug" class="settings-section">
-                    <h2 class="section-title">Debug Mode</h2>
+                    <h2 class="section-title">Debug mode</h2>
                     <div class="settings-group">
                         <div class="setting-item">
                             <div class="setting-left">
-                                <label for="debug-switch" class="setting-label">Enable Debug Logging</label>
-                                <p class="setting-description">For troubleshooting only. Enable verbose console logging to diagnose issues.</p>
+                                <label for="debug-switch" class="setting-label">Enable debug logging</label>
+                                <p class="setting-description">For troubleshooting only. Writes verbose logs to the console.</p>
                             </div>
                             <div class="setting-right">
-                                <label class="switch">
+                                <label class="pb-switch">
                                     <input type="checkbox" id="debug-switch">
-                                    <span class="slider"></span>
+                                    <span class="pb-switch-track"></span>
                                 </label>
                             </div>
                         </div>
 
                         <div class="setting-item-full debug-info">
                             <div class="info-box">
-                                <strong>Debug logging includes:</strong>
+                                <strong>Logs cover</strong>
                                 <ul>
-                                    <li><strong>Text Analysis:</strong> Word matching, normalization results, phobia word detection</li>
-                                    <li><strong>Image Detection:</strong> Found images, videos, iframes and their blur states</li>
-                                    <li><strong>Mutation Observer:</strong> DOM changes detected and processed</li>
-                                    <li><strong>Storage:</strong> Settings loaded and saved</li>
-                                    <li><strong>Message Passing:</strong> Communication between extension components</li>
-                                    <li><strong>Editor Detection:</strong> Text editors that are skipped to prevent typing lag</li>
+                                    <li>Text analysis — word matching and normalisation results</li>
+                                    <li>Media detection — images, videos, embeds and their blur state</li>
+                                    <li>DOM changes detected and processed</li>
+                                    <li>Settings loaded and saved</li>
+                                    <li>Messages between extension components</li>
                                 </ul>
-                                <p class="debug-note">
-                                    To view debug logs, open Developer Tools (F12 or Cmd+Option+I on Mac) and check the Console tab.
+                                <p class="setting-description debug-note">
+                                    Open developer tools (F12, or Cmd+Option+I on a Mac) and use the console tab.
                                 </p>
                             </div>
                         </div>
                     </div>
                 </section>
-
             </main>
         </div>
     </div>

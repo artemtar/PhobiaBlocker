@@ -1,158 +1,151 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="UTF-8">
     <title>PhobiaBlocker</title>
-    <link rel="stylesheet" href="css/bootstrap.css">
-    <script src="js/bootstrap.js"></script>
+    <link rel="stylesheet" href="css/theme.css">
     <link rel="stylesheet" href="css/popup.css">
-    <link rel="stylesheet" href="css/tags.css">
-    <link rel="stylesheet" href="css/slider.css">
 </head>
 
 <body>
-    <div class='header' width='100%'>
-        <span class="header-title">PhobiaBlocker</span>
-        <button id="open-settings-btn" class="header-settings-btn" title="Settings">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94L14.4 2.81c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
+    <header class="pb-header">
+        <span class="pb-wordmark">
+            <span class="pb-wordmark-mark" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 3l7 3v5c0 4.4-2.9 8.4-7 9.6-4.1-1.2-7-5.2-7-9.6V6l7-3z"/>
+                </svg>
+            </span>
+            PhobiaBlocker
+        </span>
+        <button id="open-settings-btn" class="pb-icon-btn" title="Settings" aria-label="Settings">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.14.37.4.68.74.88H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
             </svg>
         </button>
-    </div>
-    <div class="main-area">
-        <div id="site-status-bar" class="site-status-bar"></div>
-        <div id="detected-words-container" class="main-area-container">
-            <div class="suported-words-collapser">
-                <h3>
-                    Detected on this page
-                    <span id="detected-count-badge" class="count-badge" style="display:none"></span>
-                    <span class="info-icon" data-tooltip="Shows trigger words currently detected in visible page text.">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                            <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5" fill="none"/>
-                            <text x="8" y="12" text-anchor="middle" font-size="11" font-weight="bold" fill="currentColor">i</text>
-                        </svg>
-                    </span>
-                </h3>
-                <span id="btn-detected-words"></span>
-            </div>
-            <div id="detected-words-area" class="collapse">
-                <div id="detected-words-list"></div>
-            </div>
-        </div>
-        <div class="main-area-container">
-            <h3>Manual Controls</h3>
-            <div class="blur-btn-group">
-                <div class="blur-btn-container">
-                    <button class="blur-btn blur-action-btn" id="blurBtn">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <circle cx="12" cy="12" r="3"/>
-                            <path d="M12 5v.01M12 18.99v.01M5 12h.01M18.99 12h.01M7.05 7.05l.01.01M16.94 16.94l.01.01M7.05 16.94l.01.01M16.94 7.05l.01.01"/>
-                        </svg>
-                        <span>Blur All</span>
-                    </button>
-                    <button class="unblur-btn blur-action-btn" id="unblurBtn">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-                            <circle cx="12" cy="12" r="3"/>
-                        </svg>
-                        <span>Unblur All</span>
-                    </button>
-                </div>
-            </div>
-        </div>
-        <div class="main-area-container settings-contianer">
-            <div class="setting-info">
-                <h3>
-                    Smart Text Detection
-                    <span class="info-icon" data-tooltip="Scans page text for words that trigger your phobias using intelligent word matching. Runs best on a standard or newer computer.">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                            <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5" fill="none"/>
-                            <text x="8" y="12" text-anchor="middle" font-size="11" font-weight="bold" fill="currentColor">i</text>
-                        </svg>
-                    </span>
-                </h3>
-            </div>
-            <label class="switch">
+    </header>
+
+    <main class="pb-body">
+        <div id="site-status-bar" class="site-status-bar" role="status"></div>
+
+        <div class="pb-tiles">
+            <label class="pb-tile" title="Scans page text for words that trigger your phobias using intelligent word matching.">
                 <input type="checkbox" id="enabled-switch">
-                <span class="slider round"></span>
-            </label>
-        </div>
-        <div class="main-area-container settings-contianer">
-            <div class="setting-info">
-                <h3>
-                    Always Blur Media
-                    <span class="info-icon" data-tooltip="Skip text analysis and blur all visual content for maximum protection (Performance impact: None to Small)">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                            <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5" fill="none"/>
-                            <text x="8" y="12" text-anchor="middle" font-size="11" font-weight="bold" fill="currentColor">i</text>
-                        </svg>
-                    </span>
-                </h3>
-            </div>
-            <label class="switch">
-                <input type="checkbox" id="blurIsAlwaysOn-switch">
-                <span class="slider round"></span>
-            </label>
-        </div>
-        <div class="main-area-container settings-contianer">
-            <div class="setting-info">
-                <h3>
-                    Cover Target Words
-                    <span class="info-icon" data-tooltip="Cover matching trigger words on web pages. Use right-click Unblur or Unblur All to reveal covered words.">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                            <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5" fill="none"/>
-                            <text x="8" y="12" text-anchor="middle" font-size="11" font-weight="bold" fill="currentColor">i</text>
-                        </svg>
-                    </span>
-                </h3>
-            </div>
-            <label class="switch">
-                <input type="checkbox" id="wordCoverEnabled-switch">
-                <span class="slider round"></span>
-            </label>
-        </div>
-        <div class="main-area-container">
-            <h3>
-                Blur Amount
-                <span id="blurRangeValue" class="blur-value-badge">50%</span>
-                <span class="info-icon" data-tooltip="Adjust the intensity of the blur effect applied to visual content">
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                        <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5" fill="none"/>
-                        <text x="8" y="12" text-anchor="middle" font-size="11" font-weight="bold" fill="currentColor">i</text>
+                <span class="pb-tile-icon" aria-hidden="true">
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/>
+                        <circle cx="12" cy="12" r="3"/>
                     </svg>
                 </span>
-            </h3>
-            <input type="range" id="blurRange" min="0" max="100" step="1" width="100%">
+                <span class="pb-tile-label">Smart<br>detection</span>
+                <span class="pb-tile-state"></span>
+            </label>
+
+            <label class="pb-tile" title="Skip text analysis and blur all visual content for maximum protection.">
+                <input type="checkbox" id="blurIsAlwaysOn-switch">
+                <span class="pb-tile-icon" aria-hidden="true">
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 3s6 6.1 6 10a6 6 0 0 1-12 0c0-3.9 6-10 6-10z"/>
+                    </svg>
+                </span>
+                <span class="pb-tile-label">Always<br>blur</span>
+                <span class="pb-tile-state"></span>
+            </label>
+
+            <label class="pb-tile" title="Cover matching trigger words on web pages. Use right-click Unblur or Unblur all to reveal them.">
+                <input type="checkbox" id="wordCoverEnabled-switch">
+                <span class="pb-tile-icon" aria-hidden="true">
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M4 7V5h16v2M9 19h6M12 5v14"/>
+                    </svg>
+                </span>
+                <span class="pb-tile-label">Cover<br>words</span>
+                <span class="pb-tile-state"></span>
+            </label>
         </div>
-        <div class="supported-words-container main-area-container">
-            <div class="suported-words-collapser">
-                <h3>
-                    Trigger Words
-                    <span id="trigger-count-badge" class="count-badge" style="display:none"></span>
-                    <span class="info-icon" data-tooltip="Words related to your phobias that trigger content blurring.">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                            <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5" fill="none"/>
-                            <text x="8" y="12" text-anchor="middle" font-size="11" font-weight="bold" fill="currentColor">i</text>
+
+        <div class="pb-actions">
+            <button class="pb-btn pb-btn-primary" id="blurBtn">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M17.9 17.9A10.6 10.6 0 0 1 12 20c-7 0-11-8-11-8a19.5 19.5 0 0 1 5.1-6M9.9 4.2A10.6 10.6 0 0 1 12 4c7 0 11 8 11 8a19.5 19.5 0 0 1-2.2 3.2M1 1l22 22"/>
+                </svg>
+                <span>Blur all</span>
+            </button>
+            <button class="pb-btn" id="unblurBtn">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                    <circle cx="12" cy="12" r="3"/>
+                </svg>
+                <span>Unblur all</span>
+            </button>
+        </div>
+
+        <section class="pb-section">
+            <div class="pb-section-head">
+                <span class="pb-section-title">
+                    Blur amount
+                    <span class="info-icon" data-tooltip="Adjust the intensity of the blur applied to visual content.">
+                        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+                            <circle cx="8" cy="8" r="6.5"/>
+                            <path d="M8 7.2v4M8 4.9v.9" stroke-linecap="round"/>
                         </svg>
                     </span>
-                </h3>
-                <span name="supportedWords" id="btn-supported-words"></span>
+                </span>
+                <span id="blurRangeValue" class="pb-section-value">50%</span>
+            </div>
+            <input type="range" id="blurRange" class="pb-range" min="0" max="100" step="1" aria-label="Blur amount">
+        </section>
+
+        <section class="pb-section">
+            <div class="pb-section-head">
+                <span class="pb-section-title">
+                    Trigger words
+                    <span id="trigger-count-badge" class="count-badge" style="display:none"></span>
+                    <span class="info-icon" data-tooltip="Words related to your phobias that trigger content blurring.">
+                        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+                            <circle cx="8" cy="8" r="6.5"/>
+                            <path d="M8 7.2v4M8 4.9v.9" stroke-linecap="round"/>
+                        </svg>
+                    </span>
+                </span>
+                <span name="supportedWords" id="btn-supported-words" class="pb-collapse-btn" role="button" tabindex="0" aria-label="Toggle trigger words"></span>
             </div>
             <div id="supported-words-area" class="collapse">
                 <div id="tags-container" class="tags-container"></div>
                 <div class="add-word-input-container">
-                    <input type="text" id="word-input" class="word-input" placeholder="Add a word..." maxlength="30">
-                    <button id="addTagBtn" class="add-word-btn">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <input type="text" id="word-input" class="pb-input word-input" placeholder="Add a word" maxlength="30">
+                    <button id="addTagBtn" class="add-word-btn" title="Add word" aria-label="Add word">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                             <path d="M8 3V13M3 8H13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                         </svg>
                     </button>
                 </div>
                 <p id="word-error" class="word-error" role="alert" hidden></p>
             </div>
-        </div>
-        <script src="js/shared-policy.js"></script>
-        <script src="js/storage.js"></script>
-        <script src="js/popup.js"></script>
-    </div>
+        </section>
+
+        <section id="detected-words-container" class="pb-section">
+            <div class="pb-section-head">
+                <span class="pb-section-title">
+                    Detected on this page
+                    <span id="detected-count-badge" class="count-badge" style="display:none"></span>
+                    <span class="info-icon" data-tooltip="Trigger words currently detected in this page's text.">
+                        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+                            <circle cx="8" cy="8" r="6.5"/>
+                            <path d="M8 7.2v4M8 4.9v.9" stroke-linecap="round"/>
+                        </svg>
+                    </span>
+                </span>
+                <span id="btn-detected-words" class="pb-collapse-btn" role="button" tabindex="0" aria-label="Toggle detected words"></span>
+            </div>
+            <div id="detected-words-area" class="collapse">
+                <div id="detected-words-list"></div>
+            </div>
+        </section>
+    </main>
+
+    <script src="js/shared-policy.js"></script>
+    <script src="js/storage.js"></script>
+    <script src="js/popup.js"></script>
 </body>
 </html>

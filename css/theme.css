@@ -1,0 +1,474 @@
+/*
+ * Shared design tokens and primitives for the popup and settings pages.
+ * Both colour schemes are defined here; every surface below references tokens
+ * only, so nothing needs a per-mode override further down.
+ */
+
+:root {
+    --pb-bg: #f5f6f9;
+    --pb-surface: #ffffff;
+    --pb-surface-2: #eef0f5;
+    --pb-surface-3: #e4e7ee;
+
+    --pb-border: rgba(17, 21, 33, 0.10);
+    --pb-border-strong: rgba(17, 21, 33, 0.20);
+
+    --pb-text: #151823;
+    --pb-text-2: #596074;
+    --pb-text-3: #878e9f;
+
+    --pb-accent: #4f66e0;
+    --pb-accent-hover: #4159d4;
+    --pb-accent-bg: #e9edfd;
+    --pb-accent-text: #2f43ab;
+    --pb-on-accent: #ffffff;
+
+    --pb-success-bg: #e4f4ec;
+    --pb-success-text: #146a4a;
+    --pb-success-dot: #1e9166;
+
+    --pb-warning-bg: #fbf0dc;
+    --pb-warning-text: #8a5a10;
+    --pb-warning-dot: #c8871c;
+
+    --pb-danger-bg: #fbeceb;
+    --pb-danger-text: #a33832;
+    --pb-danger-dot: #d24b43;
+
+    --pb-neutral-bg: #eceef3;
+    --pb-neutral-text: #5b6274;
+    --pb-neutral-dot: #9aa1b1;
+
+    --pb-radius: 9px;
+    --pb-radius-lg: 13px;
+    --pb-focus: 0 0 0 2px var(--pb-bg), 0 0 0 4px var(--pb-accent);
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --pb-bg: #121419;
+        --pb-surface: #1a1d24;
+        --pb-surface-2: #232730;
+        --pb-surface-3: #2c313b;
+
+        --pb-border: rgba(255, 255, 255, 0.10);
+        --pb-border-strong: rgba(255, 255, 255, 0.20);
+
+        --pb-text: #eceef4;
+        --pb-text-2: #a2aaba;
+        --pb-text-3: #798294;
+
+        --pb-accent: #7f92f5;
+        --pb-accent-hover: #93a3f8;
+        --pb-accent-bg: #242b4c;
+        --pb-accent-text: #b3c0ff;
+        --pb-on-accent: #10131f;
+
+        --pb-success-bg: #16301f;
+        --pb-success-text: #83d8a8;
+        --pb-success-dot: #3fae7a;
+
+        --pb-warning-bg: #342610;
+        --pb-warning-text: #e5b463;
+        --pb-warning-dot: #d29a3a;
+
+        --pb-danger-bg: #3a1e1d;
+        --pb-danger-text: #f0918b;
+        --pb-danger-dot: #d95f57;
+
+        --pb-neutral-bg: #262a33;
+        --pb-neutral-text: #a2aaba;
+        --pb-neutral-dot: #798294;
+    }
+}
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: var(--pb-bg);
+    color: var(--pb-text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 {
+    margin: 0;
+    font-weight: 500;
+}
+
+/* popup.js and settings.js toggle these; Bootstrap used to provide them. */
+.collapse {
+    display: none;
+}
+
+.collapse.show {
+    display: block;
+}
+
+[hidden] {
+    display: none !important;
+}
+
+.pb-card {
+    background: var(--pb-surface);
+    border: 1px solid var(--pb-border);
+    border-radius: var(--pb-radius-lg);
+}
+
+/* Buttons */
+.pb-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 9px 12px;
+    border: 1px solid var(--pb-border-strong);
+    border-radius: var(--pb-radius);
+    background: var(--pb-surface);
+    color: var(--pb-text);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease, transform 0.06s ease;
+}
+
+.pb-btn:hover:not(:disabled) {
+    background: var(--pb-surface-2);
+}
+
+.pb-btn:active:not(:disabled) {
+    transform: scale(0.985);
+}
+
+.pb-btn:focus-visible {
+    outline: none;
+    box-shadow: var(--pb-focus);
+}
+
+.pb-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.pb-btn-primary {
+    background: var(--pb-accent);
+    border-color: var(--pb-accent);
+    color: var(--pb-on-accent);
+}
+
+.pb-btn-primary:hover:not(:disabled) {
+    background: var(--pb-accent-hover);
+    border-color: var(--pb-accent-hover);
+}
+
+.pb-btn svg {
+    flex-shrink: 0;
+}
+
+/* popup.js adds this briefly after a successful action */
+.pb-btn.btn-success {
+    background: var(--pb-success-bg);
+    border-color: var(--pb-success-dot);
+    color: var(--pb-success-text);
+}
+
+/* Icon-only button */
+.pb-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: none;
+    border-radius: var(--pb-radius);
+    background: transparent;
+    color: var(--pb-text-2);
+    cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease;
+}
+
+.pb-icon-btn:hover {
+    background: var(--pb-surface-2);
+    color: var(--pb-text);
+}
+
+.pb-icon-btn:focus-visible {
+    outline: none;
+    box-shadow: var(--pb-focus);
+}
+
+/* Text input */
+.pb-input {
+    width: 100%;
+    min-width: 0;
+    height: 34px;
+    padding: 0 10px;
+    border: 1px solid var(--pb-border);
+    border-radius: var(--pb-radius);
+    background: var(--pb-surface);
+    color: var(--pb-text);
+    font: inherit;
+    font-size: 13px;
+    transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.pb-input::placeholder {
+    color: var(--pb-text-3);
+}
+
+.pb-input:hover:not(:disabled) {
+    border-color: var(--pb-border-strong);
+}
+
+.pb-input:focus {
+    outline: none;
+    border-color: var(--pb-accent);
+    box-shadow: 0 0 0 3px var(--pb-accent-bg);
+}
+
+.pb-input:disabled {
+    opacity: 0.6;
+}
+
+/* Range slider. --pb-progress is set by script to fill the track. */
+.pb-range {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 18px;
+    margin: 0;
+    background: transparent;
+    cursor: pointer;
+}
+
+.pb-range::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 2px;
+    background: linear-gradient(
+        to right,
+        var(--pb-accent) var(--pb-progress, 50%),
+        var(--pb-surface-3) var(--pb-progress, 50%)
+    );
+}
+
+.pb-range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 15px;
+    height: 15px;
+    margin-top: -5.5px;
+    border: 1px solid var(--pb-border-strong);
+    border-radius: 50%;
+    background: var(--pb-surface);
+    transition: transform 0.1s ease;
+}
+
+.pb-range:hover::-webkit-slider-thumb {
+    transform: scale(1.12);
+}
+
+.pb-range:focus-visible {
+    outline: none;
+}
+
+.pb-range:focus-visible::-webkit-slider-thumb {
+    box-shadow: var(--pb-focus);
+}
+
+.pb-range:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+/* Switch, used on the settings page */
+.pb-switch {
+    position: relative;
+    display: inline-block;
+    flex-shrink: 0;
+    width: 38px;
+    height: 22px;
+}
+
+.pb-switch input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    opacity: 0;
+    cursor: pointer;
+}
+
+.pb-switch .pb-switch-track {
+    position: absolute;
+    inset: 0;
+    border-radius: 999px;
+    background: var(--pb-surface-3);
+    transition: background 0.15s ease;
+    pointer-events: none;
+}
+
+.pb-switch .pb-switch-track::after {
+    content: '';
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--pb-surface);
+    transition: transform 0.15s ease;
+}
+
+.pb-switch input:checked ~ .pb-switch-track {
+    background: var(--pb-accent);
+}
+
+.pb-switch input:checked ~ .pb-switch-track::after {
+    transform: translateX(16px);
+}
+
+.pb-switch input:focus-visible ~ .pb-switch-track {
+    box-shadow: var(--pb-focus);
+}
+
+.pb-switch input:disabled ~ .pb-switch-track {
+    opacity: 0.5;
+}
+
+/* Removable chip, shared by trigger words and site rules */
+.tag,
+.site-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 100%;
+    padding: 4px 5px 4px 10px;
+    border-radius: 999px;
+    background: var(--pb-accent-bg);
+    color: var(--pb-accent-text);
+    font-size: 12px;
+    line-height: 1.4;
+    word-break: break-all;
+}
+
+.tag-invalid {
+    background: var(--pb-danger-bg);
+    color: var(--pb-danger-text);
+}
+
+.tag-remove,
+.site-item-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: currentColor;
+    cursor: pointer;
+    opacity: 0.65;
+    transition: opacity 0.12s ease, background 0.12s ease;
+}
+
+.tag-remove:hover:not(:disabled),
+.site-item-remove:hover:not(:disabled) {
+    opacity: 1;
+    background: rgba(127, 127, 127, 0.22);
+}
+
+.tag-remove:focus-visible,
+.site-item-remove:focus-visible {
+    outline: none;
+    opacity: 1;
+    box-shadow: var(--pb-focus);
+}
+
+.tag-remove:disabled,
+.site-item-remove:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
+
+/* Inline error text */
+.word-error,
+.settings-error {
+    margin: 8px 0 0;
+    padding: 8px 10px;
+    border-radius: var(--pb-radius);
+    background: var(--pb-danger-bg);
+    color: var(--pb-danger-text);
+    font-size: 12px;
+}
+
+.count-badge {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: var(--pb-surface-2);
+    color: var(--pb-text-2);
+    font-size: 11px;
+    font-weight: 500;
+}
+
+/* Tooltip element is created by popup.js and positioned in viewport coords. */
+.tooltip {
+    position: fixed;
+    z-index: 50;
+    max-width: 230px;
+    padding: 7px 9px;
+    border-radius: var(--pb-radius);
+    background: var(--pb-text);
+    color: var(--pb-bg);
+    font-size: 12px;
+    line-height: 1.45;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.12s ease;
+    pointer-events: none;
+}
+
+.tooltip.show {
+    opacity: 1;
+    visibility: visible;
+}
+
+.info-icon {
+    display: inline-flex;
+    align-items: center;
+    color: var(--pb-text-3);
+    cursor: help;
+    vertical-align: -2px;
+}
+
+.info-icon:hover {
+    color: var(--pb-text-2);
+}
+
+::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+}
+
+::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background: var(--pb-border-strong);
+    background-clip: content-box;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}

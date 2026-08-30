@@ -154,6 +154,13 @@ function updateDetectedCountBadge(count) {
 function updateBlurValueDisplay(value) {
     const display = document.getElementById('blurRangeValue')
     display.textContent = `${value}%`
+
+    // The stylesheet owns the track colours; only the fill position comes from
+    // here, so the slider reads correctly in both light and dark mode.
+    const slider = document.getElementById('blurRange')
+    if (!slider) return
+    const max = parseInt(slider.max, 10) || 100
+    slider.style.setProperty('--pb-progress', `${(Number(value) / max) * 100}%`)
 }
 
 function showButtonSuccess(button) {

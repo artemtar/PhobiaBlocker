@@ -86,8 +86,10 @@ function updatePreviewBlurDemo(strength) {
 
     const slider = document.getElementById('preview-strength-slider')
     if (!slider) return
+    // The stylesheet owns the colours; only the fill position comes from here,
+    // so the track stays correct in both light and dark mode.
     const pct = (strength / parseInt(slider.max, 10)) * 100
-    slider.style.background = `linear-gradient(to right, #1976d2 ${pct}%, #e0e0e0 ${pct}%)`
+    slider.style.setProperty('--pb-progress', `${pct}%`)
 }
 
 async function persistCheckbox(element, storageKey) {
