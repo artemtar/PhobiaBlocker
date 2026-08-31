@@ -292,10 +292,7 @@ class VisualNode {
         // same state become no-ops, which is what stops mutation batches from
         // rewriting every node's class and inline filter over and over.
         this._renderState = null
-        this._previewTarget = null
         this._previewActive = false
-        this._onMouseEnter = null
-        this._onMouseLeave = null
         markInternalMutationTarget(this.element)
         this.element.setAttribute(MEDIA_MARKER_ATTR, '1')
         if (this.isRootBackground) this.element.setAttribute(ROOT_BACKGROUND_MARKER_ATTR, '1')
@@ -418,7 +415,6 @@ class VisualNode {
             return
         }
         this._setStyleProjection('filter', this.controller.blurFilter, 'important')
-        this._attachPreview()
         // A re-render while the pointer is still over the element must not drop
         // back to full blur; re-assert the preview instead.
         if (this._previewActive) this._applyPreviewFilter()
@@ -474,37 +470,27 @@ class VisualNode {
         this._setStyleProjection('filter', `blur(${previewValue})`, 'important')
     }
 
-    // Listeners live on the blurred element itself. Binding them to the parent
-    // meant a wrapper smaller than the image — an inline <a> around a tall
-    // thumbnail is the common case — reported mouseleave while the pointer was
-    // still over the image, cancelling the preview.
-    _attachPreview() {
-        if (this._previewTarget || !this.element) return
-        this._previewTarget = this.element
-        this._onMouseEnter = () => {
-            if (!this.isBlurred || !this.element) return
-            this._previewActive = true
-            this._applyPreviewFilter()
-        }
-        this._onMouseLeave = () => {
-            this._previewActive = false
-            if (!this.isBlurred || !this.element) return
-            markInternalMutationTarget(this.element)
-            this._setProjectionClass('phobia-preview', false)
-            this._setStyleProjection('filter', this.controller.blurFilter, 'important')
-        }
-        this._previewTarget.addEventListener('mouseenter', this._onMouseEnter)
-        this._previewTarget.addEventListener('mouseleave', this._onMouseLeave)
+    // Hover state is driven by the controller's pointer hit test rather than
+    // per-element listeners. Listening on the element missed media covered by an
+    // overlay, and listening on the parent missed media inside a wrapper smaller
+    // than itself; hit testing the whole stack handles both.
+    showPreview() {
+        if (this._previewActive || !this.isBlurred || !this.element) return
+        this._previewActive = true
+        this._applyPreviewFilter()
+    }
+
+    hidePreview() {
+        if (!this._previewActive) return
+        this._previewActive = false
+        if (!this.isBlurred || !this.element) return
+        markInternalMutationTarget(this.element)
+        this._setProjectionClass('phobia-preview', false)
+        this._setStyleProjection('filter', this.controller.blurFilter, 'important')
     }
 
     _detachPreview() {
         this._previewActive = false
-        if (!this._previewTarget) return
-        this._previewTarget.removeEventListener('mouseenter', this._onMouseEnter)
-        this._previewTarget.removeEventListener('mouseleave', this._onMouseLeave)
-        this._previewTarget = null
-        this._onMouseEnter = null
-        this._onMouseLeave = null
     }
 }
 
@@ -754,7 +740,10 @@ class Controller {
         this._onMediaResourceEvent = event => this._handleMediaResourceEvent(event)
         this._onIframeLifecycleLoad = event => this._handleIframeLifecycleLoad(event)
         this._globalRescanTimer = null
-        this._onGlobalBackgroundStateEvent = () => this._scheduleDebouncedRescan()
+        this._onGlobalBackgroundStateEvent = () => {
+            this._scheduleDebouncedRescan()
+            this._scheduleHoverPreviewUpdate()
+        }
         this._earlyCoverReleased = false
         this._wordCoverManager = new WordCoverManager()
         this._pageTextIndex = new PageTextIndex({
@@ -762,6 +751,11 @@ class Controller {
             isOwnedCover: element => this._wordCoverManager.ownsWrapper(element),
         })
         this._wordCoverManager.attachIndex(this._pageTextIndex)
+        this._hoverListenerAttached = false
+        this._hoverNode = null
+        this._hoverPoint = null
+        this._hoverFrame = null
+        this._startHoverTracking()
         this._startIframeLifecycleTracking()
     }
 
@@ -787,6 +781,11 @@ class Controller {
             ? `${this.settings.previewBlurStrength}px`
             : 'var(--phobiablocker-blurValueAmount, var(--blurValueAmount, 40px))'
         setPreviewBlurCssValue(previewValue)
+        if (this._hoverNode) {
+            this._hoverNode.hidePreview()
+            this._hoverNode = null
+        }
+        this._scheduleHoverPreviewUpdate()
     }
 
     cancelPendingAnalysis() {
@@ -853,6 +852,7 @@ class Controller {
             this._setBackgroundPhase('ready')
             this._syncRootProjection()
         }
+        this._clearHoverPreview()
         this._wordCoverManager.stop()
         this._pageTextIndex.clear()
         this._registry.clear()
@@ -1532,6 +1532,87 @@ class Controller {
         if (node) this._applyResultToNode(node, this._currentVisualResult())
     }
 
+    // One passive pointer listener drives every preview. elementsFromPoint
+    // returns the whole stack under the cursor, so media sitting beneath an
+    // overlay (posters and thumbnails on most media sites) is still found.
+    _startHoverTracking() {
+        if (this._hoverListenerAttached) return
+        this._hoverListenerAttached = true
+        this._onPointerMove = (event) => {
+            this._hoverPoint = { x: event.clientX, y: event.clientY }
+            this._scheduleHoverPreviewUpdate()
+        }
+        // pointerleave does not bubble, but a capture listener on document still
+        // receives it for every descendant the pointer exits. Only treat it as
+        // the pointer leaving the page, otherwise moving within a card cancels
+        // the preview that the same movement just started.
+        this._onPointerGone = (event) => {
+            if (event.type === 'pointerleave' &&
+                event.target !== document && event.target !== document.documentElement) return
+            this._hoverPoint = null
+            this._clearHoverPreview()
+        }
+        document.addEventListener('pointermove', this._onPointerMove, { capture: true, passive: true })
+        document.addEventListener('pointerleave', this._onPointerGone, { capture: true, passive: true })
+        document.addEventListener('pointercancel', this._onPointerGone, { capture: true, passive: true })
+    }
+
+    _scheduleHoverPreviewUpdate() {
+        if (!this._hoverPoint || this._hoverFrame !== null) return
+        this._hoverFrame = requestAnimationFrame(() => {
+            this._hoverFrame = null
+            this._updateHoverPreview()
+        })
+    }
+
+    _canRenderPreview(node) {
+        if (node.kind !== 'video') return true
+        const video = node.element
+        if (!(video instanceof HTMLVideoElement)) return false
+        // YouTube and similar sites insert an empty hover-video layer before it
+        // has a frame. Preview the loaded thumbnail underneath until either a
+        // poster or current video data can actually be painted.
+        return Boolean(video.poster) || video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+    }
+
+    _updateHoverPreview() {
+        if (this.mode === PROTECTION_MODE.DISABLED || this.settings.previewEnabled !== true) {
+            this._clearHoverPreview()
+            return
+        }
+        const point = this._hoverPoint
+        if (!point) return
+
+        let found = null
+        let backgroundFallback = null
+        try {
+            for (const element of document.elementsFromPoint(point.x, point.y)) {
+                const node = this._registry.get(element)
+                if (!node || !node.isBlurred || !this._canRenderPreview(node)) continue
+                // Prefer real media over a decorative background. Sites stack
+                // gradient overlays above posters and thumbnails, and previewing
+                // the overlay instead of the image underneath is never useful.
+                if (node.kind !== 'background') {
+                    found = node
+                    break
+                }
+                if (!backgroundFallback) backgroundFallback = node
+            }
+        } catch (_) { /* An unusable hit test simply means no preview. */ }
+        if (!found) found = backgroundFallback
+
+        if (found === this._hoverNode) return
+        if (this._hoverNode) this._hoverNode.hidePreview()
+        this._hoverNode = found
+        if (found) found.showPreview()
+    }
+
+    _clearHoverPreview() {
+        if (!this._hoverNode) return
+        this._hoverNode.hidePreview()
+        this._hoverNode = null
+    }
+
     _startIframeLifecycleTracking() {
         this._attachIframeLifecycleListener()
         if (this._iframeLifecycleObserver) return
@@ -1573,6 +1654,7 @@ class Controller {
         if (!(element instanceof HTMLImageElement) && !(element instanceof HTMLVideoElement)) return
         const node = this._registry.get(element)
         if (!node) return
+        if (element instanceof HTMLVideoElement) this._scheduleHoverPreviewUpdate()
         if (!this._explicitReveals.has(element)) return
         if (this.isExplicitlyRevealed(element)) return
         node.blur()
@@ -1661,6 +1743,7 @@ class Controller {
         })
 
         this._registry.prune()
+        this._scheduleHoverPreviewUpdate()
 
         const textResult = this._pageTextIndex.applyMutations(records)
         const newWordsAppeared = textResult.added instanceof Set && textResult.added.size > 0
