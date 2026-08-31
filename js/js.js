@@ -40,6 +40,8 @@ const RESIZE_DEBOUNCE_MS = 200
 const SETTINGS_READ_TIMEOUT_MS = 3000
 const SETTINGS_READ_ATTEMPTS = 3
 const MAX_BACKGROUND_SCAN_RETRIES = 3
+// Throttle for the pointer hit test that drives hover previews.
+const HOVER_HIT_TEST_INTERVAL_MS = 30
 const MEDIA_RESOURCE_EVENTS = Object.freeze(['load', 'loadstart', 'loadedmetadata', 'loadeddata', 'emptied'])
 const IFRAME_NAVIGATION_ATTRIBUTES = Object.freeze(['src', 'srcdoc', 'sandbox'])
 const IFRAME_NAVIGATION_START_EVENTS = Object.freeze(['pagehide', 'unload'])
@@ -754,7 +756,8 @@ class Controller {
         this._hoverListenerAttached = false
         this._hoverNode = null
         this._hoverPoint = null
-        this._hoverFrame = null
+        this._lastHoverUpdateAt = 0
+        this._hoverTrailingTimer = null
         this._startHoverTracking()
         this._startIframeLifecycleTracking()
     }
@@ -1557,12 +1560,24 @@ class Controller {
         document.addEventListener('pointercancel', this._onPointerGone, { capture: true, passive: true })
     }
 
+    // Runs on the pointer event itself. Deferring to requestAnimationFrame tied
+    // the preview to frames being produced, which never happens in a background
+    // tab and proved unreliable even in a foreground one. A leading call keeps
+    // it responsive and a trailing one guarantees the final pointer position is
+    // always processed, so the preview cannot be left stale between ticks.
     _scheduleHoverPreviewUpdate() {
-        if (!this._hoverPoint || this._hoverFrame !== null) return
-        this._hoverFrame = requestAnimationFrame(() => {
-            this._hoverFrame = null
+        if (!this._hoverPoint) return
+
+        clearTimeout(this._hoverTrailingTimer)
+        this._hoverTrailingTimer = setTimeout(() => {
+            this._hoverTrailingTimer = null
             this._updateHoverPreview()
-        })
+        }, HOVER_HIT_TEST_INTERVAL_MS)
+
+        const now = performance.now()
+        if (now - this._lastHoverUpdateAt < HOVER_HIT_TEST_INTERVAL_MS) return
+        this._lastHoverUpdateAt = now
+        this._updateHoverPreview()
     }
 
     _canRenderPreview(node) {
