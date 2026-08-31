@@ -1,0 +1,64 @@
+:root {
+    --blurValueAmount: 40px;
+    --filterStrength: blur(var(--phobiablocker-blurValueAmount, var(--blurValueAmount, 40px)));
+}
+
+:root :is(img, video, iframe) {
+    filter: blur(40px) !important;
+}
+
+/*
+ * Suppress interaction only until the controller finishes its first pass.
+ * Once the document is marked ready the page owns pointer events again, so
+ * unregistered media can never be left permanently unclickable.
+ */
+:root[data-phobiablocker-frame="top"]:not(.phobia-disabled):not([data-phobiablocker-background-ready])
+    :is(img, video):not([data-phobiablocker-media]) {
+    pointer-events: none !important;
+}
+
+:root:not(.phobia-disabled) :is(img, video, iframe)[data-phobia-blur] {
+    pointer-events: auto !important;
+    cursor: pointer !important;
+    transition: filter 0.2s ease;
+}
+
+:root:not([data-phobiablocker-background-ready]):not([data-phobiablocker-background-scanning]),
+:root:not([data-phobiablocker-background-ready]):not([data-phobiablocker-background-scanning]) body,
+:root:not([data-phobiablocker-background-ready]):not([data-phobiablocker-background-scanning]) body * {
+    background-image: none !important;
+}
+
+:root[data-phobiablocker-background-scanning] {
+    opacity: 0 !important;
+}
+
+:root [data-phobiablocker-background][data-phobia-blur]:not([data-phobiablocker-root-background]) {
+    filter: blur(40px) !important;
+}
+
+:root.phobia-disabled :is(img, video, iframe),
+:root.phobia-disabled [data-phobiablocker-background] {
+    pointer-events: auto !important;
+    cursor: auto !important;
+    transition: none !important;
+}
+
+.phobia-word-cover {
+    color: transparent !important;
+    background-color: var(--phobiablocker-word-cover-color, currentColor) !important;
+    background-image: repeating-linear-gradient(
+        135deg,
+        rgba(255, 255, 255, 0.22) 0,
+        rgba(255, 255, 255, 0.22) 2px,
+        rgba(0, 0, 0, 0.16) 2px,
+        rgba(0, 0, 0, 0.16) 4px
+    ) !important;
+    border-radius: 2px !important;
+    outline: 1px solid rgba(127, 127, 127, 0.5) !important;
+    outline-offset: 1px !important;
+    text-shadow: none !important;
+    box-decoration-break: clone !important;
+    -webkit-box-decoration-break: clone !important;
+    cursor: help !important;
+}
