@@ -42,6 +42,9 @@ const SETTINGS_READ_ATTEMPTS = 3
 const MAX_BACKGROUND_SCAN_RETRIES = 3
 // Throttle for the pointer hit test that drives hover previews.
 const HOVER_HIT_TEST_INTERVAL_MS = 30
+// How many times a "nothing found" verdict may be postponed while the page is
+// still producing text, before it is accepted anyway.
+const MAX_DEFERRED_CLEAR_VERDICTS = 4
 const MEDIA_RESOURCE_EVENTS = Object.freeze(['load', 'loadstart', 'loadedmetadata', 'loadeddata', 'emptied'])
 const IFRAME_NAVIGATION_ATTRIBUTES = Object.freeze(['src', 'srcdoc', 'sandbox'])
 const IFRAME_NAVIGATION_START_EVENTS = Object.freeze(['pagehide', 'unload'])
@@ -758,6 +761,8 @@ class Controller {
         this._hoverPoint = null
         this._lastHoverUpdateAt = 0
         this._hoverTrailingTimer = null
+        this._lastVerdictWordCount = -1
+        this._deferredClearVerdicts = 0
         this._startHoverTracking()
         this._startIframeLifecycleTracking()
     }
@@ -1010,12 +1015,36 @@ class Controller {
         const words = this._pageTextIndex.getWords()
         const result = await analyzePageWordsWithOffscreen(words)
         if (generation !== this._policyGeneration) return { ...FAIL_CLOSED_RESULT }
-        this._pageAnalysisResult = normalizeAnalysisResult(result)
-        return this._pageAnalysisResult
+        // Deliberately does not commit to _pageAnalysisResult. applyPageResult
+        // owns that, so a verdict it decides to postpone cannot be picked up by
+        // a mutation batch and used to unblur media early.
+        return normalizeAnalysisResult(result)
+    }
+
+    // A "nothing found" verdict is only trustworthy once the page has stopped
+    // producing text. Single-page apps render their content after the first
+    // analysis, so acting on an early clear verdict unblurs media that is about
+    // to be judged unsafe — on a YouTube search that painted real thumbnails at
+    // filter:none for roughly a second before the blur came back.
+    _shouldDeferClearVerdict() {
+        if (this._deferredClearVerdicts >= MAX_DEFERRED_CLEAR_VERDICTS) return false
+        if (this._registry.all().length === 0) return false
+        const words = this._pageTextIndex.getWords().length
+        return words !== this._lastVerdictWordCount || document.readyState !== 'complete'
     }
 
     applyPageResult(result, nodes = this._registry.all()) {
         const normalized = normalizeAnalysisResult(result)
+
+        if (!normalized.shouldBlur && this._shouldDeferClearVerdict()) {
+            this._deferredClearVerdicts++
+            this._lastVerdictWordCount = this._pageTextIndex.getWords().length
+            this._scheduleAnalysis()
+            return
+        }
+
+        this._deferredClearVerdicts = 0
+        this._lastVerdictWordCount = this._pageTextIndex.getWords().length
         this._pageAnalysisResult = normalized
         nodes.forEach(node => this._applyResultToNode(node, normalized))
         reportIconStatus(normalized.shouldBlur ? 'detected' : 'idle')
