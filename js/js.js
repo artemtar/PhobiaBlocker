@@ -1019,6 +1019,9 @@ class Controller {
         this._pageAnalysisResult = normalized
         nodes.forEach(node => this._applyResultToNode(node, normalized))
         reportIconStatus(normalized.shouldBlur ? 'detected' : 'idle')
+        // The pointer may already be resting on media that only just became
+        // blurred, and a stationary pointer produces no further events.
+        this._scheduleHoverPreviewUpdate()
     }
 
     rememberExplicitReveal(element) {
@@ -1783,6 +1786,9 @@ class Controller {
         }
 
         touched.forEach(node => this._applyResultToNode(node, this._pageAnalysisResult))
+        // Media can be registered or replaced under a pointer that is not
+        // moving, so re-run the hit test rather than waiting for another event.
+        if (touched.size > 0) this._scheduleHoverPreviewUpdate()
     }
 
     _scheduleAnalysis() {
