@@ -1587,7 +1587,14 @@ class Controller {
             this._hoverPoint = null
             this._clearHoverPreview()
         }
+        // Scrolling moves content under a cursor that is not moving, so the
+        // element beneath the pointer changes with no pointer event to notice
+        // it. Reuse the same throttle rather than adding a second one.
+        this._onHoverScroll = () => {
+            if (this._hoverPoint) this._scheduleHoverPreviewUpdate()
+        }
         document.addEventListener('pointermove', this._onPointerMove, { capture: true, passive: true })
+        document.addEventListener('scroll', this._onHoverScroll, { capture: true, passive: true })
         document.addEventListener('pointerleave', this._onPointerGone, { capture: true, passive: true })
         document.addEventListener('pointercancel', this._onPointerGone, { capture: true, passive: true })
     }
