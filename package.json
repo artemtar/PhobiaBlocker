@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "test": "node -e \"console.error('Synthetic browser tests are quarantined. Validate with the live-site charter.'); process.exit(1)\"",
-    "lint": "eslint js/background.js js/early-blur.js js/js.js js/offscreen.js js/page-text-index.js js/popup.js js/settings.js js/shared-policy.js js/storage.js",
+    "test:unit": "node --test tests/unit/*.test.js",
+    "lint": "eslint js/background.js js/early-blur.js js/js.js js/offscreen.js js/page-text-index.js js/popup.js js/settings-ui.js js/settings.js js/shared-policy.js js/storage.js",
     "dev": "bash pack-dev.sh",
     "prod": "bash pack.sh"
   },

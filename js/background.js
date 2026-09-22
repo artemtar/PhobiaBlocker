@@ -6,23 +6,278 @@ importScripts('shared-policy.js', 'storage.js')
 const OFFSCREEN_PATH = 'offscreen.html'
 const OFFSCREEN_ANALYSIS_TIMEOUT_MS = 3500
 const KEYBOARD_TOGGLE_DEBOUNCE_MS = 350
+const FRAME_STATUS_TIMEOUT_MS = 1500
+const URL_POLICY_RETRY_DELAY_MS = 250
 const {
     DEFAULTS,
     STORAGE_KEYS,
+    FAIL_CLOSED_RESULT,
+    CLEAR_RESULT,
+    FRAME_MESSAGES,
+    isStringArray,
     normalizeTargetWords,
+    normalizeAnalysisResult,
+    withTimeout,
 } = globalThis.PhobiaBlockerPolicy
 const storageApi = globalThis.PhobiaBlockerStorage
 let _offscreenCreatePromise = null
 let _cachedTargetWords = null
 let _targetWordsLoadPromise = null
 let _targetWordsGeneration = 0
-let _targetWordsLoadGeneration = -1
 let _lastKeyboardWordCoverToggleAt = 0
-const FAIL_CLOSED_ANALYSIS_RESULT = Object.freeze({
-    shouldBlur: true,
-    matchedWords: [],
-    matchedInputWords: [],
-})
+const _pendingFrameNavigations = new Map()
+const _unconfirmedUrlPolicies = new Map()
+
+function frameNavigationKey(tabId, frameId) {
+    return `${tabId}:${frameId}`
+}
+
+function beginFrameNavigation(details) {
+    const key = frameNavigationKey(details.tabId, details.frameId)
+    _pendingFrameNavigations.set(key, (_pendingFrameNavigations.get(key) || 0) + 1)
+}
+
+function finishFrameNavigation(details) {
+    const key = frameNavigationKey(details.tabId, details.frameId)
+    const pendingCount = _pendingFrameNavigations.get(key) || 0
+    if (pendingCount <= 1) _pendingFrameNavigations.delete(key)
+    else _pendingFrameNavigations.set(key, pendingCount - 1)
+}
+
+function frameNavigationIsPending(tabId, frameId, documentId) {
+    const key = frameNavigationKey(tabId, frameId)
+    const update = _unconfirmedUrlPolicies.get(key)
+    return _pendingFrameNavigations.has(key) || Boolean(update && update.documentId === documentId)
+}
+
+function getAllTabFrames(tabId) {
+    return new Promise((resolve) => {
+        try {
+            chrome.webNavigation.getAllFrames({ tabId }, (frames) => {
+                const error = chrome.runtime.lastError
+                resolve(error || !Array.isArray(frames) ? null : frames)
+            })
+        } catch (_) {
+            resolve(null)
+        }
+    })
+}
+
+// Resolves null when the frame is gone, has no listener, or does not answer
+// in time; callers treat null as "unknown, stay conservative".
+function sendContentMessage(tabId, message, options) {
+    return withTimeout(
+        Promise.resolve().then(() => chrome.tabs.sendMessage(tabId, message, options)),
+        FRAME_STATUS_TIMEOUT_MS,
+        'Frame message'
+    ).catch(() => null)
+}
+
+function sendUrlPolicyUpdate(update, isRetry = false) {
+    if (update.inFlight) return update.inFlight
+
+    beginFrameNavigation(update)
+    if (!isRetry) void invalidateFrameAncestors(update.tabId, update.parentFrameId)
+    update.inFlight = sendContentMessage(
+        update.tabId,
+        { target: 'content', type: 'PB_URL_CHANGED', url: update.url },
+        { frameId: update.frameId, documentId: update.documentId }
+    ).then((response) => {
+        const acknowledged = response?.ok === true
+        const key = frameNavigationKey(update.tabId, update.frameId)
+        if (acknowledged && _unconfirmedUrlPolicies.get(key) === update) {
+            _unconfirmedUrlPolicies.delete(key)
+        } else if (!acknowledged && !isRetry && _unconfirmedUrlPolicies.get(key) === update) {
+            // Top-level documents may never request a frame aggregate. Give
+            // every failed notification one automatic recovery attempt.
+            setTimeout(() => {
+                if (_unconfirmedUrlPolicies.get(key) === update) void sendUrlPolicyUpdate(update, true)
+            }, URL_POLICY_RETRY_DELAY_MS)
+        }
+        finishFrameNavigation(update)
+        update.inFlight = null
+        // Failed retries stay conservative without scheduling another refresh
+        // loop. A later aggregate request can make one new bounded attempt.
+        if (!isRetry || acknowledged) void invalidateFrameAncestors(update.tabId, update.parentFrameId)
+        return acknowledged
+    })
+    return update.inFlight
+}
+
+function retryUnconfirmedUrlPolicies(tabId, frames) {
+    return Promise.all(frames.map((frame) => {
+        const update = _unconfirmedUrlPolicies.get(frameNavigationKey(tabId, frame.frameId))
+        if (!update || update.documentId !== frame.documentId || update.inFlight) return null
+        return sendUrlPolicyUpdate(update, true)
+    }))
+}
+
+function activeFrames(frames) {
+    return frames.filter(frame => !frame.documentLifecycle || frame.documentLifecycle === 'active')
+}
+
+function frameSnapshotSignature(frames) {
+    return activeFrames(frames)
+        .map(frame => [frame.frameId, frame.parentFrameId, frame.documentId || '', frame.url || ''].join(':'))
+        .sort()
+        .join('|')
+}
+
+function indexFrameTree(frames) {
+    const byId = new Map()
+    const childrenByParent = new Map()
+
+    activeFrames(frames).forEach((frame) => {
+        byId.set(frame.frameId, frame)
+        const children = childrenByParent.get(frame.parentFrameId) || []
+        children.push(frame)
+        childrenByParent.set(frame.parentFrameId, children)
+    })
+    return { byId, childrenByParent }
+}
+
+function collectFrameDescendants(childrenByParent, parentFrameId) {
+    const descendants = []
+    const visit = (frameId) => {
+        for (const child of childrenByParent.get(frameId) || []) {
+            descendants.push(child)
+            visit(child.frameId)
+        }
+    }
+    visit(parentFrameId)
+    return descendants
+}
+
+function isValidFrameStatus(status) {
+    return Boolean(
+        status && typeof status.allowsUnblur === 'boolean' &&
+        Number.isInteger(status.frameElementCount) && status.frameElementCount >= 0 &&
+        typeof status.hasUnsupportedFrameOwner === 'boolean'
+    )
+}
+
+async function computeFrameAggregate(message, sender) {
+    const tabId = sender.tab?.id
+    const parentFrameId = sender.frameId
+    const parentDocumentId = sender.documentId
+    const epoch = message.epoch
+    const requestedCount = message.frameElementCount
+    const requestIsValid = Number.isInteger(epoch) && epoch >= 0 &&
+        Number.isInteger(requestedCount) && requestedCount >= 0 &&
+        typeof message.hasUnsupportedFrameOwner === 'boolean'
+    if (!requestIsValid || typeof tabId !== 'number' || typeof parentFrameId !== 'number' ||
+        typeof parentDocumentId !== 'string') {
+        return { ok: false, clear: false, epoch }
+    }
+
+    const before = await getAllTabFrames(tabId)
+    if (!before) return { ok: false, clear: false, epoch }
+    const { byId, childrenByParent } = indexFrameTree(before)
+    const parent = byId.get(parentFrameId)
+    if (!parent || parent.documentId !== parentDocumentId) {
+        return { ok: false, clear: false, epoch }
+    }
+    const descendants = collectFrameDescendants(childrenByParent, parentFrameId)
+    await retryUnconfirmedUrlPolicies(tabId, [parent, ...descendants])
+    if (frameNavigationIsPending(tabId, parentFrameId, parent.documentId)) {
+        return { ok: true, clear: false, epoch }
+    }
+
+    const directChildren = childrenByParent.get(parentFrameId) || []
+    if (message.hasUnsupportedFrameOwner || directChildren.length !== requestedCount) {
+        return { ok: true, clear: false, epoch }
+    }
+
+    const beforeSignature = frameSnapshotSignature([parent, ...descendants])
+    if (descendants.some(frame => frameNavigationIsPending(tabId, frame.frameId, frame.documentId))) {
+        return { ok: true, clear: false, epoch }
+    }
+
+    const statusPairs = await Promise.all(descendants.map(async (frame) => {
+        if (typeof frame.documentId !== 'string') return [frame.frameId, null]
+        const status = await sendContentMessage(
+            tabId,
+            { target: 'content', type: FRAME_MESSAGES.statusRequest },
+            { frameId: frame.frameId, documentId: frame.documentId }
+        )
+        return [frame.frameId, isValidFrameStatus(status) ? status : null]
+    }))
+    const statuses = new Map(statusPairs)
+
+    const after = await getAllTabFrames(tabId)
+    if (!after) return { ok: true, clear: false, epoch }
+    const { byId: afterById, childrenByParent: afterChildrenByParent } = indexFrameTree(after)
+    const afterParent = afterById.get(parentFrameId)
+    if (!afterParent || afterParent.documentId !== parentDocumentId) {
+        return { ok: true, clear: false, epoch }
+    }
+    const afterDescendants = collectFrameDescendants(afterChildrenByParent, parentFrameId)
+    if (frameSnapshotSignature([afterParent, ...afterDescendants]) !== beforeSignature) {
+        return { ok: true, clear: false, epoch }
+    }
+    if (frameNavigationIsPending(tabId, parentFrameId, afterParent.documentId) ||
+        afterDescendants.some(frame => frameNavigationIsPending(tabId, frame.frameId, frame.documentId))) {
+        return { ok: true, clear: false, epoch }
+    }
+
+    const subtreeIsClear = (frame, visiting = new Set()) => {
+        if (visiting.has(frame.frameId)) return false
+        const children = childrenByParent.get(frame.frameId) || []
+
+        const status = statuses.get(frame.frameId)
+        if (!status || !status.allowsUnblur || status.hasUnsupportedFrameOwner ||
+            status.frameElementCount !== children.length) return false
+
+        const nextVisiting = new Set(visiting)
+        nextVisiting.add(frame.frameId)
+        return children.every(child => subtreeIsClear(child, nextVisiting))
+    }
+
+    return {
+        ok: true,
+        clear: directChildren.every(child => subtreeIsClear(child)),
+        epoch,
+    }
+}
+
+async function invalidateFrameAncestors(tabId, firstAncestorFrameId, knownFrames = null) {
+    if (typeof tabId !== 'number' || typeof firstAncestorFrameId !== 'number' ||
+        firstAncestorFrameId < 0) return
+
+    const frames = knownFrames || await getAllTabFrames(tabId)
+    if (!frames) return
+    const { byId } = indexFrameTree(frames)
+    const ancestors = []
+    const seen = new Set()
+    let frameId = firstAncestorFrameId
+
+    while (frameId >= 0 && !seen.has(frameId)) {
+        seen.add(frameId)
+        const frame = byId.get(frameId)
+        if (!frame || typeof frame.documentId !== 'string') break
+        ancestors.push(frame)
+        frameId = frame.parentFrameId
+    }
+
+    await Promise.all(ancestors.map(frame => sendContentMessage(
+        tabId,
+        { target: 'content', type: FRAME_MESSAGES.aggregateInvalidated },
+        { frameId: frame.frameId, documentId: frame.documentId }
+    )))
+}
+
+async function invalidateSenderAncestors(sender) {
+    const tabId = sender.tab?.id
+    if (typeof tabId !== 'number' || typeof sender.frameId !== 'number' ||
+        typeof sender.documentId !== 'string') return
+
+    const frames = await getAllTabFrames(tabId)
+    if (!frames) return
+    const { byId } = indexFrameTree(frames)
+    const frame = byId.get(sender.frameId)
+    if (!frame || frame.documentId !== sender.documentId) return
+    await invalidateFrameAncestors(tabId, frame.parentFrameId, frames)
+}
 
 async function ensureOffscreenDocument() {
     const offscreenUrl = chrome.runtime.getURL(OFFSCREEN_PATH)
@@ -46,17 +301,18 @@ async function ensureOffscreenDocument() {
     await _offscreenCreatePromise
 }
 
+// A storage change bumps the generation and drops the in-flight promise, so
+// a live promise always belongs to the current generation.
 async function loadTargetWordsFromStorage() {
+    if (_targetWordsLoadPromise) return _targetWordsLoadPromise
     const generation = _targetWordsGeneration
-    if (_targetWordsLoadPromise && _targetWordsLoadGeneration === generation) {
-        return _targetWordsLoadPromise
-    }
 
     const loadPromise = (async () => {
         try {
-            const values = await storageApi.getRaw(STORAGE_KEYS.targetWords)
-            const rawWords = values.targetWords === undefined ? DEFAULTS.targetWords : values.targetWords
-            const validWords = normalizeTargetWords(rawWords).valid
+            // The same validated read every other context uses, so a malformed
+            // stored list fails closed here as well instead of reading as empty.
+            const values = await storageApi.getWithDefaults([STORAGE_KEYS.targetWords])
+            const validWords = normalizeTargetWords(values[STORAGE_KEYS.targetWords]).valid
             if (generation === _targetWordsGeneration) _cachedTargetWords = validWords
             return validWords
         } catch (error) {
@@ -64,15 +320,11 @@ async function loadTargetWordsFromStorage() {
             console.error('PhobiaBlocker: target-word storage read failed', error)
             throw error
         } finally {
-            if (_targetWordsLoadPromise === loadPromise) {
-                _targetWordsLoadPromise = null
-                _targetWordsLoadGeneration = -1
-            }
+            if (_targetWordsLoadPromise === loadPromise) _targetWordsLoadPromise = null
         }
     })()
 
     _targetWordsLoadPromise = loadPromise
-    _targetWordsLoadGeneration = generation
     return loadPromise
 }
 
@@ -85,7 +337,6 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     _targetWordsGeneration++
     _cachedTargetWords = null
     _targetWordsLoadPromise = null
-    _targetWordsLoadGeneration = -1
     void loadTargetWordsFromStorage().catch(() => {})
 })
 
@@ -111,6 +362,51 @@ chrome.runtime.onInstalled.addListener((details) => {
         _cachedTargetWords = null
         console.error('PhobiaBlocker: default settings initialization failed', error)
     })
+})
+
+// Cross-origin iframe elements cannot expose their owning child document to a
+// content script. Browser navigation events provide the authenticated frame
+// relationship, so invalidate every ancestor before a child can commit new
+// content under a previously clear aggregate verdict.
+chrome.webNavigation.onBeforeNavigate.addListener((details) => {
+    if (details.frameId === 0 || details.parentFrameId < 0) return
+    beginFrameNavigation(details)
+    void invalidateFrameAncestors(details.tabId, details.parentFrameId)
+})
+
+for (const event of [chrome.webNavigation.onCommitted, chrome.webNavigation.onErrorOccurred]) {
+    event.addListener((details) => {
+        if (details.frameId === 0 || details.parentFrameId < 0) return
+        finishFrameNavigation(details)
+        void invalidateFrameAncestors(details.tabId, details.parentFrameId)
+    })
+}
+
+for (const event of [chrome.webNavigation.onHistoryStateUpdated, chrome.webNavigation.onReferenceFragmentUpdated]) {
+    event.addListener((details) => {
+        if (!details || !Number.isInteger(details.tabId) || details.tabId < 0 ||
+            !Number.isInteger(details.frameId) || details.frameId < 0 ||
+            !Number.isInteger(details.parentFrameId) ||
+            (details.frameId === 0 ? details.parentFrameId !== -1 : details.parentFrameId < 0) ||
+            typeof details.documentId !== 'string' || !details.documentId ||
+            details.documentLifecycle !== 'active' ||
+            typeof details.url !== 'string' || !details.url) return
+
+        // Keep ancestor aggregates conservative until the existing document
+        // has applied the policy for its new URL, including overlapping relays.
+        const update = { ...details, inFlight: null }
+        _unconfirmedUrlPolicies.set(frameNavigationKey(details.tabId, details.frameId), update)
+        void sendUrlPolicyUpdate(update)
+    })
+}
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+    const prefix = `${tabId}:`
+    for (const pending of [_pendingFrameNavigations, _unconfirmedUrlPolicies]) {
+        for (const key of pending.keys()) {
+            if (key.startsWith(prefix)) pending.delete(key)
+        }
+    }
 })
 
 // Handle context menu clicks
@@ -210,13 +506,116 @@ chrome.runtime.onMessage.addListener((message, sender) => {
     })
 })
 
-// Handle offscreen ready + analysis requests
+function normalizeScopeRequest(scopes) {
+    if (!Array.isArray(scopes)) return []
+    return scopes
+        .filter((scope) => scope && typeof scope.id === 'number')
+        .map((scope) => ({
+            id: scope.id,
+            words: isStringArray(scope.words) ? [...scope.words] : null,
+        }))
+}
+
+function failClosedResult(id) {
+    return { id, ...FAIL_CLOSED_RESULT }
+}
+
+function sendOffscreenMessage(payload) {
+    return withTimeout(
+        ensureOffscreenDocument().then(() => chrome.runtime.sendMessage(payload)),
+        OFFSCREEN_ANALYSIS_TIMEOUT_MS,
+        'Offscreen analysis'
+    )
+}
+
+async function analyzeScopes(scopes) {
+    const requestedScopes = normalizeScopeRequest(scopes)
+    const requestIds = requestedScopes.map(scope => scope.id)
+    const requestIsValid = Array.isArray(scopes) && scopes.length > 0 &&
+        requestedScopes.length === scopes.length &&
+        requestedScopes.every(scope => Array.isArray(scope.words)) &&
+        new Set(requestIds).size === requestIds.length
+    if (!requestIsValid) {
+        return { results: requestedScopes.map(scope => failClosedResult(scope.id)) }
+    }
+
+    if (_cachedTargetWords === null) {
+        try {
+            await loadTargetWordsFromStorage()
+        } catch (_) {
+            return {
+                results: requestedScopes.map(scope => failClosedResult(scope.id)),
+            }
+        }
+    }
+
+    // An unreadable list stays fail-closed.
+    if (!Array.isArray(_cachedTargetWords)) {
+        return { results: requestedScopes.map(scope => failClosedResult(scope.id)) }
+    }
+
+    // A successfully read but empty trigger list is not a failure: there is
+    // nothing to match, so nothing should be blurred. Treating this as
+    // fail-closed blurred every image on every site the user visited.
+    if (_cachedTargetWords.length === 0) {
+        return { results: requestedScopes.map(scope => ({ id: scope.id, ...CLEAR_RESULT })) }
+    }
+
+    const response = await sendOffscreenMessage({
+        target: 'offscreen',
+        type: 'PB_ANALYZE_SCOPES',
+        scopes: requestedScopes,
+        targetWords: _cachedTargetWords,
+    })
+
+    const requestedIds = new Set(requestIds)
+    const resultsById = new Map()
+    let responseIsValid = Boolean(
+        response && Array.isArray(response.results) &&
+        response.results.length === requestedScopes.length
+    )
+
+    if (responseIsValid) {
+        for (const result of response.results) {
+            if (!result || typeof result.id !== 'number' || !requestedIds.has(result.id) ||
+                resultsById.has(result.id)) {
+                responseIsValid = false
+                break
+            }
+            const normalized = normalizeAnalysisResult(result)
+            if (!normalized) {
+                responseIsValid = false
+                break
+            }
+            resultsById.set(result.id, { id: result.id, ...normalized })
+        }
+    }
+
+    if (!responseIsValid || resultsById.size !== requestedScopes.length) {
+        return { results: requestedScopes.map(scope => failClosedResult(scope.id)) }
+    }
+
+    return {
+        results: requestedScopes.map(scope => resultsById.get(scope.id)),
+    }
+}
+
+// Handle frame coordination, word-cover toggles and analysis requests
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || message.target !== 'background') return
 
-    if (message.type === 'PB_OFFSCREEN_READY') {
-        sendResponse({ ok: true })
-        return
+    if (message.type === FRAME_MESSAGES.aggregateRequest) {
+        void computeFrameAggregate(message, sender)
+            .then(sendResponse)
+            .catch(() => sendResponse({ ok: false, clear: false, epoch: message.epoch }))
+        return true
+    }
+
+    if (message.type === FRAME_MESSAGES.statusChanged) {
+        void invalidateSenderAncestors(sender)
+            .then(() => sendResponse({ ok: true }))
+            .catch(() => sendResponse({ ok: false }))
+        return true
     }
 
     if (message.type === 'toggleWordCover') {
@@ -224,186 +623,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return true
     }
 
-    const isStringArray = (words) => {
-        return Array.isArray(words) && words.every(word => typeof word === 'string')
-    }
-
-    const normalizeMatchedWords = (matchedWords) => {
-        return [...new Set(
-            matchedWords
-                .filter((word) => typeof word === 'string')
-                .map((word) => word.trim())
-                .filter(Boolean)
-        )]
-    }
-
-    const normalizeScopeRequest = (scopes) => {
-        if (!Array.isArray(scopes)) return []
-        return scopes
-            .filter((scope) => scope && typeof scope.id === 'number')
-            .map((scope) => ({
-                id: scope.id,
-                words: isStringArray(scope.words) ? [...scope.words] : null,
-            }))
-    }
-
-    const normalizeAnalysisResult = (result, id) => {
-        if (!result || typeof result.shouldBlur !== 'boolean' ||
-            !isStringArray(result.matchedWords) || !isStringArray(result.matchedInputWords)) {
-            return null
-        }
-        if (typeof id === 'number' && result.id !== id) return null
-        return {
-            ...(typeof id === 'number' ? { id } : {}),
-            shouldBlur: result.shouldBlur,
-            matchedWords: normalizeMatchedWords(result.matchedWords),
-            matchedInputWords: normalizeMatchedWords(result.matchedInputWords),
-        }
-    }
-
-    const failClosedResult = (id) => ({
-        ...(typeof id === 'number' ? { id } : {}),
-        ...FAIL_CLOSED_ANALYSIS_RESULT,
-    })
-
-    const sendOffscreenMessage = async (payload) => {
-        let timeoutId = null
-        try {
-            return await Promise.race([
-                (async () => {
-                    await ensureOffscreenDocument()
-                    return chrome.runtime.sendMessage(payload)
-                })(),
-                new Promise((_, reject) => {
-                    timeoutId = setTimeout(
-                        () => reject(new Error('Offscreen analysis timed out')),
-                        OFFSCREEN_ANALYSIS_TIMEOUT_MS
-                    )
-                }),
-            ])
-        } finally {
-            if (timeoutId !== null) clearTimeout(timeoutId)
-        }
-    }
-
-    const analyzeScopes = async (scopes) => {
-        const requestedScopes = normalizeScopeRequest(scopes)
-        const requestIds = requestedScopes.map(scope => scope.id)
-        const requestIsValid = Array.isArray(scopes) && scopes.length > 0 &&
-            requestedScopes.length === scopes.length &&
-            requestedScopes.every(scope => Array.isArray(scope.words)) &&
-            new Set(requestIds).size === requestIds.length
-        if (!requestIsValid) {
-            return { results: requestedScopes.map(scope => failClosedResult(scope.id)) }
-        }
-
-        if (_cachedTargetWords === null) {
-            try {
-                await loadTargetWordsFromStorage()
-            } catch (_) {
-                return {
-                    results: requestedScopes.map(scope => failClosedResult(scope.id)),
-                }
-            }
-        }
-
-        // An unreadable list stays fail-closed.
-        if (!Array.isArray(_cachedTargetWords)) {
-            return { results: requestedScopes.map(scope => failClosedResult(scope.id)) }
-        }
-
-        // A successfully read but empty trigger list is not a failure: there is
-        // nothing to match, so nothing should be blurred. Treating this as
-        // fail-closed blurred every image on every site the user visited.
-        if (_cachedTargetWords.length === 0) {
-            return {
-                results: requestedScopes.map(scope => ({
-                    id: scope.id,
-                    shouldBlur: false,
-                    matchedWords: [],
-                    matchedInputWords: [],
-                })),
-            }
-        }
-
-        const response = await sendOffscreenMessage({
-            target: 'offscreen',
-            type: 'PB_ANALYZE_SCOPES',
-            scopes: requestedScopes,
-            targetWords: _cachedTargetWords,
-        })
-
-        const requestedIds = new Set(requestIds)
-        const resultsById = new Map()
-        let responseIsValid = Boolean(
-            response && Array.isArray(response.results) &&
-            response.results.length === requestedScopes.length
-        )
-
-        if (responseIsValid) {
-            for (const result of response.results) {
-                if (!result || typeof result.id !== 'number' || !requestedIds.has(result.id) ||
-                    resultsById.has(result.id)) {
-                    responseIsValid = false
-                    break
-                }
-                const normalized = normalizeAnalysisResult(result, result.id)
-                if (!normalized) {
-                    responseIsValid = false
-                    break
-                }
-                resultsById.set(result.id, normalized)
-            }
-        }
-
-        if (!responseIsValid || resultsById.size !== requestedScopes.length) {
-            return { results: requestedScopes.map(scope => failClosedResult(scope.id)) }
-        }
-
-        return {
-            results: requestedScopes.map(scope => resultsById.get(scope.id)),
-        }
-    }
-
-    if (message.type !== 'PB_ANALYZE_WORDS' && message.type !== 'PB_ANALYZE_SCOPES') return
+    if (message.type !== 'PB_ANALYZE_WORDS') return
 
     ;(async () => {
         try {
-            if (message.type === 'PB_ANALYZE_SCOPES') {
-                sendResponse(await analyzeScopes(message.scopes))
-                return
-            }
-
             if (!isStringArray(message.words)) {
-                sendResponse({ ...FAIL_CLOSED_ANALYSIS_RESULT })
+                sendResponse({ ...FAIL_CLOSED_RESULT })
                 return
             }
-
-            const response = await analyzeScopes([{
-                id: 0,
-                words: [...message.words],
-            }])
-            const result = response.results[0]
-
-            if (result && typeof result.shouldBlur === 'boolean') {
-                sendResponse({
-                    shouldBlur: result.shouldBlur,
-                    matchedWords: result.matchedWords,
-                    matchedInputWords: result.matchedInputWords,
-                })
-            } else {
-                sendResponse({ ...FAIL_CLOSED_ANALYSIS_RESULT })
-            }
+            // analyzeScopes returns exactly one well-formed verdict per scope.
+            const { results } = await analyzeScopes([{ id: 0, words: [...message.words] }])
+            const { shouldBlur, matchedWords, matchedInputWords } = results[0]
+            sendResponse({ shouldBlur, matchedWords, matchedInputWords })
         } catch (error) {
             console.error('PhobiaBlocker: Offscreen analysis failed', error)
-            if (message.type === 'PB_ANALYZE_SCOPES') {
-                const requestedScopes = normalizeScopeRequest(message.scopes)
-                sendResponse({
-                    results: requestedScopes.map(scope => failClosedResult(scope.id)),
-                })
-                return
-            }
-            sendResponse({ ...FAIL_CLOSED_ANALYSIS_RESULT })
+            sendResponse({ ...FAIL_CLOSED_RESULT })
         }
     })()
 
@@ -413,22 +647,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // Handle keyboard shortcuts
 chrome.commands.onCommand.addListener((command) => {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (tabs && tabs[0]) {
-            if (command === 'blur-all') {
-                chrome.tabs.sendMessage(tabs[0].id, { target: 'content', type: 'blurAll' }, () => {
-                    if (chrome.runtime.lastError) {
-                        // The active tab may not accept content-script messages.
-                    }
-                })
-            } else if (command === 'unblur-all') {
-                chrome.tabs.sendMessage(tabs[0].id, { target: 'content', type: 'unblurAll' }, () => {
-                    if (chrome.runtime.lastError) {
-                        // The active tab may not accept content-script messages.
-                    }
-                })
-            } else if (command === 'toggle-word-cover') {
-                toggleWordCover(null, { source: 'keyboard' })
-            }
+        if (!tabs || !tabs[0]) return
+
+        let messageType
+        if (command === 'blur-all') messageType = 'blurAll'
+        else if (command === 'unblur-all') messageType = 'unblurAll'
+        else if (command === 'toggle-word-cover') {
+            toggleWordCover(null, { source: 'keyboard' })
+            return
+        } else {
+            return
         }
+
+        chrome.tabs.sendMessage(tabs[0].id, { target: 'content', type: messageType }, () => {
+            // The active tab may not accept content-script messages.
+            void chrome.runtime.lastError
+        })
     })
 })

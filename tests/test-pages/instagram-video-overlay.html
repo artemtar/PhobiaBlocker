@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Instagram Video Overlay Hover Test</title>
+    <style>
+        .article {
+            width: 470px;
+            margin: 24px;
+        }
+
+        .media-root {
+            position: relative;
+            width: 470px;
+            height: 588px;
+        }
+
+        .video-shell {
+            position: relative;
+            width: 100%;
+            height: 100%;
+        }
+
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+
+        .overlay-shell {
+            position: absolute;
+            inset: 0;
+            z-index: 4;
+            pointer-events: none;
+        }
+
+        .overlay-control {
+            position: absolute;
+            inset: 0;
+            pointer-events: auto;
+            background: transparent;
+        }
+    </style>
+</head>
+<body>
+    <article class="article">
+        <p>This video mentions a spider, so the video should be blurred.</p>
+        <div class="media-root">
+            <div class="video-shell">
+                <video id="instagram-video" playsinline preload="none" src="about:blank"></video>
+            </div>
+            <div class="overlay-shell" aria-label="Video player">
+                <div id="instagram-overlay-control" class="overlay-control" role="button" tabindex="0"></div>
+            </div>
+        </div>
+    </article>
+</body>
+</html>

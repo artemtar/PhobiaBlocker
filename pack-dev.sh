@@ -26,11 +26,9 @@ rsync -av --exclude='*.git*' \
   --exclude='.eslintrc.js' \
   --exclude='pack*.sh' \
   --exclude='tests' \
-  --exclude='icons/main_old.png' \
   --exclude='support_documents' \
   --exclude='build' \
   --exclude='todo' \
-  --exclude='test_results.txt' \
   . "$BUILD_DIR/"
 
 # Generate dev manifest from manifest.json

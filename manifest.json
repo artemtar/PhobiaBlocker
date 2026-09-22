@@ -29,6 +29,8 @@
             ],
             "css": ["css/protection.css"],
             "all_frames": true,
+            "match_about_blank": true,
+            "match_origin_as_fallback": true,
             "run_at": "document_start"
         }
     ],
@@ -65,7 +67,8 @@
     "permissions": [
         "contextMenus",
         "offscreen",
-        "storage"
+        "storage",
+        "webNavigation"
     ],
     "host_permissions": [
         "https://*/*",

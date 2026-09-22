@@ -6,6 +6,7 @@
     const policy = globalThis.PhobiaBlockerPolicy
     if (!policy) throw new Error('PhobiaBlockerPolicy must load before offscreen.js')
 
+    const { FAIL_CLOSED_RESULT, CLEAR_RESULT } = policy
     const NORMALIZE_PARAMS = Object.freeze({
         whitespace: true,
         unicode: true,
@@ -16,18 +17,13 @@
         verbs: true,
     })
 
+    const NORMALIZE_BATCH_SIZE = 256
     const WORD_RE = /^[-\p{L}]+$/u
-    const FAIL_CLOSED_RESULT = Object.freeze({
-        shouldBlur: true,
-        matchedWords: [],
-        matchedInputWords: [],
-    })
 
     let targetArtifacts = {
         key: '',
-        expandedRawTargets: [],
+        literalTargetSet: new Set(),
         normalizedTargetSet: new Set(),
-        prefixSet: new Set(),
     }
 
     function normalizeWords(words) {
@@ -37,15 +33,6 @@
                 .map((word) => typeof word === 'string' ? word.toLowerCase().trim() : '')
                 .filter((word) => word.length > 2 && WORD_RE.test(word))
         )]
-    }
-
-    function buildPrefixSet(words) {
-        const prefixes = new Set()
-        words.forEach((word) => {
-            if (typeof word !== 'string' || word.length < 2) return
-            prefixes.add(word.slice(0, 2))
-        })
-        return prefixes
     }
 
     function expandTargetWords(rawWords) {
@@ -91,71 +78,64 @@
         const key = JSON.stringify(validatedTargets)
         if (key === targetArtifacts.key) return
 
-        const expandedRawTargets = expandTargetWords(validatedTargets)
+        // NLP splits hyphenated words and can expand just one component
+        // (for example, spider-man becomes man). Match compounds literally.
+        const expandedRawTargets = expandTargetWords(
+            validatedTargets.filter(word => !word.includes('-'))
+        )
         const normalizedWords = expandedRawTargets.length > 0
             ? normalizeWords(nlp(expandedRawTargets).normalize(NORMALIZE_PARAMS).out('array'))
             : []
-        const prefixSet = buildPrefixSet([...expandedRawTargets, ...normalizedWords])
-
         targetArtifacts = {
             key,
-            expandedRawTargets,
+            literalTargetSet: new Set(validatedTargets),
             normalizedTargetSet: new Set(normalizedWords),
-            prefixSet,
-        }
-    }
-
-    function normalizePageWord(word) {
-        try {
-            return normalizeWords(
-                nlp(word)
-                    .normalize(NORMALIZE_PARAMS)
-                    .out('array')
-            )
-        } catch (_) {
-            return normalizeWords([word])
         }
     }
 
     function analyzeWords(words) {
-        if (!Array.isArray(words) || targetArtifacts.normalizedTargetSet.size === 0) {
+        if (!Array.isArray(words) || targetArtifacts.literalTargetSet.size === 0) {
             return { ...FAIL_CLOSED_RESULT }
         }
 
         const uniqueWords = normalizeWords(words)
-        if (uniqueWords.length === 0) {
-            return { shouldBlur: false, matchedWords: [], matchedInputWords: [] }
-        }
+        if (uniqueWords.length === 0) return { ...CLEAR_RESULT }
 
-        const prefixFilteredWords = uniqueWords.filter((word) =>
-            targetArtifacts.prefixSet.has(word.slice(0, 2))
-        )
-        if (prefixFilteredWords.length === 0) {
-            return { shouldBlur: false, matchedWords: [], matchedInputWords: [] }
+        // Normalization can change the first letters (fell -> fall), so raw
+        // prefixes cannot safely exclude a page word before NLP processes it.
+        const normalizedPageWords = new Array(uniqueWords.length)
+        if (targetArtifacts.normalizedTargetSet.size > 0) {
+            // Bounded batches keep the NLP library's large-document work small.
+            for (let start = 0; start < uniqueWords.length; start += NORMALIZE_BATCH_SIZE) {
+                const batch = uniqueWords.slice(start, start + NORMALIZE_BATCH_SIZE)
+                // JSON retains empty entries; out('array') drops them and would
+                // lose the association between normalized and original words.
+                const entries = nlp(batch).normalize(NORMALIZE_PARAMS).json({ terms: false })
+                if (entries.length !== batch.length) return { ...FAIL_CLOSED_RESULT }
+                entries.forEach((entry, index) => {
+                    normalizedPageWords[start + index] = normalizeWords([entry.text])[0]
+                })
+            }
         }
-
-        const normalizedPageWords = normalizeWords(
-            nlp(prefixFilteredWords)
-                .normalize(NORMALIZE_PARAMS)
-                .out('array')
-        )
 
         const matchedWords = new Set(
             normalizedPageWords.filter((word) => targetArtifacts.normalizedTargetSet.has(word))
         )
-        const matchedInputWords = new Set()
+        // Reuse the same normalization for the popup's original-word list.
+        const hasLiteralMatch = uniqueWords.some(word => targetArtifacts.literalTargetSet.has(word))
+        if (matchedWords.size === 0 && !hasLiteralMatch) return { ...CLEAR_RESULT }
 
-        prefixFilteredWords.forEach((word) => {
-            const normalizedPageWords = normalizePageWord(word)
-            const normalizedMatches = normalizedPageWords.filter((normalizedWord) =>
-                targetArtifacts.normalizedTargetSet.has(normalizedWord)
-            )
-            if (normalizedMatches.length === 0) return
+        const matchedInputWords = new Set()
+        uniqueWords.forEach((word, index) => {
+            if (!targetArtifacts.normalizedTargetSet.has(normalizedPageWords[index])) {
+                if (!targetArtifacts.literalTargetSet.has(word)) return
+                matchedWords.add(word)
+            }
             matchedInputWords.add(word)
         })
 
         return {
-            shouldBlur: matchedWords.size > 0,
+            shouldBlur: true,
             matchedWords: [...matchedWords],
             matchedInputWords: [...matchedInputWords],
         }
@@ -172,49 +152,25 @@
     }
 
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-        if (!message || message.target !== 'offscreen') return
+        if (!message || message.target !== 'offscreen' || message.type !== 'PB_ANALYZE_SCOPES') return
 
-        if (message.type === 'PB_ANALYZE_SCOPES') {
-            try {
-                rebuildTargetWordArtifacts(message.targetWords)
-                if (!Array.isArray(message.scopes) || message.scopes.some(scope => (
-                    !scope || typeof scope.id !== 'number' || !Array.isArray(scope.words) ||
-                    scope.words.some(word => typeof word !== 'string')
-                ))) {
-                    throw new TypeError('Analysis scopes must contain numeric IDs and string word arrays')
-                }
-                sendResponse({ results: analyzeScopes(message.scopes) })
-            } catch (error) {
-                console.error('PhobiaBlocker: invalid scoped analysis request', error)
-                const scopes = Array.isArray(message.scopes) ? message.scopes : []
-                sendResponse({
-                    results: scopes
-                        .filter(scope => scope && typeof scope.id === 'number')
-                        .map(scope => ({ id: scope.id, ...FAIL_CLOSED_RESULT })),
-                })
+        try {
+            rebuildTargetWordArtifacts(message.targetWords)
+            if (!Array.isArray(message.scopes) || message.scopes.some(scope => (
+                !scope || typeof scope.id !== 'number' || !Array.isArray(scope.words) ||
+                scope.words.some(word => typeof word !== 'string')
+            ))) {
+                throw new TypeError('Analysis scopes must contain numeric IDs and string word arrays')
             }
-            return
-        }
-
-        if (message.type === 'PB_ANALYZE_WORDS') {
-            try {
-                rebuildTargetWordArtifacts(message.targetWords)
-                if (!Array.isArray(message.words)) throw new TypeError('Analysis words must be an array')
-                sendResponse(analyzeWords(message.words))
-            } catch (error) {
-                console.error('PhobiaBlocker: invalid analysis request', error)
-                sendResponse({ ...FAIL_CLOSED_RESULT })
-            }
-            return
-        }
-
-        if (message.type === 'PB_PING') {
-            sendResponse({ ok: true })
+            sendResponse({ results: analyzeScopes(message.scopes) })
+        } catch (error) {
+            console.error('PhobiaBlocker: invalid scoped analysis request', error)
+            const scopes = Array.isArray(message.scopes) ? message.scopes : []
+            sendResponse({
+                results: scopes
+                    .filter(scope => scope && typeof scope.id === 'number')
+                    .map(scope => ({ id: scope.id, ...FAIL_CLOSED_RESULT })),
+            })
         }
     })
-
-    chrome.runtime.sendMessage({
-        target: 'background',
-        type: 'PB_OFFSCREEN_READY',
-    }).catch(() => {})
 })()

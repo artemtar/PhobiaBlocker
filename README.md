@@ -77,7 +77,7 @@ The extension automatically handles word variations:
 1. **Page Load**: When you visit a webpage, PhobiaBlocker scans for all images (both `<img>` tags and background images)
 2. **Text Extraction**: The extension extracts text from the page body and title
 3. **NLP Analysis**: Text is tokenized, normalized, and compared against your phobia word list
-4. **Smart Matching**: Only words with matching first two letters are compared (performance optimization)
+4. **Smart Matching**: Page words are normalized before comparison so irregular forms such as "fall" and "fell" can match
 5. **Blur Decision**: Images are blurred if phobia-related words are detected nearby
 6. **Continuous Monitoring**: A MutationObserver watches for dynamically loaded content (infinite scroll, lazy loading, etc.)
 

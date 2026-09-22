@@ -11,10 +11,14 @@ const TEST_PAGES_PATH = path.resolve(__dirname, 'test-pages')
 // would cause all concurrent test files to share the same profile dir, leading to
 // Chrome profile locking and cross-test interference.
 const TEST_USER_DATA_DIR = path.join(os.tmpdir(), `phobiablocker-test-${process.pid}-${threadId}`)
+// Radius of a computed `filter: blur(Npx)`; the extension writes literal px values.
+const BLUR_PX_RE = /blur\(([\d.]+)px\)/
 
 // Cached extension ID - MV3 service workers get killed between tests,
 // so we cache the ID to avoid re-discovering it on every storage call
 let _cachedExtensionId = null
+
+const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms))
 
 /**
  * Read the extension ID from Chrome's user data directory on the filesystem.
@@ -159,7 +163,7 @@ async function launchBrowserWithExtension(options = {}) {
     // because Chrome may still be writing the file when we first check.
     let fsId = null
     for (let attempt = 0; attempt < 6 && !fsId; attempt++) {
-        if (attempt > 0) await new Promise(r => setTimeout(r, 500))
+        if (attempt > 0) await wait(500)
         fsId = findExtensionIdFromFilesystem(userDataDir)
     }
     if (fsId) {
@@ -255,6 +259,11 @@ async function getExtensionServiceWorker(browser, timeout = 10000) {
     return await waitPromise
 }
 
+async function getServiceWorkerHandle(browser) {
+    const swTarget = await getExtensionServiceWorker(browser)
+    return swTarget.worker()
+}
+
 /**
  * Get the extension ID (cached after first lookup)
  * @param {Browser} browser - Puppeteer browser instance
@@ -311,7 +320,7 @@ async function getExtensionPage(browser) {
             break
         } catch (e) {
             if (attempt === 2) throw e
-            await new Promise(r => setTimeout(r, 100 * (attempt + 1)))
+            await wait(100 * (attempt + 1))
         }
     }
     await extPage.goto(popupUrl, { waitUntil: 'networkidle0' })
@@ -320,143 +329,96 @@ async function getExtensionPage(browser) {
 }
 
 /**
- * Set phobia words via extension storage
- * @param {Browser} browser - Puppeteer browser instance
- * @param {Array<string>} words - Array of phobia words
+ * Run `task` against a short-lived extension page and close it afterwards.
+ * chrome.storage.sync is only reachable from an extension context, and the MV3
+ * service worker is killed when idle, so a popup page is the reliable host.
  */
-async function setPhobiaWords(browser, words) {
+async function withExtensionPage(browser, task) {
     const extPage = await getExtensionPage(browser)
-
-    await extPage.evaluate((words) => {
-        return new Promise((resolve) => {
-            chrome.storage.sync.set({ targetWords: words }, resolve)
-        })
-    }, words)
-
-    await extPage.close()
-
-    // Wait for content scripts to receive storage change and process
-    // Content scripts need time to: receive event, expand words with NLP, process DOM
-    await new Promise(resolve => setTimeout(resolve, 1000))
+    try {
+        return await task(extPage)
+    } finally {
+        await extPage.close()
+    }
 }
 
 /**
- * Get current phobia words from storage
+ * Write values to chrome.storage.sync, then give content scripts time to react.
  * @param {Browser} browser - Puppeteer browser instance
- * @returns {Promise<Array<string>>} Array of phobia words
+ * @param {Object} values - Key/value pairs to store
+ * @param {number} settleMs - How long content scripts need to apply the change
  */
-async function getPhobiaWords(browser) {
-    const extPage = await getExtensionPage(browser)
-
-    const words = await extPage.evaluate(() => {
-        return new Promise((resolve) => {
-            chrome.storage.sync.get(['targetWords'], (result) => {
-                resolve(result.targetWords || [])
-            })
-        })
-    })
-
-    await extPage.close()
-    return words
+async function setSyncStorage(browser, values, settleMs = 0) {
+    await withExtensionPage(browser, page => page.evaluate(
+        entries => new Promise(resolve => chrome.storage.sync.set(entries, resolve)),
+        values
+    ))
+    if (settleMs > 0) await wait(settleMs)
 }
 
 /**
- * Enable or disable the extension
+ * Read one key from chrome.storage.sync (undefined when unset).
  * @param {Browser} browser - Puppeteer browser instance
- * @param {boolean} enabled - Whether to enable or disable
+ * @param {string} key - Storage key
  */
-async function setExtensionEnabled(browser, enabled) {
-    const extPage = await getExtensionPage(browser)
+function getSyncStorage(browser, key) {
+    return withExtensionPage(browser, page => page.evaluate(
+        name => new Promise(resolve => chrome.storage.sync.get([name], result => resolve(result[name]))),
+        key
+    ))
+}
 
-    await extPage.evaluate((enabled) => {
-        return new Promise((resolve) => {
-            chrome.storage.sync.set({ phobiaBlockerEnabled: enabled }, resolve)
-        })
-    }, enabled)
+// Settle delays reflect how long each setting takes to propagate: target words
+// trigger NLP expansion and a full re-analysis; the rest only re-style.
+const setPhobiaWords = (browser, words) => setSyncStorage(browser, { targetWords: words }, 1000)
+const setExtensionEnabled = (browser, enabled) => setSyncStorage(browser, { phobiaBlockerEnabled: enabled }, 200)
+const setBlurAmount = (browser, amount) => setSyncStorage(browser, { blurValueAmount: amount })
+const setBlurAlwaysOn = (browser, alwaysOn) => setSyncStorage(browser, { blurIsAlwaysOn: alwaysOn }, 500)
+const setWhitelistedSites = (browser, sites) => setSyncStorage(browser, { whitelistedSites: sites }, 300)
+const setBlacklistedSites = (browser, sites) => setSyncStorage(browser, { blacklistedSites: sites }, 300)
+const setPreviewEnabled = (browser, enabled) => setSyncStorage(browser, { previewEnabled: enabled }, 300)
+const setPreviewBlurStrength = (browser, strength) => setSyncStorage(browser, { previewBlurStrength: strength }, 300)
 
-    await extPage.close()
+const getPhobiaWords = async (browser) => (await getSyncStorage(browser, 'targetWords')) || []
+const getWhitelistedSites = async (browser) => (await getSyncStorage(browser, 'whitelistedSites')) || []
+const getBlacklistedSites = async (browser) => (await getSyncStorage(browser, 'blacklistedSites')) || []
+const getPreviewEnabled = (browser) => getSyncStorage(browser, 'previewEnabled')
+const getPreviewBlurStrength = (browser) => getSyncStorage(browser, 'previewBlurStrength')
 
-    // Wait for content script to react
-    await new Promise(resolve => setTimeout(resolve, 200))
+/**
+ * Clear all extension storage
+ * @param {Browser} browser - Puppeteer browser instance
+ */
+function clearExtensionStorage(browser) {
+    return withExtensionPage(browser, page => page.evaluate(
+        () => new Promise(resolve => chrome.storage.sync.clear(resolve))
+    ))
 }
 
 /**
- * Set blur amount
- * @param {Browser} browser - Puppeteer browser instance
- * @param {number} amount - Blur amount (0-5+)
+ * Radius of the blur() in a computed filter string, 0 when there is none.
+ * blur(0px) is visually transparent, so callers treat only > 0 as blurred.
  */
-async function setBlurAmount(browser, amount) {
-    const extPage = await getExtensionPage(browser)
-
-    await extPage.evaluate((amount) => {
-        return new Promise((resolve) => {
-            chrome.storage.sync.set({ blurValueAmount: amount }, resolve)
-        })
-    }, amount)
-
-    await extPage.close()
+function blurPxOf(filter) {
+    const match = typeof filter === 'string' && filter.match(BLUR_PX_RE)
+    return match ? parseFloat(match[1]) : 0
 }
 
-/**
- * Set blur always on mode
- * @param {Browser} browser - Puppeteer browser instance
- * @param {boolean} alwaysOn - Whether to always blur
- */
-async function setBlurAlwaysOn(browser, alwaysOn) {
-    const extPage = await getExtensionPage(browser)
-
-    await extPage.evaluate((alwaysOn) => {
-        return new Promise((resolve) => {
-            chrome.storage.sync.set({ blurIsAlwaysOn: alwaysOn }, resolve)
-        })
-    }, alwaysOn)
-
-    await extPage.close()
-
-    // Wait for content script to react
-    await new Promise(resolve => setTimeout(resolve, 500))
+function getComputedFilter(page, selector) {
+    return page.evaluate((sel) => {
+        const element = document.querySelector(sel)
+        return element ? window.getComputedStyle(element).filter : null
+    }, selector)
 }
 
 /**
  * Check if an element is blurred
  * @param {Page} page - Page containing the element
  * @param {string} selector - CSS selector for the element
- * @returns {Promise<boolean>} True if element has blur filter
+ * @returns {Promise<boolean>} True if element has a non-zero blur filter
  */
 async function isElementBlurred(page, selector) {
-    return await page.evaluate((sel) => {
-        const element = document.querySelector(sel)
-        if (!element) return false
-
-        const filter = window.getComputedStyle(element).filter
-        // blur(0px) is visually transparent (extension disabled sets --blurValueAmount:0px)
-        // so only count filters with a non-zero radius as "blurred"
-        const m = filter && filter.match(/blur\(([\d.]+)px\)/)
-        return m ? parseFloat(m[1]) > 0 : false
-    }, selector)
-}
-
-/**
- * Wait for element to be blurred or unblurred
- * @param {Page} page - Page containing the element
- * @param {string} selector - CSS selector for the element
- * @param {boolean} shouldBeBlurred - Expected state
- * @param {number} timeout - Timeout in milliseconds
- */
-async function waitForBlurState(page, selector, shouldBeBlurred, timeout = 5000) {
-    const startTime = Date.now()
-
-    while (Date.now() - startTime < timeout) {
-        const isBlurred = await isElementBlurred(page, selector)
-        if (isBlurred === shouldBeBlurred) {
-            return true
-        }
-        await page.waitForTimeout(100)
-    }
-
-    throw new Error(
-        `Element ${selector} did not reach expected blur state (${shouldBeBlurred}) within ${timeout}ms`
-    )
+    return blurPxOf(await getComputedFilter(page, selector)) > 0
 }
 
 /**
@@ -486,56 +448,16 @@ async function loadTestPage(page, filename) {
 }
 
 /**
- * Clear all extension storage
- * @param {Browser} browser - Puppeteer browser instance
- */
-async function clearExtensionStorage(browser) {
-    const extPage = await getExtensionPage(browser)
-
-    await extPage.evaluate(() => {
-        return new Promise((resolve) => {
-            chrome.storage.sync.clear(resolve)
-        })
-    })
-
-    await extPage.close()
-}
-
-/**
- * Send message to content script
- * @param {Page} page - Page with content script
- * @param {Object} message - Message to send
- */
-async function sendMessageToContentScript(page, message) {
-    await page.evaluate((msg) => {
-        window.postMessage(msg, '*')
-    }, message)
-
-    await page.waitForTimeout(100)
-}
-
-/**
  * Count blurred images on page
  * @param {Page} page - Page to check
  * @returns {Promise<number>} Number of blurred images
  */
 async function countBlurredImages(page) {
-    return await page.evaluate(() => {
-        function hasRealBlur(el) {
-            const filter = window.getComputedStyle(el).filter
-            const m = filter && filter.match(/blur\(([\d.]+)px\)/)
-            return m ? parseFloat(m[1]) > 0 : false
-        }
-
-        let count = 0
-        document.querySelectorAll('img, video, iframe').forEach(el => {
-            if (hasRealBlur(el)) count++
-        })
-        document.querySelectorAll('[style*="background-image"]').forEach(el => {
-            if (hasRealBlur(el)) count++
-        })
-        return count
-    })
+    const filters = await page.evaluate(() => [
+        ...document.querySelectorAll('img, video, iframe'),
+        ...document.querySelectorAll('[style*="background-image"]'),
+    ].map(element => window.getComputedStyle(element).filter))
+    return filters.filter(filter => blurPxOf(filter) > 0).length
 }
 
 /**
@@ -544,275 +466,68 @@ async function countBlurredImages(page) {
  * @returns {Promise<Array>} Array of image info objects
  */
 async function getAllVisualElements(page) {
-    return await page.evaluate(() => {
-        function hasRealBlur(el) {
-            const filter = window.getComputedStyle(el).filter
-            const m = filter && filter.match(/blur\(([\d.]+)px\)/)
-            return m ? parseFloat(m[1]) > 0 : false
-        }
-
+    const elements = await page.evaluate(() => {
         const elements = []
 
-        // Regular images
-        document.querySelectorAll('img').forEach((img, index) => {
-            elements.push({
-                type: 'img',
-                id: img.id || `img-${index}`,
-                isBlurred: hasRealBlur(img),
-                selector: img.id ? `#${img.id}` : null
+        function addElements(selector, type, idPrefix = type) {
+            document.querySelectorAll(selector).forEach((element, index) => {
+                elements.push({
+                    type,
+                    id: element.id || `${idPrefix}-${index}`,
+                    filter: window.getComputedStyle(element).filter,
+                    selector: element.id ? `#${element.id}` : null
+                })
             })
-        })
+        }
 
-        // Videos
-        document.querySelectorAll('video').forEach((video, index) => {
-            elements.push({
-                type: 'video',
-                id: video.id || `video-${index}`,
-                isBlurred: hasRealBlur(video),
-                selector: video.id ? `#${video.id}` : null
-            })
-        })
-
-        // Iframes
-        document.querySelectorAll('iframe').forEach((iframe, index) => {
-            elements.push({
-                type: 'iframe',
-                id: iframe.id || `iframe-${index}`,
-                isBlurred: hasRealBlur(iframe),
-                selector: iframe.id ? `#${iframe.id}` : null
-            })
-        })
-
-        // Background images
-        document.querySelectorAll('[style*="background-image"]').forEach((el, index) => {
-            elements.push({
-                type: 'background',
-                id: el.id || `bg-${index}`,
-                isBlurred: hasRealBlur(el),
-                selector: el.id ? `#${el.id}` : null
-            })
-        })
+        addElements('img', 'img')
+        addElements('video', 'video')
+        addElements('iframe', 'iframe')
+        addElements('[style*="background-image"]', 'background', 'bg')
 
         return elements
     })
+    return elements.map(({ filter, ...info }) => ({ ...info, isBlurred: blurPxOf(filter) > 0 }))
 }
 
 /**
- * Set whitelisted sites
- * @param {Browser} browser - Puppeteer browser instance
- * @param {Array<string>} sites - Array of site patterns
- */
-async function setWhitelistedSites(browser, sites) {
-    const extPage = await getExtensionPage(browser)
-
-    await extPage.evaluate((sites) => {
-        return new Promise((resolve) => {
-            chrome.storage.sync.set({ whitelistedSites: sites }, resolve)
-        })
-    }, sites)
-
-    await extPage.close()
-
-    // Wait for content script to react
-    await new Promise(resolve => setTimeout(resolve, 300))
-}
-
-/**
- * Set blacklisted sites
- * @param {Browser} browser - Puppeteer browser instance
- * @param {Array<string>} sites - Array of site patterns
- */
-async function setBlacklistedSites(browser, sites) {
-    const extPage = await getExtensionPage(browser)
-
-    await extPage.evaluate((sites) => {
-        return new Promise((resolve) => {
-            chrome.storage.sync.set({ blacklistedSites: sites }, resolve)
-        })
-    }, sites)
-
-    await extPage.close()
-
-    // Wait for content script to react
-    await new Promise(resolve => setTimeout(resolve, 300))
-}
-
-/**
- * Get whitelisted sites from storage
- * @param {Browser} browser - Puppeteer browser instance
- * @returns {Promise<Array<string>>} Array of whitelisted sites
- */
-async function getWhitelistedSites(browser) {
-    const extPage = await getExtensionPage(browser)
-
-    const sites = await extPage.evaluate(() => {
-        return new Promise((resolve) => {
-            chrome.storage.sync.get(['whitelistedSites'], (result) => {
-                resolve(result.whitelistedSites || [])
-            })
-        })
-    })
-
-    await extPage.close()
-    return sites
-}
-
-/**
- * Get blacklisted sites from storage
- * @param {Browser} browser - Puppeteer browser instance
- * @returns {Promise<Array<string>>} Array of blacklisted sites
- */
-async function getBlacklistedSites(browser) {
-    const extPage = await getExtensionPage(browser)
-
-    const sites = await extPage.evaluate(() => {
-        return new Promise((resolve) => {
-            chrome.storage.sync.get(['blacklistedSites'], (result) => {
-                resolve(result.blacklistedSites || [])
-            })
-        })
-    })
-
-    await extPage.close()
-    return sites
-}
-
-/**
- * Enable or disable hover preview
- * @param {Browser} browser - Puppeteer browser instance
- * @param {boolean} enabled - Whether hover preview is enabled
- */
-async function setPreviewEnabled(browser, enabled) {
-    const extPage = await getExtensionPage(browser)
-
-    await extPage.evaluate((enabled) => {
-        return new Promise((resolve) => {
-            chrome.storage.sync.set({ previewEnabled: enabled }, () => {
-                // Send previewSettingsChanged to all tabs so the content script
-                // updates --previewBlurAmount live (without a page reload).
-                chrome.tabs.query({}, (tabs) => {
-                    for (const tab of tabs) {
-                        chrome.tabs.sendMessage(
-                            tab.id,
-                            { type: 'previewSettingsChanged', previewEnabled: enabled },
-                            () => { void chrome.runtime.lastError }
-                        )
-                    }
-                    resolve()
-                })
-            })
-        })
-    }, enabled)
-
-    await extPage.close()
-    await new Promise(resolve => setTimeout(resolve, 300))
-}
-
-/**
- * Set hover preview blur strength
- * @param {Browser} browser - Puppeteer browser instance
- * @param {number} strength - Blur strength in px (0-20)
- */
-async function setPreviewBlurStrength(browser, strength) {
-    const extPage = await getExtensionPage(browser)
-
-    await extPage.evaluate((strength) => {
-        return new Promise((resolve) => {
-            chrome.storage.sync.set({ previewBlurStrength: strength }, () => {
-                // Send previewSettingsChanged to all tabs so the content script
-                // updates --previewBlurAmount live (without a page reload).
-                chrome.tabs.query({}, (tabs) => {
-                    for (const tab of tabs) {
-                        chrome.tabs.sendMessage(
-                            tab.id,
-                            { type: 'previewSettingsChanged', previewBlurStrength: strength },
-                            () => { void chrome.runtime.lastError }
-                        )
-                    }
-                    resolve()
-                })
-            })
-        })
-    }, strength)
-
-    await extPage.close()
-    await new Promise(resolve => setTimeout(resolve, 300))
-}
-
-/**
- * Get previewEnabled from storage (returns undefined if not set)
- * @param {Browser} browser - Puppeteer browser instance
- * @returns {Promise<boolean|undefined>}
- */
-async function getPreviewEnabled(browser) {
-    const extPage = await getExtensionPage(browser)
-
-    const value = await extPage.evaluate(() => {
-        return new Promise((resolve) => {
-            chrome.storage.sync.get(['previewEnabled'], (result) => {
-                resolve(result.previewEnabled)
-            })
-        })
-    })
-
-    await extPage.close()
-    return value
-}
-
-/**
- * Get previewBlurStrength from storage (returns undefined if not set)
- * @param {Browser} browser - Puppeteer browser instance
- * @returns {Promise<number|undefined>}
- */
-async function getPreviewBlurStrength(browser) {
-    const extPage = await getExtensionPage(browser)
-
-    const value = await extPage.evaluate(() => {
-        return new Promise((resolve) => {
-            chrome.storage.sync.get(['previewBlurStrength'], (result) => {
-                resolve(result.previewBlurStrength)
-            })
-        })
-    })
-
-    await extPage.close()
-    return value
-}
-
-/**
- * Wait until an element has the phobia-blur class (blur was detected by the extension).
- * Much faster than a fixed wait(3000) — resolves as soon as the class appears (~0.5–1 s).
+ * Wait until an element carries one of the extension's projection classes.
+ * Resolves as soon as the class appears instead of sleeping a fixed time.
  * @param {Page} page - Puppeteer page
  * @param {string} selector - CSS selector for the element
+ * @param {string} className - Class to wait for
  * @param {number} timeout - Max wait in ms (default 8000)
  */
-async function waitForPhobiaBlur(page, selector, timeout = 8000) {
+async function waitForPhobiaClass(page, selector, className, timeout = 8000) {
     await page.waitForFunction(
-        (sel) => {
+        (sel, name) => {
             const el = document.querySelector(sel)
-            return el != null && el.classList.contains('phobia-blur')
+            return el != null && el.classList.contains(name)
         },
         { timeout, polling: 100 },
-        selector
+        selector,
+        className
     )
 }
 
-/**
- * Wait until an element has the phobia-noblur class (no match found, unveil timer fired).
- * The extension's unveil timer is 2 s, so this resolves at ~2.1 s instead of a fixed 3 s.
- * @param {Page} page - Puppeteer page
- * @param {string} selector - CSS selector for the element
- * @param {number} timeout - Max wait in ms (default 8000)
- */
-async function waitForPhobiaNoblur(page, selector, timeout = 8000) {
-    await page.waitForFunction(
-        (sel) => {
-            const el = document.querySelector(sel)
-            return el != null && el.classList.contains('phobia-noblur')
-        },
-        { timeout, polling: 100 },
-        selector
-    )
+const waitForPhobiaBlur = (page, selector, timeout) => waitForPhobiaClass(page, selector, 'phobia-blur', timeout)
+const waitForPhobiaNoblur = (page, selector, timeout) => waitForPhobiaClass(page, selector, 'phobia-noblur', timeout)
+
+// Runs inside an extension context (popup page or service worker) and resolves
+// once every tab has been offered the message.
+function broadcastToTabs(msg) {
+    return new Promise((resolve) => {
+        chrome.tabs.query({}, (tabs) => {
+            let pending = tabs.length
+            if (pending === 0) { resolve(); return }
+            tabs.forEach(tab => {
+                chrome.tabs.sendMessage(tab.id, msg, () => {
+                    void chrome.runtime.lastError
+                    if (--pending === 0) resolve()
+                })
+            })
+        })
+    })
 }
 
 /**
@@ -821,106 +536,65 @@ async function waitForPhobiaNoblur(page, selector, timeout = 8000) {
  * @param {Object} message - Message object to send
  */
 async function sendMessageToAllContentScripts(browser, message) {
-    const extPage = await getExtensionPage(browser)
+    await withExtensionPage(browser, page => page.evaluate(broadcastToTabs, message))
+    await wait(300)
+}
 
-    await extPage.evaluate((msg) => {
-        return new Promise((resolve) => {
-            chrome.tabs.query({}, (tabs) => {
-                let pending = tabs.length
-                if (pending === 0) { resolve(); return }
-                tabs.forEach(tab => {
-                    chrome.tabs.sendMessage(tab.id, msg, () => {
-                        void chrome.runtime.lastError
-                        if (--pending === 0) resolve()
-                    })
-                })
-            })
-        })
-    }, message)
-
-    await extPage.close()
-    await new Promise(r => setTimeout(r, 300))
+/**
+ * Send a message to all content scripts via the service worker context, so no
+ * popup page is opened alongside the page under test.
+ * @param {Browser} browser - Puppeteer browser instance
+ * @param {Object} message - Message object to send
+ */
+async function sendMessageViaServiceWorker(browser, message) {
+    const swWorker = await getServiceWorkerHandle(browser)
+    await swWorker.evaluate(broadcastToTabs, message)
+    await wait(300)
 }
 
 /**
  * Query triggered words from the content script of a specific page.
- * Opens an extension page (with chrome.tabs access), finds the tab by URL,
- * sends a getTriggeredWords message, and returns the words array.
+ * Uses the service worker context so no popup page is opened alongside the
+ * page under test.
  * @param {Browser} browser - Puppeteer browser instance
  * @param {Page} page - The page whose content script to query
  * @returns {Promise<Array<{word: string, count: number}>>}
  */
 async function queryTriggeredWords(browser, page) {
     const pageUrl = page.url()
-    // Use the service worker context to send the message. This avoids opening popup.html
-    // (getExtensionPage), which runs popup.js and broadcasts targetWordsChanged to all
-    // content scripts — restarting analysis and causing a race condition where
-    // _triggerWords may not yet be set on the new ImageNode instances.
-    const swTarget = await getExtensionServiceWorker(browser)
-    const swWorker = await swTarget.worker()
+    const swWorker = await getServiceWorkerHandle(browser)
 
-    const words = await swWorker.evaluate((targetUrl) => {
-        return new Promise((resolve) => {
-            chrome.tabs.query({}, (tabs) => {
-                const tab = tabs.find(t => t.url === targetUrl)
-                if (!tab) { resolve([]); return }
-                chrome.tabs.sendMessage(tab.id, { type: 'getTriggeredWords' }, (response) => {
-                    void chrome.runtime.lastError
-                    resolve(response && response.words ? response.words : [])
-                })
+    return swWorker.evaluate((targetUrl) => new Promise((resolve) => {
+        chrome.tabs.query({}, (tabs) => {
+            const tab = tabs.find(t => t.url === targetUrl)
+            if (!tab) { resolve([]); return }
+            chrome.tabs.sendMessage(tab.id, { type: 'getTriggeredWords' }, (response) => {
+                void chrome.runtime.lastError
+                resolve(response && response.words ? response.words : [])
             })
         })
-    }, pageUrl)
-
-    return words
-}
-
-/**
- * Send a message to all content scripts via the service worker context.
- * Unlike sendMessageToAllContentScripts, this does NOT open popup.html, so it
- * avoids the popup.js side-effect of broadcasting targetWordsChanged to all tabs.
- * @param {Browser} browser - Puppeteer browser instance
- * @param {Object} message - Message object to send
- */
-async function sendMessageViaServiceWorker(browser, message) {
-    const swTarget = await getExtensionServiceWorker(browser)
-    const swWorker = await swTarget.worker()
-
-    await swWorker.evaluate((msg) => {
-        return new Promise((resolve) => {
-            chrome.tabs.query({}, (tabs) => {
-                let pending = tabs.length
-                if (pending === 0) { resolve(); return }
-                tabs.forEach(tab => {
-                    chrome.tabs.sendMessage(tab.id, msg, () => {
-                        void chrome.runtime.lastError
-                        if (--pending === 0) resolve()
-                    })
-                })
-            })
-        })
-    }, message)
-
-    await new Promise(r => setTimeout(r, 300))
+    }), pageUrl)
 }
 
 module.exports = {
+    wait,
     launchBrowserWithExtension,
     getExtensionServiceWorker,
     getExtensionId,
     getExtensionPage,
     openExtensionPopup,
+    setSyncStorage,
+    getSyncStorage,
     setPhobiaWords,
     getPhobiaWords,
     setExtensionEnabled,
     setBlurAmount,
     setBlurAlwaysOn,
+    blurPxOf,
     isElementBlurred,
-    waitForBlurState,
     getTestPageUrl,
     loadTestPage,
     clearExtensionStorage,
-    sendMessageToContentScript,
     countBlurredImages,
     getAllVisualElements,
     setWhitelistedSites,
@@ -934,6 +608,7 @@ module.exports = {
     sendMessageToAllContentScripts,
     sendMessageViaServiceWorker,
     queryTriggeredWords,
+    waitForPhobiaClass,
     waitForPhobiaBlur,
     waitForPhobiaNoblur
 }

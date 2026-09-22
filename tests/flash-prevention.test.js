@@ -81,6 +81,110 @@ describe('PhobiaBlocker - Flash Prevention', () => {
         assert.ok(initialBlur && afterWaitBlur, 'Image should remain blurred throughout execution')
     })
 
+    it('should cover words inserted during handoff without CSS-blurring them', async () => {
+        await setPhobiaWords(browser, ['spider'])
+
+        await page.evaluateOnNewDocument(() => {
+            window.__phobiaHandoffWordCoverState = {
+                inserted: false,
+                covered: false,
+                finished: false,
+                renderedFrames: 0,
+                uncoveredFrames: 0,
+                blurredFrames: 0
+            }
+
+            window.addEventListener('phobiablocker:word-cover-manager-ready', () => {
+                if (window.__phobiaHandoffWordCoverState.inserted) return
+
+                const p = document.createElement('p')
+                p.id = 'handoff-target-word'
+                p.textContent = 'A spider arrived during the cover handoff.'
+                ;(document.body || document.documentElement).appendChild(p)
+                window.__phobiaHandoffWordCoverState.inserted = true
+
+                const isCssBlurred = (element) => {
+                    if (!element) return false
+                    const style = window.getComputedStyle(element)
+                    const textShadow = style.textShadow || ''
+                    return textShadow.includes('blur') ||
+                        textShadow.includes('0px 0px 7px') ||
+                        (style.filter || '').includes('blur(')
+                }
+
+                const isRendered = (element) => {
+                    if (!element || ![...element.getClientRects()].some(rect => rect.width > 0 && rect.height > 0)) {
+                        return false
+                    }
+                    for (let current = element; current; current = current.parentElement) {
+                        const style = window.getComputedStyle(current)
+                        if (style.display === 'none' || style.visibility === 'hidden' ||
+                            style.visibility === 'collapse' || Number(style.opacity) === 0) return false
+                    }
+                    return true
+                }
+
+                const colorAlpha = (color) => {
+                    if (color === 'transparent') return 0
+                    if (/^rgb\(/.test(color)) return 1
+                    const rgba = /^rgba\([^,]+,[^,]+,[^,]+,\s*([\d.]+)\)$/.exec(color)
+                    return rgba ? Number(rgba[1]) : NaN
+                }
+
+                const isProtectedCover = (cover) => {
+                    if (!cover || !isRendered(cover) || cover.textContent.toLowerCase() !== 'spider') return false
+                    const style = window.getComputedStyle(cover)
+                    return colorAlpha(style.color) === 0 &&
+                        (!style.webkitTextFillColor || colorAlpha(style.webkitTextFillColor) === 0) &&
+                        colorAlpha(style.backgroundColor) === 1 && Number(style.opacity) === 1
+                }
+
+                let sampledFrames = 0
+                const checkFrame = () => {
+                    const state = window.__phobiaHandoffWordCoverState
+                    sampledFrames++
+                    const target = document.querySelector('#handoff-target-word')
+                    if (isRendered(target)) {
+                        const cover = target.querySelector('.phobia-word-cover')
+                        state.renderedFrames++
+                        let blurred = isCssBlurred(cover)
+                        for (let current = target; current; current = current.parentElement) {
+                            blurred = blurred || isCssBlurred(current)
+                        }
+                        if (blurred) state.blurredFrames++
+                        if (isProtectedCover(cover)) state.covered = true
+                        else state.uncoveredFrames++
+                    }
+
+                    if (state.covered || sampledFrames >= 60) {
+                        state.finished = true
+                        return
+                    }
+                    requestAnimationFrame(checkFrame)
+                }
+
+                requestAnimationFrame(checkFrame)
+            })
+        })
+
+        await loadTestPage(page, 'word-cover.html')
+        await page.waitForFunction(
+            () => window.__phobiaHandoffWordCoverState?.finished,
+            { timeout: 8000, polling: 100 }
+        )
+
+        const state = await page.evaluate(() => window.__phobiaHandoffWordCoverState)
+
+        assert.ok(state?.inserted && state.finished, 'handoff monitor should finish after inserting its target word')
+        assert.ok(Number.isSafeInteger(state.renderedFrames) && state.renderedFrames > 0,
+            'handoff monitor should observe the target in a rendered frame')
+        assert.ok(state.covered, 'handoff-inserted target word should have hidden text and an opaque cover')
+        assert.strictEqual(state.uncoveredFrames, 0,
+            'handoff-inserted target word should never appear uncovered in a rendered frame')
+        assert.strictEqual(state.blurredFrames, 0,
+            'handoff-inserted target word should not be CSS-blurred, including in its first covered frame')
+    })
+
     it('should have proper CSS infrastructure (manifest CSS, blur coverage)', async () => {
         await setPhobiaWords(browser, ['spider'])
 

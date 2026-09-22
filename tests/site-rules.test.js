@@ -13,11 +13,9 @@ const {
     getWhitelistedSites,
     getBlacklistedSites,
     getAllVisualElements,
-    openExtensionPopup
+    openExtensionPopup,
+    wait
 } = require('./test-utils')
-
-// Helper function to wait (replacement for deprecated page.waitForTimeout)
-const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms))
 
 describe('PhobiaBlocker - Site Rules (Whitelist/Blacklist)', () => {
     let browser

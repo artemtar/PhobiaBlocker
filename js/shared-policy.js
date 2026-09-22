@@ -41,10 +41,56 @@
         ANALYZE: 'ANALYZE',
     })
 
+    // Analysis verdict shapes shared by the content script, the service worker
+    // and the offscreen document. Anything unreadable or malformed blurs.
+    const FAIL_CLOSED_RESULT = Object.freeze({
+        shouldBlur: true,
+        matchedWords: [],
+        matchedInputWords: [],
+    })
+    const CLEAR_RESULT = Object.freeze({
+        shouldBlur: false,
+        matchedWords: [],
+        matchedInputWords: [],
+    })
+
+    // Messages exchanged between frames and the service worker to decide
+    // whether a parent may release its cross-origin iframes.
+    const FRAME_MESSAGES = Object.freeze({
+        aggregateRequest: 'PB_FRAME_AGGREGATE_REQUEST',
+        aggregateInvalidated: 'PB_FRAME_AGGREGATE_INVALIDATED',
+        statusRequest: 'PB_FRAME_STATUS_REQUEST',
+        statusChanged: 'PB_FRAME_STATUS_CHANGED',
+    })
+
+    // Root-level CSS custom properties both content scripts write. The legacy
+    // names stay for stylesheets and tests that predate the namespaced ones.
+    const CSS_VARS = Object.freeze({
+        blurNs: '--phobiablocker-blurValueAmount',
+        blurLegacy: '--blurValueAmount',
+        previewNs: '--phobiablocker-previewBlurAmount',
+        previewLegacy: '--previewBlurAmount',
+    })
+
+    // Attributes projected onto <html> that protection.css keys off.
+    const ROOT_ATTRS = Object.freeze({
+        frame: 'data-phobiablocker-frame',
+        backgroundReady: 'data-phobiablocker-background-ready',
+        backgroundScanning: 'data-phobiablocker-background-scanning',
+    })
+
+    // One word, for both indexing page text and covering trigger words:
+    // letters with internal hyphens.
+    const WORD_RE = /[-\p{L}]+/gu
+
+    function isStringArray(value) {
+        return Array.isArray(value) && value.every(item => typeof item === 'string')
+    }
+
     function isValidStoredValue(name, value) {
         if (name === STORAGE_KEYS.targetWords || name === STORAGE_KEYS.whitelist ||
             name === STORAGE_KEYS.blacklist) {
-            return Array.isArray(value) && value.every(item => typeof item === 'string')
+            return isStringArray(value)
         }
         if (name === STORAGE_KEYS.blurAmount || name === STORAGE_KEYS.previewStrength) {
             return typeof value === 'number' && Number.isFinite(value)
@@ -53,6 +99,53 @@
             return typeof value === typeof DEFAULTS[name]
         }
         return false
+    }
+
+    function computeBlurPixels(value) {
+        const sliderValue = typeof value === 'number' ? value : DEFAULTS.blurValueAmount
+        return Math.pow(sliderValue * 0.09, 1.8) * 2
+    }
+
+    // With previews off the preview strength falls back to the full blur, so
+    // hovering can never reveal more than the page-wide setting allows.
+    function previewBlurCssValue(settings) {
+        return settings.previewEnabled
+            ? `${settings.previewBlurStrength}px`
+            : `var(${CSS_VARS.blurNs}, var(${CSS_VARS.blurLegacy}, 40px))`
+    }
+
+    function isTopFrameContext() {
+        try { return window.top === window } catch (_) { return false }
+    }
+
+    function withTimeout(promise, timeoutMs, label) {
+        let timeoutId = null
+        return Promise.race([
+            promise,
+            new Promise((_, reject) => {
+                timeoutId = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs)
+            }),
+        ]).finally(() => {
+            if (timeoutId !== null) clearTimeout(timeoutId)
+        })
+    }
+
+    function normalizeMatchedWords(words) {
+        return [...new Set(words.map(word => word.trim()).filter(Boolean))]
+    }
+
+    // Returns null when the payload is not a well-formed verdict, so each
+    // side of the message boundary can decide how to fail.
+    function normalizeAnalysisResult(result) {
+        if (!result || typeof result.shouldBlur !== 'boolean' ||
+            !isStringArray(result.matchedWords) || !isStringArray(result.matchedInputWords)) {
+            return null
+        }
+        return {
+            shouldBlur: result.shouldBlur,
+            matchedWords: normalizeMatchedWords(result.matchedWords),
+            matchedInputWords: normalizeMatchedWords(result.matchedInputWords),
+        }
     }
 
     function validateTargetWord(rawWord) {
@@ -111,7 +204,10 @@
         const slashIndex = rule.indexOf('/')
         let host = (slashIndex === -1 ? rule : rule.slice(0, slashIndex)).toLowerCase()
         const rawPath = slashIndex === -1 ? '' : rule.slice(slashIndex)
-        const path = rawPath === '/' ? '' : rawPath
+        // Browser URLs ignore tabs/newlines. Escape whitespace exposed by
+        // removing trailing slashes so later trim() or URL parsing preserves it.
+        const path = rawPath.replace(/[\t\n\r]/g, '').replace(/\/+$/, '')
+            .replace(/\s+$/u, encodeURIComponent)
         if (host.startsWith('*.')) host = host.slice(2)
 
         const domainPattern = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i
@@ -127,13 +223,22 @@
         }
     }
 
+    function normalizePathEscapes(pathname) {
+        // Hex case does not change an encoded byte. Decoding would turn %2F
+        // into a directory separator and incorrectly broaden a rule.
+        return pathname.replace(/%[a-f0-9]{2}/gi, escape => escape.toUpperCase())
+    }
+
     function matchesSiteRule(currentUrl, rawRule) {
         const rule = parseSiteRule(rawRule)
         if (!rule.valid) return false
 
         let url
+        let rulePath
         try {
             url = new URL(currentUrl)
+            // Serialize raw Unicode and spaces exactly as a browser URL does.
+            rulePath = new URL(`https://${rule.normalized}`).pathname.replace(/\/+$/, '')
         } catch (_) {
             return false
         }
@@ -141,8 +246,10 @@
         const hostname = url.hostname.toLowerCase()
         const hostMatches = hostname === rule.host || hostname.endsWith(`.${rule.host}`)
         if (!hostMatches) return false
-        if (!rule.path) return true
-        return url.pathname === rule.path || url.pathname.startsWith(`${rule.path}/`)
+        if (!rulePath) return true
+        const pathname = normalizePathEscapes(url.pathname)
+        rulePath = normalizePathEscapes(rulePath)
+        return pathname === rulePath || pathname.startsWith(`${rulePath}/`)
     }
 
     function resolveProtectionMode(settings, currentUrl) {
@@ -159,7 +266,19 @@
         STORAGE_KEYS,
         DEFAULTS,
         PROTECTION_MODE,
+        FAIL_CLOSED_RESULT,
+        CLEAR_RESULT,
+        FRAME_MESSAGES,
+        CSS_VARS,
+        ROOT_ATTRS,
+        WORD_RE,
+        isStringArray,
         isValidStoredValue,
+        computeBlurPixels,
+        previewBlurCssValue,
+        isTopFrameContext,
+        withTimeout,
+        normalizeAnalysisResult,
         validateTargetWord,
         normalizeTargetWords,
         parseSiteRule,

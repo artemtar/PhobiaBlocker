@@ -8,7 +8,7 @@
  * - Hovering a blurred image shows reduced blur when preview is enabled
  * - Hovering shows full blur (no change) when preview is disabled
  * - Blur strength slider controls the hover blur amount
- * - Live settings update via previewSettingsChanged message
+ * - Live settings update via chrome.storage.onChanged
  */
 
 const { describe, it, before, beforeEach, after, afterEach } = require('node:test')
@@ -25,16 +25,11 @@ const {
     setPreviewBlurStrength,
     getPreviewEnabled,
     getPreviewBlurStrength,
-    sendMessageToAllContentScripts
+    sendMessageToAllContentScripts,
+    waitForPhobiaBlur,
+    blurPxOf: extractBlurPx,
+    wait
 } = require('./test-utils')
-
-const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms))
-
-// Extract the numeric px value from a CSS filter string like "blur(12.34px)"
-function extractBlurPx(filter) {
-    const match = filter.match(/blur\(([\d.]+)px\)/)
-    return match ? parseFloat(match[1]) : 0
-}
 
 // Bring the tab to the foreground, scroll the element into view, then hover.
 //
@@ -439,6 +434,58 @@ describe('PhobiaBlocker - Hover Preview', () => {
                 `Blur after hover (${blurAfter}px) should match original blur (${blurBefore}px)`
             )
         })
+
+        it('moving off media inside the same positioned card should restore full blur after blurAll', async () => {
+            await setExtensionEnabled(browser, true)
+            await setBlurAmount(browser, 60)
+            await setPreviewEnabled(browser, true)
+            await setPreviewBlurStrength(browser, 4)
+            await setPhobiaWords(browser, ['spider'])
+
+            await loadTestPage(page, 'hover-large-container.html')
+            await page.bringToFront()
+            await page.waitForSelector('#spider-image', { timeout: 5000 })
+            await wait(3000)
+
+            await sendMessageToAllContentScripts(browser, { type: 'blurAll' })
+            await wait(500)
+
+            const blurBefore = extractBlurPx(
+                await page.evaluate(() => window.getComputedStyle(document.querySelector('#spider-image')).filter)
+            )
+
+            await hoverElement(page, '#spider-image')
+            await wait(300)
+
+            const blurDuring = extractBlurPx(
+                await page.evaluate(() => window.getComputedStyle(document.querySelector('#spider-image')).filter)
+            )
+
+            const point = await page.$eval('#same-card-empty-zone', (el) => {
+                const rect = el.getBoundingClientRect()
+                return { x: rect.left + 20, y: rect.top + 20 }
+            })
+            await page.mouse.move(point.x, point.y)
+            await wait(400)
+
+            const result = await page.evaluate(() => {
+                const img = document.querySelector('#spider-image')
+                const filter = window.getComputedStyle(img).filter
+                const match = filter.match(/blur\(([\d.]+)px\)/)
+                return {
+                    blurAfter: match ? parseFloat(match[1]) : 0,
+                    hasPreviewClass: img.classList.contains('phobia-preview')
+                }
+            })
+
+            assert.ok(blurBefore > 0, `Image should be fully blurred before hover (got ${blurBefore}px)`)
+            assert.ok(blurDuring < blurBefore, `Hover preview (${blurDuring}px) should reduce blur from ${blurBefore}px`)
+            assert.ok(!result.hasPreviewClass, 'Preview class should be removed after pointer leaves the media bounds')
+            assert.ok(
+                Math.abs(result.blurAfter - blurBefore) < 1,
+                `Moving within the same card but outside media should restore full blur (${result.blurAfter}px vs ${blurBefore}px)`
+            )
+        })
     })
 
     describe('Live Settings Update (no page reload)', () => {
@@ -547,6 +594,62 @@ describe('PhobiaBlocker - Hover Preview', () => {
             assert.ok(
                 blurAfterEnable < fullBlur,
                 `After re-enabling preview, hover blur (${blurAfterEnable}px) should be less than full blur (${fullBlur}px)`
+            )
+        })
+
+        // Regression: blur() early-returns when the node is already blurred, so a
+        // blurValueAmount change used to reach the element only after a hover
+        // cycle rewrote the inline filter. The oracle is a fresh load at the new
+        // amount, which keeps the test independent of the slider-to-px formula.
+        it('changing blurValueAmount updates already-blurred media without a hover', async () => {
+            await setExtensionEnabled(browser, true)
+            await setPreviewEnabled(browser, true)
+            await setPreviewBlurStrength(browser, 4)
+            await setPhobiaWords(browser, ['spider'])
+
+            const readBlurPx = selector => page.evaluate(
+                sel => window.getComputedStyle(document.querySelector(sel)).filter,
+                selector
+            ).then(extractBlurPx)
+
+            // Reference: what a page loaded at the target amount renders.
+            await setBlurAmount(browser, 20)
+            await loadTestPage(page, 'simple-image.html')
+            await page.bringToFront()
+            await waitForPhobiaBlur(page, '#spider-image')
+            await waitForPhobiaBlur(page, '#bg-image-snake')
+            // Let the 0.2s filter transition from the stylesheet default settle.
+            await wait(500)
+            const expectedImg = await readBlurPx('#spider-image')
+            const expectedBg = await readBlurPx('#bg-image-snake')
+
+            // Load at a stronger amount, park the pointer away from all media,
+            // then change the amount live.
+            await setBlurAmount(browser, 60)
+            await loadTestPage(page, 'simple-image.html')
+            await page.bringToFront()
+            await page.mouse.move(5, 5)
+            await waitForPhobiaBlur(page, '#spider-image')
+            await waitForPhobiaBlur(page, '#bg-image-snake')
+            await wait(500)
+            const before = await readBlurPx('#spider-image')
+            assert.ok(
+                before > expectedImg,
+                `Precondition: slider 60 (${before}px) must blur more than slider 20 (${expectedImg}px)`
+            )
+
+            await setBlurAmount(browser, 20)
+            await wait(800)
+
+            const afterImg = await readBlurPx('#spider-image')
+            const afterBg = await readBlurPx('#bg-image-snake')
+            assert.ok(
+                Math.abs(afterImg - expectedImg) < 0.01,
+                `Image blur should follow the new amount without a hover: got ${afterImg}px, expected ${expectedImg}px`
+            )
+            assert.ok(
+                Math.abs(afterBg - expectedBg) < 0.01,
+                `Background blur should follow the new amount without a hover: got ${afterBg}px, expected ${expectedBg}px`
             )
         })
     })
@@ -869,6 +972,80 @@ describe('PhobiaBlocker - Hover Preview', () => {
             assert.ok(
                 Math.abs(spiderBlurDuring - spiderBlurBefore) < 1,
                 `Hovering safe card overlay should not affect spider image blur (before: ${spiderBlurBefore}px, during: ${spiderBlurDuring}px)`
+            )
+        })
+
+        it('hovering reel-style overlay should show preview blur on a background poster', async () => {
+            await setExtensionEnabled(browser, true)
+            await setBlurAmount(browser, 60)
+            await setPreviewEnabled(browser, true)
+            await setPreviewBlurStrength(browser, 5)
+            await setPhobiaWords(browser, ['spider'])
+
+            await loadTestPage(page, 'reel-background-overlay.html')
+            await page.waitForSelector('#reel-poster', { timeout: 5000 })
+            await wait(3000)
+
+            const blurBefore = extractBlurPx(
+                await page.evaluate(() => window.getComputedStyle(document.querySelector('#reel-poster')).filter)
+            )
+
+            await hoverElement(page, '#reel-overlay')
+            await wait(300)
+
+            const result = await page.evaluate(() => {
+                const poster = document.querySelector('#reel-poster')
+                const filter = window.getComputedStyle(poster).filter
+                const match = filter.match(/blur\(([\d.]+)px\)/)
+                return {
+                    blurDuring: match ? parseFloat(match[1]) : 0,
+                    hasPreviewClass: poster.classList.contains('phobia-preview')
+                }
+            })
+
+            assert.ok(blurBefore > 0, 'Background poster should be blurred before hover')
+            assert.ok(result.hasPreviewClass, 'Background poster should receive phobia-preview while hovering overlay')
+            assert.strictEqual(result.blurDuring, 5, `Background poster preview should stay blurred at 5px, got ${result.blurDuring}px`)
+            assert.ok(
+                result.blurDuring < blurBefore,
+                `Hovering reel overlay (${result.blurDuring}px) should reduce poster blur from ${blurBefore}px`
+            )
+        })
+
+        it('hovering nested Instagram-style video overlay control should show preview blur on the video', async () => {
+            await setExtensionEnabled(browser, true)
+            await setBlurAmount(browser, 60)
+            await setPreviewEnabled(browser, true)
+            await setPreviewBlurStrength(browser, 5)
+            await setPhobiaWords(browser, ['spider'])
+
+            await loadTestPage(page, 'instagram-video-overlay.html')
+            await page.waitForSelector('#instagram-video', { timeout: 5000 })
+            await wait(3000)
+
+            const blurBefore = extractBlurPx(
+                await page.evaluate(() => window.getComputedStyle(document.querySelector('#instagram-video')).filter)
+            )
+
+            await hoverElement(page, '#instagram-overlay-control')
+            await wait(300)
+
+            const result = await page.evaluate(() => {
+                const video = document.querySelector('#instagram-video')
+                const filter = window.getComputedStyle(video).filter
+                const match = filter.match(/blur\(([\d.]+)px\)/)
+                return {
+                    blurDuring: match ? parseFloat(match[1]) : 0,
+                    hasPreviewClass: video.classList.contains('phobia-preview')
+                }
+            })
+
+            assert.ok(blurBefore > 0, 'Video should be blurred before hover')
+            assert.ok(result.hasPreviewClass, 'Video should receive phobia-preview while hovering nested overlay control')
+            assert.strictEqual(result.blurDuring, 5, `Video preview should stay blurred at 5px, got ${result.blurDuring}px`)
+            assert.ok(
+                result.blurDuring < blurBefore,
+                `Hovering nested Instagram overlay (${result.blurDuring}px) should reduce video blur from ${blurBefore}px`
             )
         })
     })

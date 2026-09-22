@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Word Cover Test Page</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.5;
+            margin: 24px;
+        }
+
+        .dark-panel {
+            background: #111827;
+            color: #f9fafb;
+            padding: 16px;
+            margin-top: 24px;
+        }
+    </style>
+</head>
+<body>
+    <main>
+        <h1>Word Cover Test Page</h1>
+        <script>
+            window.__phobiaParserInsertedWordCoverState = {
+                observed: false,
+                coveredDuringMutation: false,
+                visibleDuringMutation: false
+            }
+
+            const parserInsertedObserver = new MutationObserver(() => {
+                const inserted = document.querySelector('#parser-inserted-text')
+                if (!inserted) return
+                const covered = Boolean(inserted.querySelector('.phobia-word-cover'))
+                window.__phobiaParserInsertedWordCoverState = {
+                    observed: true,
+                    coveredDuringMutation: covered,
+                    visibleDuringMutation: !covered && /\bspider\b/i.test(inserted.textContent || '')
+                }
+                parserInsertedObserver.disconnect()
+            })
+            parserInsertedObserver.observe(document.documentElement, {
+                childList: true,
+                subtree: true
+            })
+
+            const parserInsertedText = document.createElement('p')
+            parserInsertedText.id = 'parser-inserted-text'
+            parserInsertedText.textContent = 'A spider appeared while the page was still parsing.'
+            document.currentScript.after(parserInsertedText)
+        </script>
+        <p id="exact-text">A spider walked across the window.</p>
+        <p id="variant-text">Many spiders are hiding near the old books.</p>
+        <p id="custom-text">A butterfly crossed the garden path.</p>
+        <p id="repeat-text">The spider paused, and another spider moved.</p>
+        <div id="dynamic-host"></div>
+
+        <div class="dark-panel" id="dark-panel">
+            <p id="dark-text">A spider is visible on a dark panel.</p>
+        </div>
+
+        <form id="form-area">
+            <label for="word-input">Input</label>
+            <input id="word-input" value="spider">
+            <textarea id="word-textarea">spider</textarea>
+        </form>
+
+        <div id="editable-area" contenteditable="true">spider in editor text</div>
+    </main>
+</body>
+</html>

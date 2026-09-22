@@ -12,7 +12,8 @@ const {
     setBlurAmount,
     setBlurAlwaysOn,
     sendMessageToAllContentScripts,
-    sendMessageViaServiceWorker
+    sendMessageViaServiceWorker,
+    wait
 } = require('./test-utils')
 
 describe('PhobiaBlocker - Basic Functionality', () => {
@@ -108,8 +109,6 @@ describe('PhobiaBlocker - Basic Functionality', () => {
     })
 
     describe('Context Menu Unblur', () => {
-        const wait = (ms) => new Promise(r => setTimeout(r, ms))
-
         it('should unblur an image that has the .blur class (normal case)', async () => {
             await setExtensionEnabled(browser, true)
             await setBlurAmount(browser, 3)

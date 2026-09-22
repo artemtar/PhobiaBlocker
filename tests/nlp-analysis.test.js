@@ -89,6 +89,9 @@ describe('PhobiaBlocker - NLP Text Analysis', () => {
 
         isBlurred = await isElementBlurred(page, '#title-test')
         assert.ok(isBlurred, 'Should detect phobia words in page title')
+
+        const isSiblingScopeBlurred = await isElementBlurred(page, '#title-test-secondary')
+        assert.ok(isSiblingScopeBlurred, 'Page title matches should apply across sibling scopes')
     })
 
     it('should not trigger on partial word matches', async () => {

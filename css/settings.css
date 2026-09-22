@@ -190,38 +190,6 @@ body {
     max-width: 420px;
 }
 
-.add-site-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    width: 34px;
-    height: 34px;
-    padding: 0;
-    border: 1px solid var(--pb-border-strong);
-    border-radius: var(--pb-radius);
-    background: var(--pb-surface);
-    color: var(--pb-text);
-    cursor: pointer;
-    transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
-}
-
-.add-site-btn:hover:not(:disabled) {
-    background: var(--pb-accent);
-    border-color: var(--pb-accent);
-    color: var(--pb-on-accent);
-}
-
-.add-site-btn:focus-visible {
-    outline: none;
-    box-shadow: var(--pb-focus);
-}
-
-.add-site-btn:disabled {
-    opacity: 0.5;
-    cursor: default;
-}
-
 .info-box {
     margin-top: 11px;
     padding: 11px 13px;

@@ -402,6 +402,43 @@ h1, h2, h3 {
     cursor: default;
 }
 
+/* Square add button beside the trigger-word and site-rule inputs */
+.add-word-btn,
+.add-site-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border: 1px solid var(--pb-border-strong);
+    border-radius: var(--pb-radius);
+    background: var(--pb-surface);
+    color: var(--pb-text);
+    cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.add-word-btn:hover:not(:disabled),
+.add-site-btn:hover:not(:disabled) {
+    background: var(--pb-accent);
+    border-color: var(--pb-accent);
+    color: var(--pb-on-accent);
+}
+
+.add-word-btn:focus-visible,
+.add-site-btn:focus-visible {
+    outline: none;
+    box-shadow: var(--pb-focus);
+}
+
+.add-word-btn:disabled,
+.add-site-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
 /* Inline error text */
 .word-error,
 .settings-error {

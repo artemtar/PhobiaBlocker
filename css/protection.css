@@ -1,6 +1,5 @@
 :root {
     --blurValueAmount: 40px;
-    --filterStrength: blur(var(--phobiablocker-blurValueAmount, var(--blurValueAmount, 40px)));
 }
 
 :root :is(img, video, iframe) {
@@ -46,6 +45,7 @@
 
 .phobia-word-cover {
     color: transparent !important;
+    -webkit-text-fill-color: transparent !important;
     background-color: var(--phobiablocker-word-cover-color, currentColor) !important;
     background-image: repeating-linear-gradient(
         135deg,

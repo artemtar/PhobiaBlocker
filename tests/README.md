@@ -1,5 +1,9 @@
 # PhobiaBlocker Extension Tests
 
+Run `npm run test:unit` from the repository root for the focused regression checks in `tests/unit/`. They execute the real extension scripts with controlled browser API boundaries, including settings races, media protection, matching, navigation messages, popup persistence, and assertion contracts. They do not verify browser layout or painting; validate those with the loaded extension on real sites.
+
+The browser suites described below are historical and quarantined. Root `npm test` intentionally fails to prevent treating them as a release gate; some older cases still assume behavior and debug fields no longer present in the extension.
+
 This directory contains end-to-end (E2E) tests for the PhobiaBlocker Chrome extension. These tests run separately from the extension itself and use Puppeteer to automate Chrome with the extension loaded.
 
 ## Prerequisites

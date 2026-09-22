@@ -16,6 +16,13 @@
         return Array.isArray(value) ? [...value] : value
     }
 
+    function cloneDefaultValue(name) {
+        if (!Object.prototype.hasOwnProperty.call(policy.DEFAULTS, name)) {
+            throw new Error(`No default exists for storage key: ${name}`)
+        }
+        return cloneValue(policy.DEFAULTS[name])
+    }
+
     function normalizeLegacyStoredValue(name, value) {
         const isLegacyNumericKey = name === policy.STORAGE_KEYS.blurAmount ||
             name === policy.STORAGE_KEYS.previewStrength
@@ -46,10 +53,7 @@
         for (const name of names) {
             const stored = normalizeLegacyStoredValue(name, values[name])
             if (stored === undefined) {
-                if (!Object.prototype.hasOwnProperty.call(policy.DEFAULTS, name)) {
-                    throw new Error(`No default exists for storage key: ${name}`)
-                }
-                result[name] = cloneValue(policy.DEFAULTS[name])
+                result[name] = cloneDefaultValue(name)
                 continue
             }
 
@@ -104,10 +108,7 @@
 
         for (const name of names) {
             if (values[name] !== undefined) continue
-            if (!Object.prototype.hasOwnProperty.call(policy.DEFAULTS, name)) {
-                throw new Error(`No default exists for storage key: ${name}`)
-            }
-            missing[name] = cloneValue(policy.DEFAULTS[name])
+            missing[name] = cloneDefaultValue(name)
         }
 
         if (Object.keys(missing).length === 0) return {}

@@ -3,20 +3,15 @@
 
     const Policy = globalThis.PhobiaBlockerPolicy
     const Storage = globalThis.PhobiaBlockerStorage
-    if (!Policy || !Storage) {
-        console.error('PhobiaBlocker: shared policy or storage module is unavailable; keeping protection active')
+    const PageTextIndex = globalThis.PhobiaBlockerPageTextIndex
+    if (!Policy || !Storage || !PageTextIndex) {
+        console.error('PhobiaBlocker: shared modules are unavailable; keeping protection active')
         return
     }
 
-    const WORD_RE = /[-\p{L}]+/gu
-    const PB_CSS_VARS = Object.freeze({
-        blurNs: '--phobiablocker-blurValueAmount',
-        blurLegacy: '--blurValueAmount',
-        previewNs: '--phobiablocker-previewBlurAmount',
-        previewLegacy: '--previewBlurAmount',
-    })
+    const { CSS_VARS, ROOT_ATTRS, PROTECTION_MODE } = Policy
     const state = {
-        mode: Policy.PROTECTION_MODE.ALWAYS_BLUR,
+        mode: PROTECTION_MODE.ALWAYS_BLUR,
         targetWords: new Set(),
         wordCoverEnabled: false,
     }
@@ -25,6 +20,12 @@
     let projectionObserver = null
     let handedOff = false
     const earlyCovers = new Set()
+
+    // Both content scripts need the same settings at load. Publish this read so
+    // the controller can await it instead of paying a second storage round-trip
+    // in every frame.
+    const initialSettingsRead = Storage.getWithDefaults(Object.keys(Policy.DEFAULTS))
+    globalThis.PhobiaBlockerInitialSettingsRead = initialSettingsRead
 
     function getRoot() {
         return document.documentElement || document.querySelector('html')
@@ -39,37 +40,25 @@
         } catch (_) { /* Keep stylesheet defaults. */ }
     }
 
-    function computeBlurPixels(value) {
-        const sliderValue = typeof value === 'number' ? value : Policy.DEFAULTS.blurValueAmount
-        return Math.pow(sliderValue * 0.09, 1.8) * 2
-    }
-
     function applyVisualSettings(settings) {
-        const blurValue = `${computeBlurPixels(settings.blurValueAmount)}px`
-        const previewValue = settings.previewEnabled
-            ? `${settings.previewBlurStrength}px`
-            : `var(${PB_CSS_VARS.blurNs}, var(${PB_CSS_VARS.blurLegacy}, 40px))`
-        setRootCssVar(PB_CSS_VARS.blurNs, blurValue)
-        setRootCssVar(PB_CSS_VARS.blurLegacy, blurValue)
-        setRootCssVar(PB_CSS_VARS.previewNs, previewValue)
-        setRootCssVar(PB_CSS_VARS.previewLegacy, previewValue)
+        const blurValue = `${Policy.computeBlurPixels(settings.blurValueAmount)}px`
+        const previewValue = Policy.previewBlurCssValue(settings)
+        setRootCssVar(CSS_VARS.blurNs, blurValue)
+        setRootCssVar(CSS_VARS.blurLegacy, blurValue)
+        setRootCssVar(CSS_VARS.previewNs, previewValue)
+        setRootCssVar(CSS_VARS.previewLegacy, previewValue)
     }
 
     function ensureFrameMarker() {
         const root = getRoot()
         if (!root) return
-        let isTop = false
-        try { isTop = window.top === window } catch (_) { /* Treat inaccessible parents as subframes. */ }
-        root.setAttribute('data-phobiablocker-frame', isTop ? 'top' : 'sub')
+        root.setAttribute(ROOT_ATTRS.frame, Policy.isTopFrameContext() ? 'top' : 'sub')
     }
 
     function isExcludedTextNode(node) {
         const parent = node && node.parentElement
         if (!parent) return true
-        if (parent.closest && parent.closest([
-            'script', 'style', 'noscript', 'input', 'textarea', 'select', 'option',
-            'form', '[contenteditable="true"]', '[hidden]', '[aria-hidden="true"]',
-        ].join(', '))) return true
+        if (parent.closest && parent.closest(PageTextIndex.EXCLUDED_SELECTOR)) return true
         let current = parent
         while (current) {
             if (earlyCovers.has(current)) return true
@@ -78,56 +67,17 @@
         return parent.isContentEditable
     }
 
-    function coverColorFor(parent) {
-        try {
-            const color = getComputedStyle(parent).color
-            if (color && color !== 'rgba(0, 0, 0, 0)' && color !== 'transparent') return color
-        } catch (_) { /* Use the CSS currentColor fallback. */ }
-        return 'currentColor'
-    }
-
-    function createCover(word, parent) {
-        const cover = document.createElement('span')
-        cover.className = 'phobia-word-cover'
-        cover.setAttribute('data-phobia-word-cover', '1')
-        cover.setAttribute('data-phobiablocker-early-word-cover', '1')
-        cover.setAttribute('title', 'Covered by PhobiaBlocker')
-        cover.setAttribute('aria-label', 'Covered by PhobiaBlocker')
-        cover.style.setProperty('--phobiablocker-word-cover-color', coverColorFor(parent))
-        cover.textContent = word
-        earlyCovers.add(cover)
-        return cover
-    }
-
     function canCoverWords() {
-        return !handedOff && state.mode !== Policy.PROTECTION_MODE.DISABLED &&
+        return !handedOff && state.mode !== PROTECTION_MODE.DISABLED &&
             state.wordCoverEnabled && state.targetWords.size > 0
     }
 
     function coverTextNode(textNode) {
-        if (!canCoverWords() || isExcludedTextNode(textNode)) return
-        const text = textNode.nodeValue || ''
-        const fragment = document.createDocumentFragment()
-        let lastIndex = 0
-        let changed = false
-        let match
-
-        WORD_RE.lastIndex = 0
-        while ((match = WORD_RE.exec(text)) !== null) {
-            const normalized = match[0].normalize('NFKC').toLowerCase()
-            if (!state.targetWords.has(normalized)) continue
-            changed = true
-            if (match.index > lastIndex) {
-                fragment.appendChild(document.createTextNode(text.slice(lastIndex, match.index)))
-            }
-            fragment.appendChild(createCover(match[0], textNode.parentElement))
-            lastIndex = match.index + match[0].length
-        }
-        WORD_RE.lastIndex = 0
-
-        if (!changed || !textNode.parentNode) return
-        if (lastIndex < text.length) fragment.appendChild(document.createTextNode(text.slice(lastIndex)))
-        textNode.parentNode.replaceChild(fragment, textNode)
+        if (!canCoverWords() || isExcludedTextNode(textNode) || !textNode.parentNode) return
+        const split = PageTextIndex.splitTextNodeByWords(textNode, word => state.targetWords.has(word))
+        if (!split) return
+        split.covers.forEach(cover => earlyCovers.add(cover))
+        textNode.parentNode.replaceChild(split.fragment, textNode)
     }
 
     function coverSubtree(node) {
@@ -137,27 +87,17 @@
             return
         }
         if (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.DOCUMENT_NODE) return
-
-        const textNodes = []
-        try {
-            const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT)
-            let current = walker.nextNode()
-            while (current) {
-                textNodes.push(current)
-                current = walker.nextNode()
-            }
-        } catch (_) {
-            return
-        }
-        textNodes.forEach(coverTextNode)
+        PageTextIndex.collectTextNodes(node).forEach(coverTextNode)
     }
 
     function unwrapEarlyCovers() {
         Array.from(earlyCovers).forEach((cover) => {
             earlyCovers.delete(cover)
-            if (!cover.parentNode) return
             const parent = cover.parentNode
-            parent.replaceChild(document.createTextNode(cover.textContent || ''), cover)
+            if (!parent) return
+            // Same unwrap as the controller's covers, so page-added markup
+            // inside a cover survives the hand-off too.
+            PageTextIndex.unwrapWordCover(cover)
             try { parent.normalize() } catch (_) { /* Detached parents need no normalization. */ }
         })
     }
@@ -205,23 +145,23 @@
     function syncRootProjection() {
         const root = getRoot()
         if (!root) return
-        const disabled = state.mode === Policy.PROTECTION_MODE.DISABLED
+        const disabled = state.mode === PROTECTION_MODE.DISABLED
         root.classList.toggle('phobia-disabled', disabled)
 
         if (disabled) {
-            if (root.hasAttribute('data-phobiablocker-background-scanning')) {
-                root.removeAttribute('data-phobiablocker-background-scanning')
+            if (root.hasAttribute(ROOT_ATTRS.backgroundScanning)) {
+                root.removeAttribute(ROOT_ATTRS.backgroundScanning)
             }
-            if (root.getAttribute('data-phobiablocker-background-ready') !== '1') {
-                root.setAttribute('data-phobiablocker-background-ready', '1')
+            if (root.getAttribute(ROOT_ATTRS.backgroundReady) !== '1') {
+                root.setAttribute(ROOT_ATTRS.backgroundReady, '1')
             }
             return
         }
-        if (root.hasAttribute('data-phobiablocker-background-ready')) {
-            root.removeAttribute('data-phobiablocker-background-ready')
+        if (root.hasAttribute(ROOT_ATTRS.backgroundReady)) {
+            root.removeAttribute(ROOT_ATTRS.backgroundReady)
         }
-        if (root.hasAttribute('data-phobiablocker-background-scanning')) {
-            root.removeAttribute('data-phobiablocker-background-scanning')
+        if (root.hasAttribute(ROOT_ATTRS.backgroundScanning)) {
+            root.removeAttribute(ROOT_ATTRS.backgroundScanning)
         }
     }
 
@@ -235,8 +175,8 @@
             attributes: true,
             attributeFilter: [
                 'class', 'style',
-                'data-phobiablocker-background-ready',
-                'data-phobiablocker-background-scanning',
+                ROOT_ATTRS.backgroundReady,
+                ROOT_ATTRS.backgroundScanning,
             ],
         })
     }
@@ -247,7 +187,7 @@
         state.mode = mode
         syncRootProjection()
 
-        if (mode === Policy.PROTECTION_MODE.DISABLED) {
+        if (mode === PROTECTION_MODE.DISABLED) {
             stopCovering(true)
             return
         }
@@ -264,7 +204,7 @@
         ensureFrameMarker()
 
         try {
-            const settings = await Storage.getWithDefaults(Object.keys(Policy.DEFAULTS))
+            const settings = await initialSettingsRead
             if (handedOff) return
             applyVisualSettings(settings)
             state.targetWords = new Set(Policy.normalizeTargetWords(settings.targetWords).valid)
@@ -275,7 +215,7 @@
             console.error('PhobiaBlocker: initial settings read failed; keeping media blurred', error)
             state.targetWords = new Set()
             state.wordCoverEnabled = false
-            applyMode(Policy.PROTECTION_MODE.ALWAYS_BLUR)
+            applyMode(PROTECTION_MODE.ALWAYS_BLUR)
         }
     }
 

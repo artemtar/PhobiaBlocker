@@ -105,14 +105,15 @@
                     <div class="settings-group">
                         <div class="setting-item">
                             <div class="setting-left">
-                                <label for="cross-origin-iframe-switch" class="setting-label">Keep embedded content blurred</label>
+                                <label for="cross-origin-iframe-switch" class="setting-label">Keep unchecked embedded content blurred</label>
                                 <p class="setting-description">
-                                    Videos, maps, posts and ads are often embedded from another site, and PhobiaBlocker
-                                    can't reliably see inside them.
+                                    PhobiaBlocker checks ordinary web embeds in their own frames. An embed stays blurred
+                                    while it is loading or if any frame inside it can't be checked.
                                 </p>
                                 <p class="setting-description">
-                                    On, embeds stay blurred until you reveal them. Off, they appear once the rest of the
-                                    page looks safe — but they could still hold something you asked to hide.
+                                    On, embeds are shown only when every frame was analyzed as clear or explicitly allowed
+                                    by your site rules. Off, embeds appear once the parent page looks safe, even if a child
+                                    frame is unavailable.
                                 </p>
                             </div>
                             <div class="setting-right">
@@ -273,6 +274,7 @@
 
     <script src="js/shared-policy.js"></script>
     <script src="js/storage.js"></script>
+    <script src="js/settings-ui.js"></script>
     <script src="js/settings.js"></script>
 </body>
 </html>

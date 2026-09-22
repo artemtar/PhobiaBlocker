@@ -1,8 +1,9 @@
 const popupPolicy = globalThis.PhobiaBlockerPolicy
 const popupStorage = globalThis.PhobiaBlockerStorage
+const popupUi = globalThis.PhobiaBlockerSettingsUi
 
-if (!popupPolicy || !popupStorage) {
-    throw new Error('Shared policy and storage scripts must load before popup.js')
+if (!popupPolicy || !popupStorage || !popupUi) {
+    throw new Error('Shared policy, storage and settings-ui scripts must load before popup.js')
 }
 
 const POPUP_KEYS = popupPolicy.STORAGE_KEYS
@@ -17,6 +18,10 @@ let popupSettings = {}
 let targetWords = []
 let tooltipElement = null
 let targetWordsWritePending = false
+let targetWordsRefreshRequired = false
+let popupSettingsLoaded = false
+let popupStatusRevision = 0
+const popupReader = popupUi.createRevisionedReader(popupStorage)
 
 function queryTabs(query) {
     return new Promise(resolve => chrome.tabs.query(query, resolve))
@@ -39,17 +44,20 @@ function showWordError(message) {
     errorElement.hidden = !message
 }
 
-function updateTriggerCountBadge() {
-    const badge = document.getElementById('trigger-count-badge')
-    if (targetWords.length === 0) {
+function updateCountBadge(badgeId, count) {
+    const badge = document.getElementById(badgeId)
+    if (!count) {
         badge.style.display = 'none'
         return
     }
-    badge.textContent = `(${targetWords.length})`
+    badge.textContent = `(${count})`
     badge.style.display = ''
 }
 
 function renderTags() {
+    const disabled = !popupSettingsLoaded || targetWordsWritePending || targetWordsRefreshRequired
+    document.getElementById('addTagBtn').disabled = disabled
+    document.getElementById('word-input').disabled = disabled
     const container = document.getElementById('tags-container')
     container.innerHTML = ''
 
@@ -60,22 +68,20 @@ function renderTags() {
         tag.title = validation.valid ? '' : `Invalid trigger: ${validation.reason}`
         tag.appendChild(document.createTextNode(String(word)))
 
-        const removeButton = document.createElement('button')
-        removeButton.className = 'tag-remove'
-        removeButton.disabled = targetWordsWritePending
-        removeButton.innerHTML = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M9 3L3 9M3 3L9 9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>'
-        removeButton.title = `Remove ${word}`
-        removeButton.addEventListener('click', () => void removeTag(index))
-
-        tag.appendChild(removeButton)
+        tag.appendChild(popupUi.createRemoveButton({
+            className: 'tag-remove',
+            label: word,
+            disabled,
+            onClick: () => void removeTag(index),
+        }))
         container.appendChild(tag)
     })
 
-    updateTriggerCountBadge()
+    updateCountBadge('trigger-count-badge', targetWords.length)
 }
 
 async function addTag(rawWord) {
-    if (targetWordsWritePending) return
+    if (!popupSettingsLoaded || targetWordsWritePending || targetWordsRefreshRequired) return
     showWordError('')
     const validation = popupPolicy.validateTargetWord(rawWord)
     if (!validation.valid) {
@@ -97,11 +103,8 @@ async function addTag(rawWord) {
     }
 
     const candidate = [...targetWords, validation.normalized]
-    const button = document.getElementById('addTagBtn')
     const input = document.getElementById('word-input')
     targetWordsWritePending = true
-    button.disabled = true
-    input.disabled = true
     renderTags()
 
     try {
@@ -115,14 +118,12 @@ async function addTag(rawWord) {
         console.error('PhobiaBlocker: failed to save target words', error)
     } finally {
         targetWordsWritePending = false
-        button.disabled = false
-        input.disabled = false
         renderTags()
     }
 }
 
 async function removeTag(index) {
-    if (targetWordsWritePending) return
+    if (!popupSettingsLoaded || targetWordsWritePending || targetWordsRefreshRequired) return
     showWordError('')
     const candidate = targetWords.filter((word, wordIndex) => wordIndex !== index)
     targetWordsWritePending = true
@@ -141,26 +142,9 @@ async function removeTag(index) {
     }
 }
 
-function updateDetectedCountBadge(count) {
-    const badge = document.getElementById('detected-count-badge')
-    if (!count) {
-        badge.style.display = 'none'
-        return
-    }
-    badge.textContent = `(${count})`
-    badge.style.display = ''
-}
-
 function updateBlurValueDisplay(value) {
-    const display = document.getElementById('blurRangeValue')
-    display.textContent = `${value}%`
-
-    // The stylesheet owns the track colours; only the fill position comes from
-    // here, so the slider reads correctly in both light and dark mode.
-    const slider = document.getElementById('blurRange')
-    if (!slider) return
-    const max = parseInt(slider.max, 10) || 100
-    slider.style.setProperty('--pb-progress', `${(Number(value) / max) * 100}%`)
+    document.getElementById('blurRangeValue').textContent = `${value}%`
+    popupUi.setSliderProgress(document.getElementById('blurRange'), value)
 }
 
 function showButtonSuccess(button) {
@@ -181,7 +165,11 @@ function setStatus(className, text) {
 }
 
 async function updateSiteStatus() {
+    const revision = ++popupStatusRevision
+    const settingsRevision = popupReader.revision
+    const isCurrent = () => revision === popupStatusRevision && settingsRevision === popupReader.revision
     const tabs = await queryTabs({ active: true, currentWindow: true })
+    if (!isCurrent()) return
     const url = tabs?.[0]?.url
     if (!url || /^(chrome|chrome-extension|about):/.test(url)) {
         setStatus('status-unsupported', 'Unsupported page')
@@ -192,12 +180,13 @@ async function updateSiteStatus() {
     try {
         settings = await popupStorage.getWithDefaults(Object.keys(popupPolicy.DEFAULTS))
     } catch (error) {
+        if (!isCurrent()) return
         setStatus('status-blacklisted', 'Settings unavailable — protection stays blurred')
         console.error('PhobiaBlocker: popup status read failed', error)
         return
     }
 
-    popupSettings = { ...popupSettings, ...settings }
+    if (!isCurrent()) return
     const isBlacklisted = settings.blacklistedSites.some(rule => popupPolicy.matchesSiteRule(url, rule))
     const isWhitelisted = settings.whitelistedSites.some(rule => popupPolicy.matchesSiteRule(url, rule))
     const mode = popupPolicy.resolveProtectionMode(settings, url)
@@ -224,20 +213,11 @@ function initIcons() {
     document.getElementById('btn-supported-words').innerHTML = ARROW_RIGHT_ICON
 }
 
-function toggleDetectedWords(collapsed) {
-    const button = document.getElementById('btn-detected-words')
-    const area = document.getElementById('detected-words-area')
+function toggleWordPanel(panel, collapsed) {
+    const button = document.getElementById(`btn-${panel}-words`)
+    const area = document.getElementById(`${panel}-words-area`)
     button.innerHTML = collapsed ? ARROW_RIGHT_ICON : ARROW_DOWN_ICON
     area.classList.toggle('show', !collapsed)
-    area.classList.add('collapse')
-}
-
-function toggleSupportedWords(collapsed) {
-    const button = document.getElementById('btn-supported-words')
-    const area = document.getElementById('supported-words-area')
-    button.innerHTML = collapsed ? ARROW_RIGHT_ICON : ARROW_DOWN_ICON
-    area.classList.toggle('show', !collapsed)
-    area.classList.add('collapse')
 }
 
 function createTooltip() {
@@ -340,7 +320,7 @@ function setupEventListeners() {
     document.getElementById('btn-detected-words').addEventListener('click', () => {
         const area = document.getElementById('detected-words-area')
         const collapsed = area.classList.contains('show')
-        toggleDetectedWords(collapsed)
+        toggleWordPanel('detected', collapsed)
         void popupStorage.set({ detectedWordsCollapsed: collapsed }).catch(error => {
             console.error('PhobiaBlocker: failed to save detected words panel state', error)
         })
@@ -349,7 +329,7 @@ function setupEventListeners() {
     document.getElementById('btn-supported-words').addEventListener('click', () => {
         const area = document.getElementById('supported-words-area')
         const collapsed = area.classList.contains('show')
-        toggleSupportedWords(collapsed)
+        toggleWordPanel('supported', collapsed)
         void popupStorage.set({ supportedWordsCollapsed: collapsed }).catch(error => {
             console.error('PhobiaBlocker: failed to save trigger words panel state', error)
         })
@@ -383,11 +363,11 @@ async function queryActiveTabAnalysis() {
         empty.className = 'detected-words-empty'
         empty.textContent = 'Nothing found on this page'
         list.appendChild(empty)
-        updateDetectedCountBadge(0)
+        updateCountBadge('detected-count-badge', 0)
         return
     }
 
-    updateDetectedCountBadge(response.words.length)
+    updateCountBadge('detected-count-badge', response.words.length)
     response.words.forEach(({ word }) => {
         const row = document.createElement('div')
         row.className = 'detected-word-row'
@@ -400,13 +380,14 @@ async function queryActiveTabAnalysis() {
 }
 
 async function initializePopup() {
+    renderTags()
     initIcons()
     createTooltip()
     setupTooltip()
     setupEventListeners()
 
     try {
-        popupSettings = await popupStorage.getWithDefaults([
+        popupSettings = await popupReader.loadAll([
             POPUP_KEYS.targetWords,
             POPUP_KEYS.enabled,
             POPUP_KEYS.alwaysBlur,
@@ -418,6 +399,7 @@ async function initializePopup() {
             POPUP_KEYS.blacklist,
         ])
         targetWords = [...popupSettings.targetWords]
+        popupSettingsLoaded = true
         renderTags()
 
         document.getElementById('enabled-switch').checked = popupSettings.phobiaBlockerEnabled
@@ -425,8 +407,8 @@ async function initializePopup() {
         document.getElementById('wordCoverEnabled-switch').checked = popupSettings.wordCoverEnabled
         document.getElementById('blurRange').value = popupSettings.blurValueAmount
         updateBlurValueDisplay(popupSettings.blurValueAmount)
-        toggleDetectedWords(popupSettings.detectedWordsCollapsed)
-        toggleSupportedWords(popupSettings.supportedWordsCollapsed)
+        toggleWordPanel('detected', popupSettings.detectedWordsCollapsed)
+        toggleWordPanel('supported', popupSettings.supportedWordsCollapsed)
 
         await Promise.all([updateSiteStatus(), queryActiveTabAnalysis()])
     } catch (error) {
@@ -438,20 +420,33 @@ async function initializePopup() {
 
 chrome.storage.onChanged.addListener((changes, namespace) => {
     if (namespace !== 'sync') return
-    const relevantKeys = [
-        'targetWords',
-        'phobiaBlockerEnabled',
-        'blurIsAlwaysOn',
-        'wordCoverEnabled',
-    ].filter(key => changes[key])
-    if (relevantKeys.length === 0) {
-        if (changes.whitelistedSites || changes.blacklistedSites) void updateSiteStatus()
+    if (!popupSettingsLoaded) {
+        // A partial refresh cannot initialize the popup. Re-read the complete
+        // settings if a storage change overtakes the pending initial read.
+        popupReader.invalidate()
         return
     }
+    const relevantKeys = [
+        POPUP_KEYS.targetWords,
+        POPUP_KEYS.enabled,
+        POPUP_KEYS.alwaysBlur,
+        POPUP_KEYS.wordCover,
+    ].filter(key => changes[key])
+    if (relevantKeys.length === 0) {
+        if (changes[POPUP_KEYS.whitelist] || changes[POPUP_KEYS.blacklist]) void updateSiteStatus()
+        return
+    }
+    if (relevantKeys.includes(POPUP_KEYS.targetWords)) {
+        // A failed refresh must keep edits blocked until a current word read
+        // succeeds; otherwise a write could replace remote words with old data.
+        targetWordsRefreshRequired = true
+        renderTags()
+    }
 
-    void popupStorage.getWithDefaults(relevantKeys).then((values) => {
+    void popupReader.refresh(relevantKeys, (values) => {
         popupSettings = { ...popupSettings, ...values }
         if (values.targetWords) {
+            targetWordsRefreshRequired = false
             targetWords = [...values.targetWords]
             renderTags()
         }
@@ -465,7 +460,7 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
             document.getElementById('wordCoverEnabled-switch').checked = values.wordCoverEnabled
         }
         void updateSiteStatus()
-    }).catch((error) => {
+    }, (error) => {
         showWordError('Could not refresh committed settings. Close and reopen the popup to retry.')
         console.error('PhobiaBlocker: popup storage refresh failed', error)
     })

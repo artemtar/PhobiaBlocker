@@ -24,9 +24,8 @@ const {
     clearExtensionStorage,
     getExtensionServiceWorker,
     getExtensionPage,
+    wait,
 } = require('./test-utils')
-
-const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms))
 
 // ── Tracker helpers ──────────────────────────────────────────────────────────
 //

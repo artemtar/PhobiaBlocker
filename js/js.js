@@ -8,23 +8,27 @@ if (!Policy || !Storage || !PageTextIndex) {
     throw new Error('PhobiaBlocker: required shared modules are unavailable')
 }
 
-const { DEFAULTS, PROTECTION_MODE, STORAGE_KEYS } = Policy
-const FAIL_CLOSED_RESULT = Object.freeze({
-    shouldBlur: true,
-    matchedWords: [],
-    matchedInputWords: [],
-})
+const {
+    DEFAULTS, PROTECTION_MODE, STORAGE_KEYS, FAIL_CLOSED_RESULT, FRAME_MESSAGES, CSS_VARS, ROOT_ATTRS,
+    computeBlurPixels, isTopFrameContext, withTimeout,
+} = Policy
 const ANALYZE_TIMEOUT_MS = 3000
 const MEDIA_SELECTOR = 'img, video, iframe'
-const BACKGROUND_READY_ATTR = 'data-phobiablocker-background-ready'
-const BACKGROUND_SCANNING_ATTR = 'data-phobiablocker-background-scanning'
+const BACKGROUND_READY_ATTR = ROOT_ATTRS.backgroundReady
+const BACKGROUND_SCANNING_ATTR = ROOT_ATTRS.backgroundScanning
 const BACKGROUND_MARKER_ATTR = 'data-phobiablocker-background'
 const ROOT_BACKGROUND_MARKER_ATTR = 'data-phobiablocker-root-background'
 const MEDIA_MARKER_ATTR = 'data-phobiablocker-media'
-const WORD_RE = /[-\p{L}]+/gu
 const POLICY_STORAGE_KEYS = new Set(Object.values(STORAGE_KEYS))
+// Popup accordion state never affects a page.
+const UI_ONLY_STORAGE_KEYS = new Set([STORAGE_KEYS.detectedWordsCollapsed, STORAGE_KEYS.supportedWordsCollapsed])
+// Keys that only change how media is rendered, never whether it is blurred.
+const VISUAL_STORAGE_KEYS = new Set([
+    STORAGE_KEYS.blurAmount, STORAGE_KEYS.previewEnabled, STORAGE_KEYS.previewStrength, STORAGE_KEYS.debugMode,
+])
 const INTERNAL_ATTRIBUTE_STATE = new WeakMap()
-const INTERNAL_CAPTURE_PENDING = new WeakSet()
+// The only observed attributes this script writes itself.
+const INTERNAL_SNAPSHOT_ATTRIBUTES = Object.freeze(['class', 'style', BACKGROUND_READY_ATTR, BACKGROUND_SCANNING_ATTR])
 const OBSERVED_ATTRIBUTES = Object.freeze([
     'class', 'style', 'hidden', 'aria-hidden',
     'src', 'srcset', 'sizes', 'poster', 'srcdoc', 'sandbox',
@@ -37,6 +41,9 @@ const STYLESHEET_POLL_INTERVAL_MS = 2000
 const ANALYSIS_DEBOUNCE_MS = 200
 // Resize fires continuously while a window is dragged; one rescan is enough.
 const RESIZE_DEBOUNCE_MS = 200
+// Stylesheet edits arrive in bursts (CSS-in-JS inserts one <style> per
+// component). Rebuild the visible-text index once per burst, off the observer.
+const STYLESHEET_REINDEX_DEBOUNCE_MS = 200
 const SETTINGS_READ_TIMEOUT_MS = 3000
 const SETTINGS_READ_ATTEMPTS = 3
 const MAX_BACKGROUND_SCAN_RETRIES = 3
@@ -51,33 +58,51 @@ const IFRAME_NAVIGATION_START_EVENTS = Object.freeze(['pagehide', 'unload'])
 const IFRAME_RESTORATION_EVENT = 'pageshow'
 const IFRAME_GUARD_EVENTS = Object.freeze([...IFRAME_NAVIGATION_START_EVENTS, IFRAME_RESTORATION_EVENT])
 const MAX_SUSPENDED_IFRAME_GUARDS = 2
+const FRAME_OWNER_SELECTOR = 'iframe'
+const UNSUPPORTED_FRAME_OWNER_SELECTOR = 'frame, object, embed, fencedframe'
+const TRACKED_FRAME_OWNER_SELECTOR = `${FRAME_OWNER_SELECTOR}, ${UNSUPPORTED_FRAME_OWNER_SELECTOR}`
+// Coalesce the aggregate requests from a burst of invalidations into one.
+const FRAME_AGGREGATE_REFRESH_DEBOUNCE_MS = 100
+// Bounded retries cover a transient failure; afterwards the next invalidation
+// (a navigation, a child status change, a topology change) asks again.
+const FRAME_AGGREGATE_MAX_RETRIES = 3
+const FRAME_AGGREGATE_INITIAL_RETRY_MS = 1000
 const ANALYSIS_DEBUG_STATE = {
     pageAnalysisRequests: 0,
     mutationBatches: 0,
     directWordCovers: 0,
 }
-const PB_CSS_VARS = Object.freeze({
-    blurNs: '--phobiablocker-blurValueAmount',
-    blurLegacy: '--blurValueAmount',
-    previewNs: '--phobiablocker-previewBlurAmount',
-    previewLegacy: '--previewBlurAmount',
-})
+// Detached style declarations reused to parse inline style text without
+// creating an element per mutation.
+const SIGNATURE_STYLE_PROBE = document.createElement('span').style
+const PREVIOUS_STYLE_PROBE = document.createElement('span').style
 
 let lastElementContext = null
 let lastContextMenuPoint = null
 let iconStatusTimer = null
+let internalMutationTargets = null
 
+// Records the attribute values this script writes so the observer can tell
+// its own mutations from the page's. One microtask snapshots every node
+// touched in the current task and one timer releases them on the next.
 function markInternalMutationTarget(node) {
-    if (!(node instanceof Element) || INTERNAL_CAPTURE_PENDING.has(node)) return
-    INTERNAL_CAPTURE_PENDING.add(node)
+    if (!(node instanceof Element)) return
+    if (internalMutationTargets) {
+        internalMutationTargets.add(node)
+        return
+    }
+    internalMutationTargets = new Set([node])
     queueMicrotask(() => {
-        INTERNAL_CAPTURE_PENDING.delete(node)
-        const snapshot = {}
-        OBSERVED_ATTRIBUTES.forEach((name) => {
-            snapshot[name] = node.getAttribute(name)
+        const nodes = internalMutationTargets
+        internalMutationTargets = null
+        nodes.forEach((target) => {
+            const snapshot = {}
+            INTERNAL_SNAPSHOT_ATTRIBUTES.forEach((name) => {
+                snapshot[name] = target.getAttribute(name)
+            })
+            INTERNAL_ATTRIBUTE_STATE.set(target, snapshot)
         })
-        INTERNAL_ATTRIBUTE_STATE.set(node, snapshot)
-        setTimeout(() => INTERNAL_ATTRIBUTE_STATE.delete(node), 0)
+        setTimeout(() => nodes.forEach(target => INTERNAL_ATTRIBUTE_STATE.delete(target)), 0)
     })
 }
 
@@ -89,21 +114,20 @@ function isInternalMutation(mutation) {
     return snapshot[mutation.attributeName] === mutation.target.getAttribute(mutation.attributeName)
 }
 
-function isTopFrameContext() {
-    try { return window.top === window } catch (_) { return false }
+// Fire-and-forget delivery to the service worker. A disconnected runtime
+// leaves whatever is currently projected in force.
+function sendToBackground(message) {
+    try {
+        const result = chrome.runtime.sendMessage({ target: 'background', ...message })
+        if (result && typeof result.catch === 'function') result.catch(() => {})
+    } catch (_) { /* See above. */ }
 }
 
 function reportIconStatus(status) {
     if (!isTopFrameContext()) return
     clearTimeout(iconStatusTimer)
 
-    const send = () => {
-        try {
-            const result = chrome.runtime.sendMessage({ target: 'background', type: 'iconStatus', status })
-            if (result && typeof result.catch === 'function') result.catch(() => {})
-        } catch (_) { /* The background stylesheet remains the fallback. */ }
-    }
-
+    const send = () => sendToBackground({ type: 'iconStatus', status })
     if (status === 'processing') {
         send()
         return
@@ -120,53 +144,37 @@ function setRootCssVar(name, value, priority = '') {
 }
 
 function setBlurCssValue(value) {
-    setRootCssVar(PB_CSS_VARS.blurNs, value)
-    setRootCssVar(PB_CSS_VARS.blurLegacy, value)
+    setRootCssVar(CSS_VARS.blurNs, value)
+    setRootCssVar(CSS_VARS.blurLegacy, value)
 }
 
 function setPreviewBlurCssValue(value) {
-    setRootCssVar(PB_CSS_VARS.previewNs, value)
-    setRootCssVar(PB_CSS_VARS.previewLegacy, value)
+    setRootCssVar(CSS_VARS.previewNs, value)
+    setRootCssVar(CSS_VARS.previewLegacy, value)
 }
 
-function computeBlurPixels(value) {
-    const sliderValue = typeof value === 'number' ? value : DEFAULTS.blurValueAmount
-    return Math.pow(sliderValue * 0.09, 1.8) * 2
+function getUnownedStyleSignature(styleText, projectedProperties) {
+    const probe = SIGNATURE_STYLE_PROBE
+    probe.cssText = styleText || ''
+    projectedProperties.forEach(name => probe.removeProperty(name))
+    Object.values(CSS_VARS).forEach(name => probe.removeProperty(name))
+    return probe.cssText
 }
 
-function normalizeAnalysisResult(result) {
-    const validWords = value => Array.isArray(value) && value.every(word => typeof word === 'string')
-    if (!result || typeof result.shouldBlur !== 'boolean' ||
-        !validWords(result.matchedWords) || !validWords(result.matchedInputWords)) {
-        return { ...FAIL_CLOSED_RESULT }
-    }
-    return {
-        shouldBlur: result.shouldBlur,
-        matchedWords: [...new Set(result.matchedWords.filter(Boolean))],
-        matchedInputWords: [...new Set(result.matchedInputWords.filter(Boolean))],
-    }
-}
-
+// The one place a verdict enters this script; everything downstream can
+// trust its shape.
 async function analyzePageWordsWithOffscreen(words) {
-    let timeoutId = null
+    ANALYSIS_DEBUG_STATE.pageAnalysisRequests++
     try {
-        ANALYSIS_DEBUG_STATE.pageAnalysisRequests++
-        const response = await Promise.race([
-            chrome.runtime.sendMessage({
-                target: 'background',
-                type: 'PB_ANALYZE_WORDS',
-                words: Array.isArray(words) ? words : [],
-            }),
-            new Promise((_, reject) => {
-                timeoutId = setTimeout(() => reject(new Error('Analysis timed out')), ANALYZE_TIMEOUT_MS)
-            }),
-        ])
-        return normalizeAnalysisResult(response)
+        const response = await withTimeout(chrome.runtime.sendMessage({
+            target: 'background',
+            type: 'PB_ANALYZE_WORDS',
+            words: Array.isArray(words) ? words : [],
+        }), ANALYZE_TIMEOUT_MS, 'Analysis')
+        return Policy.normalizeAnalysisResult(response) || { ...FAIL_CLOSED_RESULT }
     } catch (error) {
         console.error('PhobiaBlocker: page analysis failed; keeping media blurred', error)
         return { ...FAIL_CLOSED_RESULT }
-    } finally {
-        if (timeoutId !== null) clearTimeout(timeoutId)
     }
 }
 
@@ -219,11 +227,10 @@ function getMediaFingerprint(element, knownBackgroundImage = null) {
     }
 }
 
-function isCrossOriginIframe(iframe, navigationComplete = false, navigationPending = false) {
+function isCrossOriginIframe(iframe, navigationComplete = false) {
     try {
         if (!(iframe instanceof HTMLIFrameElement)) return true
         if (iframe.hasAttribute('sandbox')) return true
-        if (navigationPending) return true
 
         const hasSourceDocument = iframe.hasAttribute('srcdoc')
         const source = iframe.getAttribute('src')
@@ -292,7 +299,6 @@ class VisualNode {
             (element === document.documentElement || element === document.body)
         this.backgroundImage = ''
         this.isBlurred = true
-        this.matchedWords = []
         // Last projection actually written to the DOM. Repeated requests for the
         // same state become no-ops, which is what stops mutation batches from
         // rewriting every node's class and inline filter over and over.
@@ -334,10 +340,13 @@ class VisualNode {
         }
 
         const projection = { value, priority }
-        this._styleProjections.set(name, projection)
-        if (this._stylePropertyMatches(current, projection)) return
-        markInternalMutationTarget(this.element)
-        this.element.style.setProperty(name, value, priority)
+        if (!this._stylePropertyMatches(current, projection)) {
+            markInternalMutationTarget(this.element)
+            this.element.style.setProperty(name, value, priority)
+        }
+        // CSSOM can round numbers or otherwise serialize a different string.
+        // Track what was applied so it is not mistaken for a later page edit.
+        this._styleProjections.set(name, this._readStyleProperty(this.element.style, name))
     }
 
     _restorePageStyle(name) {
@@ -358,20 +367,12 @@ class VisualNode {
         else this.element.style.removeProperty(name)
     }
 
-    _unownedStyleSignature(styleText) {
-        const probe = document.createElement('span').style
-        probe.cssText = styleText || ''
-        probe.removeProperty('filter')
-        probe.removeProperty('background-image')
-        Object.values(PB_CSS_VARS).forEach(name => probe.removeProperty(name))
-        return probe.cssText
-    }
-
     captureStyleMutation(oldStyleText) {
-        const previous = document.createElement('span').style
+        const previous = PREVIOUS_STYLE_PROBE
         previous.cssText = oldStyleText || ''
-        let pageChanged = this._unownedStyleSignature(oldStyleText) !==
-            this._unownedStyleSignature(this.element.getAttribute('style'))
+        const projectedProperties = ['filter', 'background-image']
+        let pageChanged = getUnownedStyleSignature(oldStyleText, projectedProperties) !==
+            getUnownedStyleSignature(this.element.getAttribute('style'), projectedProperties)
 
         for (const name of this._pageStyles.keys()) {
             const before = this._readStyleProperty(previous, name)
@@ -392,6 +393,7 @@ class VisualNode {
     prepareBackgroundScan() {
         if (!this.isRootBackground) return
         this._restorePageStyle('background-image')
+        this.invalidateRendering()
     }
 
     // Forces the next blur/unblur to rewrite the DOM. Called when the page
@@ -401,10 +403,9 @@ class VisualNode {
         this._renderState = null
     }
 
-    blur(matchedWords = []) {
+    blur() {
         if (!this.element || this.element.isConnected === false) return
         this.isBlurred = true
-        this.matchedWords = [...matchedWords]
         if (this._renderState === 'blur') return
         this._renderState = 'blur'
         markInternalMutationTarget(this.element)
@@ -416,7 +417,7 @@ class VisualNode {
         if (this.kind === 'background') this.element.setAttribute(BACKGROUND_MARKER_ATTR, '1')
         if (this.isRootBackground) {
             this._setStyleProjection('background-image', 'none', 'important')
-            this._detachPreview()
+            this._previewActive = false
             return
         }
         this._setStyleProjection('filter', this.controller.blurFilter, 'important')
@@ -429,7 +430,6 @@ class VisualNode {
         if (!this.element || this.element.isConnected === false) return
         const nextState = options.explicit === true ? 'unblur-explicit' : 'unblur'
         this.isBlurred = false
-        this.matchedWords = []
         if (this._renderState === nextState) return
         this._renderState = nextState
         markInternalMutationTarget(this.element)
@@ -440,18 +440,18 @@ class VisualNode {
         this._restoreAttribute('data-phobia-blur')
         if (this.isRootBackground) {
             this._restorePageStyle('background-image')
-            this._detachPreview()
+            this._previewActive = false
             return
         }
         this._setStyleProjection('filter', 'none', 'important')
-        this._detachPreview()
+        this._previewActive = false
     }
 
     clearRendering() {
         if (!this.element) return
         this._renderState = null
         markInternalMutationTarget(this.element)
-        this._detachPreview()
+        this._previewActive = false
         this._projectionClasses.forEach((name) => {
             this.element.classList.toggle(name, this._originalClasses.has(name))
         })
@@ -480,7 +480,7 @@ class VisualNode {
     // overlay, and listening on the parent missed media inside a wrapper smaller
     // than itself; hit testing the whole stack handles both.
     showPreview() {
-        if (this._previewActive || !this.isBlurred || !this.element) return
+        if (this.isRootBackground || this._previewActive || !this.isBlurred || !this.element) return
         this._previewActive = true
         this._applyPreviewFilter()
     }
@@ -494,8 +494,18 @@ class VisualNode {
         this._setStyleProjection('filter', this.controller.blurFilter, 'important')
     }
 
-    _detachPreview() {
-        this._previewActive = false
+    // Pushes the controller's current blur strength to a node that is already
+    // blurred. blur() skips the rewrite when the render state is unchanged, so
+    // without this a blurValueAmount change reached the element only once a
+    // hover cycle or a page-side style mutation happened to rewrite the filter.
+    refreshBlurFilter() {
+        if (!this.element || this.element.isConnected === false) return
+        if (this._renderState !== 'blur' || this.isRootBackground) return
+        if (this._previewActive) {
+            this._applyPreviewFilter()
+            return
+        }
+        this._setStyleProjection('filter', this.controller.blurFilter, 'important')
     }
 }
 
@@ -547,6 +557,10 @@ class VisualRegistry {
         this._byElement = new WeakMap()
     }
 
+    get size() {
+        return this._nodes.size
+    }
+
     all() {
         return [...this._nodes]
     }
@@ -577,6 +591,10 @@ class WordCoverManager {
         return this._ownedWrappers.has(element)
     }
 
+    get ownedCount() {
+        return this._ownedWrappers.size
+    }
+
     _findOwnedWrapper(element) {
         let current = element
         while (current) {
@@ -589,78 +607,39 @@ class WordCoverManager {
     repairProjection(element) {
         if (!this._ownedWrappers.has(element)) return false
         markInternalMutationTarget(element)
-        if (this._revealedWrappers.has(element)) {
-            element.classList.remove('phobia-word-cover')
-            element.classList.add('phobia-word-permanent-uncover')
-            element.removeAttribute('data-phobia-word-cover')
-            return true
-        }
-        element.classList.remove('phobia-word-permanent-uncover')
-        element.classList.add('phobia-word-cover')
-        element.setAttribute('data-phobia-word-cover', '1')
+        const revealed = this._revealedWrappers.has(element)
+        element.classList.toggle('phobia-word-cover', !revealed)
+        element.classList.toggle('phobia-word-permanent-uncover', revealed)
         return true
     }
 
     coverTextNode(textNode, directMatches) {
         if (!this._active || !textNode || !textNode.parentNode) return false
         const parentElement = textNode.parentElement
-        if (!parentElement || parentElement.closest?.([
-            'script', 'style', 'noscript', 'input', 'textarea', 'select', 'option',
-            'form', '[contenteditable="true"]', '[hidden]', '[aria-hidden="true"]',
-        ].join(', '))) return false
+        if (!parentElement || parentElement.closest?.(PageTextIndex.EXCLUDED_SELECTOR)) return false
         if (this._findOwnedWrapper(parentElement)) return false
 
         const matchesToCover = directMatches instanceof Set ? directMatches : this._targets
-        const text = textNode.nodeValue || ''
-        const fragment = document.createDocumentFragment()
-        const replacementTextNodes = []
-        let lastIndex = 0
-        let changed = false
-        let match
+        const split = PageTextIndex.splitTextNodeByWords(textNode, word => (
+            matchesToCover.has(word) && this._targets.has(word)
+        ))
+        if (!split) return false
 
-        const appendText = (value) => {
-            if (!value) return
-            const node = document.createTextNode(value)
-            replacementTextNodes.push({ node, includeCovered: false })
-            fragment.appendChild(node)
-        }
-
-        WORD_RE.lastIndex = 0
-        while ((match = WORD_RE.exec(text)) !== null) {
-            const normalized = match[0].normalize('NFKC').toLowerCase()
-            if (!matchesToCover.has(normalized) || !this._targets.has(normalized)) continue
-            changed = true
-            appendText(text.slice(lastIndex, match.index))
-
-            const cover = document.createElement('span')
-            const coverText = document.createTextNode(match[0])
-            cover.className = 'phobia-word-cover'
-            cover.setAttribute('data-phobia-word-cover', '1')
-            cover.setAttribute('title', 'Covered by PhobiaBlocker')
-            cover.setAttribute('aria-label', 'Covered by PhobiaBlocker')
-            try {
-                const color = getComputedStyle(parentElement).color
-                if (color) cover.style.setProperty('--phobiablocker-word-cover-color', color)
-            } catch (_) { /* Use the stylesheet's currentColor fallback. */ }
-            cover.appendChild(coverText)
+        split.covers.forEach((cover) => {
             this._ownedWrappers.add(cover)
             markInternalMutationTarget(cover)
-            replacementTextNodes.push({ node: coverText, includeCovered: true })
-            fragment.appendChild(cover)
-            lastIndex = match.index + match[0].length
-        }
-        WORD_RE.lastIndex = 0
-
-        if (!changed) return false
-        appendText(text.slice(lastIndex))
+        })
         if (this._pageTextIndex) this._pageTextIndex.removeTextNode(textNode)
         markInternalMutationTarget(parentElement)
-        parentElement.replaceChild(fragment, textNode)
-        replacementTextNodes.forEach(({ node, includeCovered }) => {
-            this._pageTextIndex?.indexTextNode(node, { includeCovered, notify: false })
+        parentElement.replaceChild(split.fragment, textNode)
+        // Re-index the pieces without notifying, or covering would recurse.
+        split.plainTextNodes.forEach((node) => {
+            this._pageTextIndex?.indexTextNode(node, { notify: false })
         })
-        ANALYSIS_DEBUG_STATE.directWordCovers += replacementTextNodes
-            .filter(({ includeCovered }) => includeCovered).length
+        split.covers.forEach((cover) => {
+            this._pageTextIndex?.indexTextNode(cover.firstChild, { notify: false })
+        })
+        ANALYSIS_DEBUG_STATE.directWordCovers += split.covers.length
         return true
     }
 
@@ -669,10 +648,7 @@ class WordCoverManager {
         const cover = this._findOwnedWrapper(element)
         if (!cover) return false
         this._revealedWrappers.add(cover)
-        markInternalMutationTarget(cover)
-        cover.classList.remove('phobia-word-cover')
-        cover.classList.add('phobia-word-permanent-uncover')
-        cover.removeAttribute('data-phobia-word-cover')
+        this.repairProjection(cover)
         cover.removeAttribute('title')
         cover.removeAttribute('aria-label')
         cover.removeAttribute('style')
@@ -698,20 +674,34 @@ class WordCoverManager {
         Array.from(this._ownedWrappers).forEach(wrapper => this._unwrap(wrapper))
     }
 
-    _unwrap(wrapper) {
+    reconcileCover(wrapper) {
+        this._unwrap(wrapper, { notify: true })
+    }
+
+    prune() {
+        Array.from(this._ownedWrappers).forEach((wrapper) => {
+            if (wrapper.isConnected === false) this._unwrap(wrapper)
+        })
+    }
+
+    _unwrap(wrapper, { notify = false } = {}) {
         if (!this._ownedWrappers.has(wrapper)) return
         this._ownedWrappers.delete(wrapper)
         this._revealedWrappers.delete(wrapper)
-        if (!wrapper.parentNode) return
+        const textNodes = PageTextIndex.collectTextNodes(wrapper)
+        textNodes.forEach(node => this._pageTextIndex?.removeTextNode(node))
+        // A removed cover can itself be reinserted later. Leave no stale cover
+        // projection on that now-unowned element, even when it has no parent.
+        markInternalMutationTarget(wrapper)
+        wrapper.classList.remove('phobia-word-cover', 'phobia-word-permanent-uncover')
+        wrapper.style.removeProperty('--phobiablocker-word-cover-color')
+        wrapper.removeAttribute('title')
+        wrapper.removeAttribute('aria-label')
         const parent = wrapper.parentNode
-        const replacement = document.createTextNode(wrapper.textContent || '')
-        wrapper.querySelectorAll('*').forEach((element) => {
-            element.childNodes.forEach((node) => this._pageTextIndex?.removeTextNode(node))
-        })
-        wrapper.childNodes.forEach((node) => this._pageTextIndex?.removeTextNode(node))
+        if (!parent) return
         markInternalMutationTarget(parent)
-        parent.replaceChild(replacement, wrapper)
-        this._pageTextIndex?.indexTextNode(replacement, { notify: false })
+        PageTextIndex.unwrapWordCover(wrapper)
+        textNodes.forEach(node => this._pageTextIndex?.indexTextNode(node, { notify }))
     }
 }
 
@@ -728,6 +718,12 @@ class Controller {
         this._loadedIframeFingerprints = new WeakMap()
         this._pendingIframeNavigations = new WeakSet()
         this._iframeNavigationGuards = new WeakMap()
+        this._frameAggregateClear = false
+        this._frameAggregateEpoch = 0
+        this._frameAggregateRefreshTimer = null
+        this._frameAggregateRetryAttempt = 0
+        this._analysisPending = true
+        this._lastFrameStatusSignature = ''
         this._disabledMediaFilters = new WeakMap()
         this._manualBlurAllActive = false
         this._observer = null
@@ -740,7 +736,6 @@ class Controller {
         this._backgroundRetries = 0
         this._hasCompletedBackgroundScan = false
         this._mediaEventListenersAttached = false
-        this._iframeLifecycleListenerAttached = false
         this._iframeLifecycleObserver = null
         this._onMediaResourceEvent = event => this._handleMediaResourceEvent(event)
         this._onIframeLifecycleLoad = event => this._handleIframeLifecycleLoad(event)
@@ -750,13 +745,18 @@ class Controller {
             this._scheduleHoverPreviewUpdate()
         }
         this._earlyCoverReleased = false
+        this._stylesheetReindexTimer = null
+        // True once applyProtectionMode has run; settings shortcuts that only
+        // re-style the page must not pre-empt that first application.
+        this.protectionApplied = false
         this._wordCoverManager = new WordCoverManager()
         this._pageTextIndex = new PageTextIndex({
             onDirectMatch: (node, matches) => this._wordCoverManager.coverTextNode(node, matches),
+            onOwnedCoverChange: wrapper => this._wordCoverManager.reconcileCover(wrapper),
             isOwnedCover: element => this._wordCoverManager.ownsWrapper(element),
+            hasOwnedCovers: () => this._wordCoverManager.ownedCount > 0,
         })
         this._wordCoverManager.attachIndex(this._pageTextIndex)
-        this._hoverListenerAttached = false
         this._hoverNode = null
         this._hoverPoint = null
         this._lastHoverUpdateAt = 0
@@ -773,6 +773,135 @@ class Controller {
         )))
     }
 
+    _frameOwnerState() {
+        return {
+            frameElementCount: document.querySelectorAll(FRAME_OWNER_SELECTOR).length,
+            hasUnsupportedFrameOwner: Boolean(document.querySelector(UNSUPPORTED_FRAME_OWNER_SELECTOR)),
+        }
+    }
+
+    _allowsFrameRelease() {
+        if (this.mode === PROTECTION_MODE.DISABLED) return true
+        return this.mode === PROTECTION_MODE.ANALYZE && !this._manualBlurAllActive &&
+            !this._analysisPending && this._pageAnalysisResult.shouldBlur === false
+    }
+
+    getFrameProtectionStatus() {
+        return {
+            allowsUnblur: this._allowsFrameRelease(),
+            ...this._frameOwnerState(),
+        }
+    }
+
+    _notifyFrameStatusChanged(force = false) {
+        if (isTopFrameContext()) return
+        const status = this.getFrameProtectionStatus()
+        const signature = JSON.stringify(status)
+        if (!force && signature === this._lastFrameStatusSignature) return
+        this._lastFrameStatusSignature = signature
+        sendToBackground({ type: FRAME_MESSAGES.statusChanged })
+    }
+
+    _setAnalysisPending(pending) {
+        const next = pending === true
+        if (this._analysisPending === next) return
+        this._analysisPending = next
+        if (next) this._invalidateFrameAggregate({ refresh: false })
+        this._notifyFrameStatusChanged()
+    }
+
+    // A parent only asks about its frames once it would release them itself.
+    _shouldRefreshFrameAggregate() {
+        return this.settings.keepCrossOriginIframesBlurred === true &&
+            this.mode === PROTECTION_MODE.ANALYZE && this._allowsFrameRelease() &&
+            document.querySelector(FRAME_OWNER_SELECTOR) !== null
+    }
+
+    _applyCurrentResultToIframes() {
+        const result = this._currentVisualResult()
+        this._registry.all().forEach((node) => {
+            if (node.kind === 'iframe') this._applyResultToNode(node, result)
+        })
+    }
+
+    _setFrameAggregateClear(clear) {
+        const next = clear === true
+        if (this._frameAggregateClear === next) return
+        this._frameAggregateClear = next
+        this._applyCurrentResultToIframes()
+    }
+
+    _invalidateFrameAggregate({ refresh = true } = {}) {
+        this._frameAggregateEpoch++
+        this._frameAggregateRetryAttempt = 0
+        clearTimeout(this._frameAggregateRefreshTimer)
+        this._frameAggregateRefreshTimer = null
+        this._setFrameAggregateClear(false)
+        if (refresh) this._scheduleFrameAggregateRefresh()
+    }
+
+    _scheduleFrameAggregateRefresh(delay = FRAME_AGGREGATE_REFRESH_DEBOUNCE_MS) {
+        clearTimeout(this._frameAggregateRefreshTimer)
+        this._frameAggregateRefreshTimer = null
+        if (!this._shouldRefreshFrameAggregate()) {
+            this._setFrameAggregateClear(false)
+            return
+        }
+        this._frameAggregateRefreshTimer = setTimeout(() => {
+            this._frameAggregateRefreshTimer = null
+            void this._refreshFrameAggregate()
+        }, delay)
+    }
+
+    async _refreshFrameAggregate() {
+        if (!this._shouldRefreshFrameAggregate()) {
+            this._setFrameAggregateClear(false)
+            return
+        }
+
+        const epoch = ++this._frameAggregateEpoch
+        const ownerState = this._frameOwnerState()
+        let response = null
+        try {
+            response = await withTimeout(chrome.runtime.sendMessage({
+                target: 'background',
+                type: FRAME_MESSAGES.aggregateRequest,
+                epoch,
+                ...ownerState,
+            }), ANALYZE_TIMEOUT_MS, 'Embedded-frame check')
+        } catch (_) {
+            response = null
+        }
+
+        if (epoch !== this._frameAggregateEpoch) return
+        if (!this._shouldRefreshFrameAggregate()) {
+            this._setFrameAggregateClear(false)
+            return
+        }
+        const currentOwnerState = this._frameOwnerState()
+        if (currentOwnerState.frameElementCount !== ownerState.frameElementCount ||
+            currentOwnerState.hasUnsupportedFrameOwner !== ownerState.hasUnsupportedFrameOwner) {
+            this._invalidateFrameAggregate()
+            return
+        }
+
+        const clear = Boolean(response?.ok && response.clear && response.epoch === epoch)
+        this._setFrameAggregateClear(clear)
+        // Everything that can change the answer already invalidates this
+        // aggregate: subframe navigations and child status changes arrive from
+        // the service worker, frame additions and removals from the observers.
+        // A clear verdict therefore holds until then, and a failed one retries
+        // a bounded number of times for transient faults before waiting too.
+        if (clear) {
+            this._frameAggregateRetryAttempt = 0
+            return
+        }
+        if (this._frameAggregateRetryAttempt >= FRAME_AGGREGATE_MAX_RETRIES) return
+        const retryDelay = FRAME_AGGREGATE_INITIAL_RETRY_MS * (2 ** this._frameAggregateRetryAttempt)
+        this._frameAggregateRetryAttempt++
+        this._scheduleFrameAggregateRefresh(retryDelay)
+    }
+
     setSettings(settings) {
         this.settings = {
             ...this._cloneDefaults(),
@@ -782,16 +911,16 @@ class Controller {
             blacklistedSites: Array.isArray(settings?.blacklistedSites) ? [...settings.blacklistedSites] : [],
         }
         window.PHOBIABLOCKER_DEBUG = this.settings.debugMode === true
+        const previousBlurPixels = this.blurPixels
         this.blurPixels = `${computeBlurPixels(this.settings.blurValueAmount)}px`
         this.blurFilter = `blur(${this.blurPixels})`
         setBlurCssValue(this.blurPixels)
-        const previewValue = this.settings.previewEnabled
-            ? `${this.settings.previewBlurStrength}px`
-            : 'var(--phobiablocker-blurValueAmount, var(--blurValueAmount, 40px))'
-        setPreviewBlurCssValue(previewValue)
-        if (this._hoverNode) {
-            this._hoverNode.hidePreview()
-            this._hoverNode = null
+        setPreviewBlurCssValue(Policy.previewBlurCssValue(this.settings))
+        this._clearHoverPreview()
+        // Blurred nodes carry a literal blur(Npx) inline filter rather than a
+        // var() reference, so a new amount has to be written to each of them.
+        if (previousBlurPixels !== this.blurPixels) {
+            this._registry.all().forEach(node => node.refreshBlurFilter())
         }
         this._scheduleHoverPreviewUpdate()
     }
@@ -800,10 +929,12 @@ class Controller {
         clearTimeout(this._analysisTimer)
         clearTimeout(this._backgroundTimer)
         clearTimeout(this._globalRescanTimer)
+        clearTimeout(this._stylesheetReindexTimer)
         clearInterval(this._stylesheetPollTimer)
         this._analysisTimer = null
         this._backgroundTimer = null
         this._globalRescanTimer = null
+        this._stylesheetReindexTimer = null
         this._stylesheetPollTimer = null
         if (this._observer) this._observer.disconnect()
         this._detachMediaResourceListeners()
@@ -811,13 +942,17 @@ class Controller {
 
     async applyProtectionMode(mode, settings) {
         const generation = ++this._policyGeneration
+        this.protectionApplied = true
         this.cancelPendingAnalysis()
         this.setSettings(settings)
         this.mode = mode
+        this._invalidateFrameAggregate({ refresh: false })
+        this._setAnalysisPending(mode === PROTECTION_MODE.ANALYZE && !this._manualBlurAllActive)
         this._releaseEarlyWordCover()
 
         if (mode === PROTECTION_MODE.DISABLED) {
             this.disableProtection()
+            this._notifyFrameStatusChanged()
             return
         }
 
@@ -825,7 +960,7 @@ class Controller {
         this.enableProtection()
         this.protectAllKnownVisuals()
         if (mode === PROTECTION_MODE.ALWAYS_BLUR || this._manualBlurAllActive) {
-            this._pageAnalysisResult = { ...FAIL_CLOSED_RESULT }
+            this._notifyFrameStatusChanged()
             reportIconStatus('detected')
             return
         }
@@ -849,6 +984,11 @@ class Controller {
         this._registerMedia(document)
         this._scanBackgrounds(document, { full: true })
         document.querySelectorAll('link[rel~="stylesheet"]').forEach(link => this._watchStylesheetLink(link))
+        this._resumeObservation()
+    }
+
+    // Re-arms everything cancelPendingAnalysis() tears down.
+    _resumeObservation() {
         this._attachMediaResourceListeners()
         this._startStylesheetPolling()
         this._observerInit()
@@ -903,20 +1043,26 @@ class Controller {
         })
     }
 
+    _restorePageFilter(element, state) {
+        markInternalMutationTarget(element)
+        if (state.originalValue) {
+            element.style.setProperty('filter', state.originalValue, state.originalPriority)
+        } else {
+            element.style.removeProperty('filter')
+        }
+    }
+
     _restoreDisabledMedia(root) {
         this._mediaElements(root).forEach((element) => {
             const state = this._disabledMediaFilters.get(element)
             if (!state) return
-            markInternalMutationTarget(element)
-            if (state.originalValue) {
-                element.style.setProperty('filter', state.originalValue, state.originalPriority)
-            } else {
-                element.style.removeProperty('filter')
-            }
+            this._restorePageFilter(element, state)
             this._disabledMediaFilters.delete(element)
         })
     }
 
+    // Removed media gets the page's own filter back only while ours is still
+    // applied; anything the page wrote since is left alone.
     _discardDisabledMediaState(root) {
         this._mediaElements(root).forEach((element) => {
             const state = this._disabledMediaFilters.get(element)
@@ -925,12 +1071,7 @@ class Controller {
             const currentValue = element.style.getPropertyValue('filter')
             const currentPriority = element.style.getPropertyPriority('filter')
             if (currentValue === state.appliedValue && currentPriority === 'important') {
-                markInternalMutationTarget(element)
-                if (state.originalValue) {
-                    element.style.setProperty('filter', state.originalValue, state.originalPriority)
-                } else {
-                    element.style.removeProperty('filter')
-                }
+                this._restorePageFilter(element, state)
             }
             this._disabledMediaFilters.delete(element)
         })
@@ -973,14 +1114,8 @@ class Controller {
         const currentPriority = element.style.getPropertyPriority('filter')
         if (currentValue !== state.appliedValue || currentPriority !== 'important') return true
 
-        const signature = (styleText) => {
-            const probe = document.createElement('span').style
-            probe.cssText = styleText || ''
-            probe.removeProperty('filter')
-            Object.values(PB_CSS_VARS).forEach(name => probe.removeProperty(name))
-            return probe.cssText
-        }
-        return signature(oldStyleText) !== signature(element.getAttribute('style'))
+        return getUnownedStyleSignature(oldStyleText, ['filter']) !==
+            getUnownedStyleSignature(element.getAttribute('style'), ['filter'])
     }
 
     _setBackgroundPhase(phase) {
@@ -1011,6 +1146,7 @@ class Controller {
     }
 
     async analyzeCurrentPage(generation) {
+        this._setAnalysisPending(true)
         reportIconStatus('processing')
         const words = this._pageTextIndex.getWords()
         const result = await analyzePageWordsWithOffscreen(words)
@@ -1018,7 +1154,7 @@ class Controller {
         // Deliberately does not commit to _pageAnalysisResult. applyPageResult
         // owns that, so a verdict it decides to postpone cannot be picked up by
         // a mutation batch and used to unblur media early.
-        return normalizeAnalysisResult(result)
+        return result
     }
 
     // A "nothing found" verdict is only trustworthy once the page has stopped
@@ -1026,28 +1162,30 @@ class Controller {
     // analysis, so acting on an early clear verdict unblurs media that is about
     // to be judged unsafe — on a YouTube search that painted real thumbnails at
     // filter:none for roughly a second before the blur came back.
-    _shouldDeferClearVerdict() {
+    _shouldDeferClearVerdict(wordCount) {
         if (this._deferredClearVerdicts >= MAX_DEFERRED_CLEAR_VERDICTS) return false
-        if (this._registry.all().length === 0) return false
-        const words = this._pageTextIndex.getWords().length
-        return words !== this._lastVerdictWordCount || document.readyState !== 'complete'
+        if (this._registry.size === 0) return false
+        return wordCount !== this._lastVerdictWordCount || document.readyState !== 'complete'
     }
 
     applyPageResult(result, nodes = this._registry.all()) {
-        const normalized = normalizeAnalysisResult(result)
+        const wordCount = this._pageTextIndex.wordCount
 
-        if (!normalized.shouldBlur && this._shouldDeferClearVerdict()) {
+        if (!result.shouldBlur && this._shouldDeferClearVerdict(wordCount)) {
             this._deferredClearVerdicts++
-            this._lastVerdictWordCount = this._pageTextIndex.getWords().length
+            this._lastVerdictWordCount = wordCount
             this._scheduleAnalysis()
             return
         }
 
         this._deferredClearVerdicts = 0
-        this._lastVerdictWordCount = this._pageTextIndex.getWords().length
-        this._pageAnalysisResult = normalized
-        nodes.forEach(node => this._applyResultToNode(node, normalized))
-        reportIconStatus(normalized.shouldBlur ? 'detected' : 'idle')
+        this._lastVerdictWordCount = wordCount
+        this._pageAnalysisResult = result
+        this._setAnalysisPending(false)
+        this._notifyFrameStatusChanged()
+        nodes.forEach(node => this._applyResultToNode(node, result))
+        this._scheduleFrameAggregateRefresh()
+        reportIconStatus(result.shouldBlur ? 'detected' : 'idle')
         // The pointer may already be resting on media that only just became
         // blurred, and a stationary pointer produces no further events.
         this._scheduleHoverPreviewUpdate()
@@ -1094,31 +1232,34 @@ class Controller {
         this._pendingIframeNavigations.add(element)
     }
 
-    blurAll() {
+    // A manual command supersedes any in-flight analysis.
+    _beginManualCommand(blurAllActive) {
         ++this._policyGeneration
         this.cancelPendingAnalysis()
-        this._manualBlurAllActive = true
+        this._manualBlurAllActive = blurAllActive
+        this._setAnalysisPending(false)
+    }
+
+    blurAll() {
+        this._beginManualCommand(true)
+        this._invalidateFrameAggregate({ refresh: false })
         this._explicitReveals = new WeakMap()
         this._registerMedia(document)
         this._scanBackgrounds(document, { full: true })
         this._registry.all().forEach(node => node.blur())
-        this._attachMediaResourceListeners()
-        this._startStylesheetPolling()
-        this._observerInit()
+        this._resumeObservation()
+        this._notifyFrameStatusChanged()
         reportIconStatus('detected')
     }
 
     unblurAll() {
-        ++this._policyGeneration
-        this.cancelPendingAnalysis()
-        this._manualBlurAllActive = false
+        this._beginManualCommand(false)
         this._registerMedia(document)
         this._scanBackgrounds(document, { full: true })
         this._registry.all().forEach(node => this.rememberExplicitReveal(node.element))
         this._wordCoverManager.revealAll()
-        this._attachMediaResourceListeners()
-        this._startStylesheetPolling()
-        this._observerInit()
+        this._resumeObservation()
+        this._notifyFrameStatusChanged()
         reportIconStatus('idle')
     }
 
@@ -1136,18 +1277,17 @@ class Controller {
             node.unblur({ explicit: true })
             return
         }
-        if (this._manualBlurAllActive || result.shouldBlur) {
-            node.blur(result.matchedWords)
-            return
-        }
-        if (node.kind === 'iframe' && this.settings.keepCrossOriginIframesBlurred &&
-            isCrossOriginIframe(
-                node.element,
-                this._isIframeNavigationComplete(node.element),
-                this._pendingIframeNavigations.has(node.element)
-            )) {
+        if (this._analysisPending || this._manualBlurAllActive || result.shouldBlur) {
             node.blur()
             return
+        }
+        if (node.kind === 'iframe' && this.settings.keepCrossOriginIframesBlurred) {
+            const navigationPending = this._pendingIframeNavigations.has(node.element)
+            if (navigationPending || (!this._frameAggregateClear &&
+                isCrossOriginIframe(node.element, this._isIframeNavigationComplete(node.element)))) {
+                node.blur()
+                return
+            }
         }
         node.unblur()
     }
@@ -1192,8 +1332,6 @@ class Controller {
         }
         owners.forEach((owner) => {
             this._registerMedia(owner).forEach(node => touched.add(node))
-            const node = this._registry.get(owner)
-            if (node) touched.add(node)
         })
     }
 
@@ -1250,7 +1388,6 @@ class Controller {
                 : [...touched]
             nodesToApply.forEach(node => this._applyResultToNode(node, this._currentVisualResult()))
             if (full) {
-                this._stylesheetFingerprint = this._computeStylesheetFingerprint()
                 this._backgroundRetries = 0
                 this._hasCompletedBackgroundScan = true
                 this._setBackgroundPhase('ready')
@@ -1278,7 +1415,7 @@ class Controller {
     }
 
     _currentVisualResult() {
-        if (this.mode === PROTECTION_MODE.ALWAYS_BLUR || this._manualBlurAllActive) {
+        if (this._analysisPending || this.mode === PROTECTION_MODE.ALWAYS_BLUR || this._manualBlurAllActive) {
             return FAIL_CLOSED_RESULT
         }
         return this._pageAnalysisResult
@@ -1291,8 +1428,36 @@ class Controller {
         clearTimeout(this._globalRescanTimer)
         this._globalRescanTimer = setTimeout(() => {
             this._globalRescanTimer = null
-            this._scheduleFullBackgroundRescan()
+            this._reindexAfterStylesheetChange()
         }, RESIZE_DEBOUNCE_MS)
+    }
+
+    // Rebuilding the text index walks every text node with layout reads, so
+    // it never runs inside the observer callback and at most once per burst.
+    _handleStylesheetChange() {
+        if (this.mode === PROTECTION_MODE.DISABLED) return
+        clearTimeout(this._stylesheetReindexTimer)
+        this._stylesheetReindexTimer = setTimeout(() => {
+            this._stylesheetReindexTimer = null
+            this._reindexAfterStylesheetChange()
+        }, STYLESHEET_REINDEX_DEBOUNCE_MS)
+    }
+
+    _reindexAfterStylesheetChange() {
+        if (this.mode === PROTECTION_MODE.DISABLED) return
+        // Stylesheet edits can change visibility outside the mutated subtree.
+        // Rebuild the visible-text index before reusing a page-wide verdict.
+        const previousWords = new Set(this._pageTextIndex.getWords())
+        this._pageTextIndex.build(document.body || document.documentElement)
+        this._stylesheetFingerprint = this._computeStylesheetFingerprint()
+        const words = this._pageTextIndex.getWords()
+        const vocabularyChanged = words.length !== previousWords.size ||
+            words.some(word => !previousWords.has(word))
+        if (vocabularyChanged && this.mode === PROTECTION_MODE.ANALYZE && !this._manualBlurAllActive) {
+            this.protectAllKnownVisuals()
+            this._scheduleAnalysis()
+        }
+        this._scheduleFullBackgroundRescan()
     }
 
     _scheduleFullBackgroundRescan() {
@@ -1316,7 +1481,7 @@ class Controller {
         element.addEventListener('load', () => {
             if (this.mode !== PROTECTION_MODE.DISABLED &&
                 String(element.rel || '').toLowerCase().split(/\s+/).includes('stylesheet')) {
-                this._scheduleFullBackgroundRescan()
+                this._handleStylesheetChange()
             }
         })
     }
@@ -1390,7 +1555,7 @@ class Controller {
             const next = this._computeStylesheetFingerprint()
             if (next === this._stylesheetFingerprint) return
             this._stylesheetFingerprint = next
-            this._scheduleFullBackgroundRescan()
+            this._handleStylesheetChange()
         }, STYLESHEET_POLL_INTERVAL_MS)
     }
 
@@ -1412,12 +1577,6 @@ class Controller {
         })
         window.removeEventListener('resize', this._onGlobalBackgroundStateEvent)
         window.removeEventListener('hashchange', this._onGlobalBackgroundStateEvent)
-    }
-
-    _attachIframeLifecycleListener() {
-        if (this._iframeLifecycleListenerAttached) return
-        this._iframeLifecycleListenerAttached = true
-        document.addEventListener('load', this._onIframeLifecycleLoad, true)
     }
 
     _removeIframeNavigationGuardListeners(guard, types = IFRAME_GUARD_EVENTS) {
@@ -1523,11 +1682,8 @@ class Controller {
             !IFRAME_NAVIGATION_START_EVENTS.includes(event.type)) return
 
         guard.eventWindow = event.currentTarget || guard.eventWindow
+        this._blurForIframeNavigation(element)
         this._markIframeNavigationPending(element)
-        if (this.mode !== PROTECTION_MODE.DISABLED) {
-            const node = this._registry.get(element)
-            if (node) node.blur()
-        }
 
         if (event.type === 'pagehide' && event.persisted === true) {
             this._removeIframeNavigationGuardListeners(guard, IFRAME_NAVIGATION_START_EVENTS)
@@ -1558,21 +1714,32 @@ class Controller {
             return
         }
 
-        const node = this.mode === PROTECTION_MODE.DISABLED ? null : this._registry.get(element)
-        if (node) node.blur()
+        const node = this._blurForIframeNavigation(element)
         this._armIframeNavigationGuard(element)
         const currentState = this._iframeNavigationGuards.get(element)
         if (currentState?.active !== guard) return
+        this._completeIframeNavigation(element, node)
+    }
+
+    // Every navigation signal blurs the frame first; its new document is
+    // judged again only once it has settled.
+    _blurForIframeNavigation(element) {
+        this._invalidateFrameAggregate({ refresh: false })
+        const node = this.mode === PROTECTION_MODE.DISABLED ? null : this._registry.get(element)
+        if (node) node.blur()
+        return node
+    }
+
+    _completeIframeNavigation(element, node) {
         this._markIframeNavigationComplete(element)
         if (node) this._applyResultToNode(node, this._currentVisualResult())
+        this._scheduleFrameAggregateRefresh()
     }
 
     // One passive pointer listener drives every preview. elementsFromPoint
     // returns the whole stack under the cursor, so media sitting beneath an
     // overlay (posters and thumbnails on most media sites) is still found.
     _startHoverTracking() {
-        if (this._hoverListenerAttached) return
-        this._hoverListenerAttached = true
         this._onPointerMove = (event) => {
             this._hoverPoint = { x: event.clientX, y: event.clientY }
             this._scheduleHoverPreviewUpdate()
@@ -1620,6 +1787,7 @@ class Controller {
     }
 
     _canRenderPreview(node) {
+        if (node.isRootBackground) return false
         if (node.kind !== 'video') return true
         const video = node.element
         if (!(video instanceof HTMLVideoElement)) return false
@@ -1667,22 +1835,46 @@ class Controller {
         this._hoverNode = null
     }
 
+    _handleFrameTopologyChange() {
+        this._notifyFrameStatusChanged(true)
+        this._invalidateFrameAggregate()
+    }
+
     _startIframeLifecycleTracking() {
-        this._attachIframeLifecycleListener()
-        if (this._iframeLifecycleObserver) return
+        document.addEventListener('load', this._onIframeLifecycleLoad, true)
         this._iframeLifecycleObserver = new MutationObserver((mutations) => {
+            let frameTopologyChanged = false
+            // Check the changed subtrees themselves: replacing one frame with
+            // another can preserve the owner count while invalidating its verdict.
+            const hasFrameOwner = (nodes) => {
+                for (const node of nodes) {
+                    if (node instanceof Element && (node.matches(TRACKED_FRAME_OWNER_SELECTOR) ||
+                        node.querySelector(TRACKED_FRAME_OWNER_SELECTOR))) return true
+                }
+                return false
+            }
+
             mutations.forEach((mutation) => {
                 if (mutation.type === 'childList') {
                     mutation.removedNodes.forEach(node => this._disarmDetachedIframeGuards(node))
+                    frameTopologyChanged = frameTopologyChanged ||
+                        hasFrameOwner(mutation.addedNodes) || hasFrameOwner(mutation.removedNodes)
                     return
                 }
                 if (mutation.target instanceof HTMLIFrameElement) {
-                    this._markIframeNavigationPending(mutation.target)
-                    if (mutation.attributeName === 'sandbox' && mutation.target.hasAttribute('sandbox')) {
-                        this._disarmIframeNavigationGuard(mutation.target)
+                    frameTopologyChanged = true
+                    if (mutation.attributeName === 'sandbox') {
+                        // Sandbox changes affect future navigations; they do
+                        // not navigate the current document or emit a load.
+                        // Keep any actual src/srcdoc navigation pending.
+                        this._armIframeNavigationGuard(mutation.target)
+                    } else {
+                        this._markIframeNavigationPending(mutation.target)
                     }
                 }
             })
+
+            if (frameTopologyChanged) this._handleFrameTopologyChange()
         })
         this._iframeLifecycleObserver.observe(document, {
             attributes: true,
@@ -1696,11 +1888,9 @@ class Controller {
         const element = event?.target
         if (!(element instanceof HTMLIFrameElement) || !event.isTrusted) return
 
-        const node = this.mode === PROTECTION_MODE.DISABLED ? null : this._registry.get(element)
-        if (node) node.blur()
-        this._markIframeNavigationComplete(element)
+        const node = this._blurForIframeNavigation(element)
         this._armIframeNavigationGuard(element)
-        if (node) this._applyResultToNode(node, this._currentVisualResult())
+        this._completeIframeNavigation(element, node)
     }
 
     _handleMediaResourceEvent(event) {
@@ -1750,7 +1940,7 @@ class Controller {
         let stylesheetChanged = false
 
         records.forEach((mutation) => {
-            stylesheetChanged = this._mutationTouchesStylesheet(mutation) || stylesheetChanged
+            stylesheetChanged = stylesheetChanged || this._mutationTouchesStylesheet(mutation)
 
             if (mutation.type === 'childList') {
                 this._addOwningMedia(mutation.target, touched)
@@ -1797,13 +1987,15 @@ class Controller {
         })
 
         this._registry.prune()
+        // Media can be registered or replaced under a pointer that is not
+        // moving, so re-run the hit test rather than waiting for another event.
         this._scheduleHoverPreviewUpdate()
 
-        const textResult = this._pageTextIndex.applyMutations(records)
-        const newWordsAppeared = textResult.added instanceof Set && textResult.added.size > 0
+        const { added, removed } = this._pageTextIndex.applyMutations(records)
+        this._wordCoverManager.prune()
 
         if (stylesheetChanged) {
-            this._scheduleFullBackgroundRescan()
+            this._handleStylesheetChange()
         }
 
         if (this.mode === PROTECTION_MODE.ALWAYS_BLUR || this._manualBlurAllActive) {
@@ -1811,25 +2003,29 @@ class Controller {
             return
         }
 
-        // Only vocabulary that is new to the page can flip the verdict, so a
-        // re-index that yielded the same words needs no analysis and no
-        // re-blur. When new words do appear we stay fail-closed until the
-        // analysis returns.
-        if (newWordsAppeared) {
+        // New vocabulary can flip a clear verdict, so stay fail-closed until the
+        // analysis returns. Equivalent text replacement needs no new analysis.
+        if (added.size > 0) {
             this.protectAllKnownVisuals()
             this._scheduleAnalysis()
             return
         }
 
-        touched.forEach(node => this._applyResultToNode(node, this._pageAnalysisResult))
-        // Media can be registered or replaced under a pointer that is not
-        // moving, so re-run the hit test rather than waiting for another event.
-        if (touched.size > 0) this._scheduleHoverPreviewUpdate()
+        // Losing vocabulary can only clear a verdict, never create one, so
+        // nothing needs re-protecting. A pending verdict still describes the
+        // old vocabulary and must be discarded even if the last result was clear.
+        const pendingInputRemoved = removed.size > 0 && this._analysisPending
+        const matchedWordRemoved = removed.size > 0 && this._pageAnalysisResult.shouldBlur === true &&
+            this._pageAnalysisResult.matchedInputWords.some(word => removed.has(word))
+        if (pendingInputRemoved || matchedWordRemoved) this._scheduleAnalysis()
+
+        touched.forEach(node => this._applyResultToNode(node, this._currentVisualResult()))
     }
 
     _scheduleAnalysis() {
         clearTimeout(this._analysisTimer)
         const generation = ++this._policyGeneration
+        this._setAnalysisPending(true)
         this._analysisTimer = setTimeout(async () => {
             this._analysisTimer = null
             const result = await this.analyzeCurrentPage(generation)
@@ -1841,10 +2037,8 @@ class Controller {
     _ensureFrameMarker() {
         const root = document.documentElement
         if (!root) return
-        let topFrame = false
-        try { topFrame = window.top === window } catch (_) { /* Treat inaccessible parents as subframes. */ }
         markInternalMutationTarget(root)
-        root.setAttribute('data-phobiablocker-frame', topFrame ? 'top' : 'sub')
+        root.setAttribute(ROOT_ATTRS.frame, isTopFrameContext() ? 'top' : 'sub')
     }
 
     _releaseEarlyWordCover() {
@@ -1858,6 +2052,7 @@ class Controller {
 
 const controller = new Controller()
 let settingsReadGeneration = 0
+let settingsInitialized = false
 
 function conservativeSettings() {
     return {
@@ -1868,16 +2063,15 @@ function conservativeSettings() {
     }
 }
 
-function withTimeout(promise, timeoutMs, label) {
-    let timeoutId = null
-    return Promise.race([
-        promise,
-        new Promise((_, reject) => {
-            timeoutId = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs)
-        }),
-    ]).finally(() => {
-        if (timeoutId !== null) clearTimeout(timeoutId)
-    })
+// early-blur.js issues the first storage read at document_start. The load
+// path reuses it so each frame pays one round-trip; any storage change since
+// makes it stale, and the onChanged listener drops it.
+let initialSettingsRead = globalThis.PhobiaBlockerInitialSettingsRead || null
+
+function readSettings() {
+    const shared = initialSettingsRead
+    initialSettingsRead = null
+    return shared || Storage.getWithDefaults(Object.keys(DEFAULTS))
 }
 
 // A settings read that never settles used to leave the page fail-closed
@@ -1887,11 +2081,7 @@ async function readSettingsWithRetry() {
     let lastError = null
     for (let attempt = 1; attempt <= SETTINGS_READ_ATTEMPTS; attempt++) {
         try {
-            return await withTimeout(
-                Storage.getWithDefaults(Object.keys(DEFAULTS)),
-                SETTINGS_READ_TIMEOUT_MS,
-                'Settings read'
-            )
+            return await withTimeout(readSettings(), SETTINGS_READ_TIMEOUT_MS, 'Settings read')
         } catch (error) {
             lastError = error
             console.warn(`PhobiaBlocker: settings read attempt ${attempt} failed`, error)
@@ -1900,12 +2090,27 @@ async function readSettingsWithRetry() {
     throw lastError || new Error('Settings read failed')
 }
 
-async function readAndApplySettings() {
+// Visual-only changes (blur strength, preview) re-style what is already on
+// the page; everything else re-resolves the protection mode from scratch.
+async function readAndApplySettings({ visualOnly = false } = {}) {
     const readGeneration = ++settingsReadGeneration
     try {
         const settings = await readSettingsWithRetry()
         if (readGeneration !== settingsReadGeneration) return
+        settingsInitialized = true
         const mode = Policy.resolveProtectionMode(settings, location.href)
+        // A newer visual read may have superseded a still-pending policy read.
+        // Compare against the settings actually applied, not just this event's keys.
+        const protectionChanged = [...POLICY_STORAGE_KEYS].some(key => (
+            !VISUAL_STORAGE_KEYS.has(key) && !UI_ONLY_STORAGE_KEYS.has(key) &&
+            JSON.stringify(settings[key]) !== JSON.stringify(controller.settings[key])
+        ))
+        // Only a page whose protection has been applied once can take the
+        // re-style shortcut; before that the initial application must run.
+        if (visualOnly && controller.protectionApplied && mode === controller.mode && !protectionChanged) {
+            controller.setSettings(settings)
+            return
+        }
         await controller.applyProtectionMode(mode, settings)
     } catch (error) {
         if (readGeneration !== settingsReadGeneration) return
@@ -1913,6 +2118,17 @@ async function readAndApplySettings() {
         await controller.applyProtectionMode(PROTECTION_MODE.ALWAYS_BLUR, conservativeSettings())
     }
 }
+
+function applyCurrentUrlPolicy() {
+    if (!settingsInitialized) return
+    const mode = Policy.resolveProtectionMode(controller.settings, location.href)
+    if (mode !== controller.mode) void controller.applyProtectionMode(mode, controller.settings)
+}
+
+// These events also work while protection is disabled. The service worker
+// relays pushState/replaceState changes, which do not emit popstate themselves.
+window.addEventListener('popstate', applyCurrentUrlPolicy)
+window.addEventListener('hashchange', applyCurrentUrlPolicy)
 
 function contextPointInside(element, point) {
     if (!point || typeof point.clientX !== 'number' || typeof point.clientY !== 'number') return false
@@ -1958,33 +2174,49 @@ document.addEventListener('contextmenu', (event) => {
 }, true)
 
 document.addEventListener('keydown', (event) => {
-    if (!event || event.defaultPrevented || event.repeat) return
+    if (!event || !event.isTrusted || event.defaultPrevented || event.repeat) return
     if (!event.altKey || !event.shiftKey || event.ctrlKey || event.metaKey) return
     if (event.code !== 'KeyW' && String(event.key || '').toLowerCase() !== 'w') return
     const element = event.target?.nodeType === Node.ELEMENT_NODE ? event.target : event.target?.parentElement
     if (element?.matches?.('input, textarea, select, [contenteditable="true"]')) return
     event.preventDefault()
-    try {
-        chrome.runtime.sendMessage({ target: 'background', type: 'toggleWordCover', source: 'keyboard' })
-    } catch (_) { /* The background listener will report a disconnected runtime. */ }
+    sendToBackground({ type: 'toggleWordCover', source: 'keyboard' })
 }, true)
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== 'sync') return
-    if (!Object.keys(changes).some(key => POLICY_STORAGE_KEYS.has(key))) return
-    void readAndApplySettings()
+    initialSettingsRead = null
+    const changedKeys = Object.keys(changes).filter(key => (
+        POLICY_STORAGE_KEYS.has(key) && !UI_ONLY_STORAGE_KEYS.has(key)
+    ))
+    if (changedKeys.length === 0) return
+    void readAndApplySettings({ visualOnly: changedKeys.every(key => VISUAL_STORAGE_KEYS.has(key)) })
 })
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || (message.target && message.target !== 'content')) return false
 
     switch (message.type) {
+    case 'PB_URL_CHANGED':
+        applyCurrentUrlPolicy()
+        sendResponse({ ok: true })
+        return true
+
+    case FRAME_MESSAGES.statusRequest:
+        sendResponse(controller.getFrameProtectionStatus())
+        return true
+
+    case FRAME_MESSAGES.aggregateInvalidated:
+        controller._invalidateFrameAggregate()
+        sendResponse({ ok: true })
+        return true
+
     case 'getAnalysisDebugState':
         if (!isTopFrameContext()) return false
         sendResponse({
             ...ANALYSIS_DEBUG_STATE,
             mediaCount: controller.getVisualNodes().length,
-            pageWordCount: controller._pageTextIndex.getWords().length,
+            pageWordCount: controller._pageTextIndex.wordCount,
             policyGeneration: controller._policyGeneration,
             protectionMode: controller.mode,
         })

@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hover Large Container Test</title>
+    <style>
+        #large-card {
+            position: relative;
+            width: 720px;
+            min-height: 500px;
+            padding: 24px;
+            background: #f4f4f4;
+        }
+
+        #same-card-empty-zone {
+            height: 160px;
+            margin-top: 28px;
+        }
+    </style>
+</head>
+<body>
+    <section id="large-card">
+        <h1>Large Card Around One Image</h1>
+        <p>This card mentions a spider, so the image should remain blurred.</p>
+        <img id="spider-image" width="300" height="200" src="https://via.placeholder.com/300x200/ff0000/ffffff?text=Spider+Image" alt="Spider">
+        <div id="same-card-empty-zone">Pointer can move here while still inside the same positioned card.</div>
+    </section>
+</body>
+</html>
