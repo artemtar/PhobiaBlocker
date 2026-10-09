@@ -44,7 +44,7 @@ fi
 echo "Updated manifest.json to version $NEW_VERSION"
 
 # Create zip file with new version
-ZIP_FILE="phobiablocker-v${NEW_VERSION}.zip"
+ZIP_FILE="phobiablur-v${NEW_VERSION}.zip"
 echo "Creating $ZIP_FILE..."
 
 OUTPUT_DIR=$(pwd -P)

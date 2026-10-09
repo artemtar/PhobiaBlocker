@@ -56,15 +56,15 @@
     }
 
     function isExcludedTextNode(node) {
-        const parent = node && node.parentElement
+        const parent = PageTextIndex.composedParent(node)
         if (!parent) return true
-        if (parent.closest && parent.closest(PageTextIndex.EXCLUDED_SELECTOR)) return true
+        if (PageTextIndex.closestAcrossRoots(parent, PageTextIndex.EXCLUDED_SELECTOR)) return true
         let current = parent
         while (current) {
             if (earlyCovers.has(current)) return true
             current = current.parentElement
         }
-        return parent.isContentEditable
+        return PageTextIndex.isEditableElement(parent)
     }
 
     function canCoverWords() {
@@ -90,8 +90,9 @@
         PageTextIndex.collectTextNodes(node).forEach(coverTextNode)
     }
 
-    function unwrapEarlyCovers() {
+    function unwrapEarlyCovers(shouldUnwrap = () => true) {
         Array.from(earlyCovers).forEach((cover) => {
+            if (!shouldUnwrap(cover)) return
             earlyCovers.delete(cover)
             const parent = cover.parentNode
             if (!parent) return
@@ -120,6 +121,11 @@
         observer = new MutationObserver((mutations) => {
             mutations.forEach((mutation) => {
                 if (mutation.type === 'attributes') {
+                    if (mutation.attributeName === 'contenteditable') {
+                        unwrapEarlyCovers(cover => PageTextIndex.isEditableElement(cover))
+                        coverSubtree(mutation.target)
+                        return
+                    }
                     const cover = mutation.target
                     if (earlyCovers.has(cover) && !cover.classList.contains('phobia-word-cover')) {
                         cover.classList.add('phobia-word-cover')
@@ -138,7 +144,7 @@
             characterData: true,
             subtree: true,
             attributes: true,
-            attributeFilter: ['class'],
+            attributeFilter: ['class', 'contenteditable'],
         })
     }
 

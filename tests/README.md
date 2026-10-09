@@ -1,253 +1,47 @@
-# PhobiaBlocker Extension Tests
+# PhobiaBlur Tests
 
-Run `npm run test:unit` from the repository root for the focused regression checks in `tests/unit/`. They execute the real extension scripts with controlled browser API boundaries, including settings races, media protection, matching, navigation messages, popup persistence, and assertion contracts. They do not verify browser layout or painting; validate those with the loaded extension on real sites.
+## Unit suite (release gate)
 
-The browser suites described below are historical and quarantined. Root `npm test` intentionally fails to prevent treating them as a release gate; some older cases still assume behavior and debug fields no longer present in the extension.
+Run `npm run test:unit` from the repository root. It executes `node --test tests/unit/*.test.js`: the real extension scripts run inside `node:vm` with only the Chrome and DOM boundaries faked (`tests/unit/helpers/content-harness.js` models a small DOM tree; the popup and settings suites fake `chrome.storage` callback ordering). No browser is launched.
 
-This directory contains end-to-end (E2E) tests for the PhobiaBlocker Chrome extension. These tests run separately from the extension itself and use Puppeteer to automate Chrome with the extension loaded.
+The suites cover settings races, fail-closed startup, media protection and blur strength, text-index mutations, matching and URL policy, navigation relay and frame-aggregate invalidation, frame clearance and its retention, shadow-root discovery and styles, popup initialization, the help tooltips, the pack scripts and the store release and upload scripts. They do not verify browser layout or painting; validate those with the loaded extension on real sites.
 
-## Prerequisites
+Run a single suite with `node --test tests/unit/<name>.test.js`.
 
-- Node.js (v18 or higher recommended)
-- Chrome browser installed
-- The PhobiaBlocker extension code (parent directory)
+## Live check: native popup sizing
 
-## Installation
+`tests/live/popup-sizing.js` exercises Chrome's native action popup, which cannot be tested by opening `popup.html` in a tab. Run it through the extension-enabled Playwright server's `browser_run_code_unsafe` tool with the script's absolute path as `filename`, and keep a real website active in that browser. It opens the popup three times, measures its size during help and disclosure interactions, checks that pointer and keyboard activation leave the trigger-word editor unobscured, and verifies saved preferences stay unchanged.
 
-Navigate to the tests directory and install dependencies:
+## Historical: Puppeteer E2E suites (quarantined)
+
+The `tests/*.test.js` files are end-to-end suites that launch a real Chrome with the extension loaded through Puppeteer. They are kept for reference only: root `npm test` fails on purpose so they are not mistaken for a release gate, and some cases still assume behaviour and debug fields the extension no longer has. Chromium does not launch inside a sandboxed shell, and extensions need a headed (non-headless) browser.
+
+### Setup
 
 ```bash
 cd tests
-npm install
+npm install        # installs Puppeteer into tests/node_modules
+node --test        # all suites; or node --test site-rules.test.js
 ```
 
-This will install Puppeteer and all required dependencies.
-
-## Test Structure
-
-The test suite is organized into the following test files:
-
-### `basic-functionality.test.js`
-Tests core extension functionality: loading, phobia word storage, blur/unblur, enable/disable toggle, and "always blur" mode.
-
-### `flash-prevention.test.js`
-Tests that visual content is blurred immediately on page load before JS runs (CSS applied first), with correct specificity.
-
-### `framework-compatibility.test.js`
-Verifies the extension works correctly alongside common front-end frameworks.
-
-### `icon-status.test.js`
-Tests toolbar icon color changes: all nine icon variants (idle/processing/detected × 16/48/128px) are preloaded in the service worker, pixel-level color assertions (yellow tint for processing, red tint for detected, idle is visually distinct), and status message flow (processing→idle on clean pages, processing→detected on phobia pages, idle-only when disabled, detected-only when blurIsAlwaysOn).
-
-### `hover-preview.test.js`
-Tests the hover-preview feature: reduced blur on hover, CSS variable `--previewBlurAmount`, pointer-events on blurred elements, and live settings updates.
-
-### `nlp-analysis.test.js`
-Tests NLP text analysis: plurals, irregular plurals (mouse/mice), verb forms, case insensitivity, possessives, partial-match prevention, and special characters.
-
-### `site-rules.test.js`
-Tests whitelist/blacklist functionality: storage, pattern matching (wildcards, subdomains, paths), precedence rules, and integration with other features.
-
-### `storage-persistence.test.js`
-Tests that extension settings persist correctly across sessions.
-
-### `visual-content.test.js`
-Tests blur behaviour for all visual content types: img, background images, video, and cross-origin vs same-origin iframes.
-
-## Running Tests
-
-### Run All Tests
-
-```bash
-npm test
-```
-
-This runs all test files using Node.js built-in test runner.
-
-### Run Individual Test Files
-
-```bash
-npm run test:basic    # basic-functionality.test.js
-npm run test:nlp      # nlp-analysis.test.js
-npm run test:visual   # visual-content.test.js
-npm run test:icon     # icon-status.test.js
-```
-
-Or run any file directly:
-
-```bash
-node --test site-rules.test.js
-```
-
-### Watch Mode
-
-To run tests in watch mode (re-runs on file changes):
-
-```bash
-npm run test:watch
-```
-
-## Test Pages
-
-The `test-pages/` directory contains HTML files loaded via `file://` URLs during tests:
-
-- `simple-image.html` — Images and background images
-- `video-iframe.html` — Video and iframe elements
-- `dynamic-content.html` — Dynamically added content
-- `cross-origin-iframe.html` — Cross-origin vs same-origin iframes
-- `picture-overlay.html` — `<picture>` element with sibling overlay
-- `basic-images.html` — Multiple image types and edge cases
-- `nlp-*.html` — NLP-specific test pages (plurals, verbs, possessives, etc.)
-
-## How Tests Work
-
-1. **Browser Launch**: Puppeteer launches Chrome with the extension loaded from the parent directory
-2. **Extension Access**: Tests interact with the extension via Chrome APIs (`chrome.storage`, `chrome.runtime`)
-3. **Page Navigation**: Tests load test HTML pages and verify blur behavior
-4. **Assertions**: Tests check computed CSS styles, element states, and extension storage
-
-## Test Utilities
-
-The `test-utils.js` file provides helper functions:
-
-- `launchBrowserWithExtension()` - Launch Chrome with extension
-- `setPhobiaWords(page, words)` - Configure phobia words
-- `getPhobiaWords(page)` - Retrieve current phobia words
-- `setExtensionEnabled(page, enabled)` - Enable/disable extension
-- `isElementBlurred(page, selector)` - Check if element is blurred
-- `waitForBlurState(page, selector, shouldBeBlurred, timeout)` - Wait for blur state
-- `countBlurredImages(page)` - Count all blurred images on page
-- `getAllVisualElements(page)` - Get info about all visual elements
-- And more...
-
-## Important Notes
-
-### Headless Mode
-- Tests run in **non-headless mode** because Chrome extensions don't work in headless mode
-- You'll see Chrome windows open during test execution
-- This is expected behavior
-
-### Timing
-- Tests use `waitForTimeout()` to allow for:
-  - Content script initialization (~500ms)
-  - Text analysis processing (~1-2s)
-  - Unveil timers (2s for safe content)
-- If tests are flaky, you may need to increase timeout values
-
-### Extension Storage
-- Tests use `chrome.storage.sync` to configure the extension
-- Storage is cleared before each test suite to ensure clean state
-- Settings persist across page navigations within a test
-
-### Test Isolation
-- Each test file has its own `before`/`after` hooks
-- Browser is launched once per test file and reused across tests
-- Pages are navigated/recreated for each test
-
-## Debugging Tests
-
-### Viewing Test Execution
-Since tests run in non-headless mode, you can watch the browser as tests execute. This is helpful for debugging.
-
-### Adding Console Logs
-Add `console.log()` statements in test files or use Puppeteer's console event:
-
-```javascript
-page.on('console', msg => console.log('PAGE LOG:', msg.text()))
-```
-
-### Taking Screenshots
-Add screenshots to debug visual issues:
-
-```javascript
-await page.screenshot({ path: 'debug-screenshot.png' })
-```
-
-### Slowdown Execution
-Add longer waits to observe behavior:
-
-```javascript
-await page.waitForTimeout(5000) // Wait 5 seconds
-```
-
-## Troubleshooting
-
-### "Extension service worker not found"
-- Make sure the extension path in `test-utils.js` (`EXTENSION_PATH`) points to the correct location
-- Verify `manifest.json` exists in the parent directory
-- Check that the extension has a valid background service worker defined
-
-### Tests Timing Out
-- Increase timeout values in tests
-- Check if the extension is loading properly
-- Verify test page URLs are correct
-
-### "Element not found" Errors
-- Check that selectors match the test HTML pages
-- Ensure pages are fully loaded before querying elements
-- Increase wait times if content loads slowly
-
-### Blur Not Detected
-- Check that the extension is enabled (`phobiaBlockerEnabled: true`)
-- Verify phobia words are set correctly
-- Ensure text analysis has completed (wait longer)
-- Check CSS filter value in browser DevTools
-
-## CI/CD Integration
-
-To run tests in CI/CD pipelines:
-
-1. Install Node.js and Chrome in your CI environment
-2. Install test dependencies: `npm install`
-3. Run tests: `npm test`
-
-Note: You may need to configure Chrome to run in a CI environment with appropriate flags (e.g., `--no-sandbox`, `--disable-setuid-sandbox`).
-
-## Writing New Tests
-
-To add new tests:
-
-1. Create a new test file or add to existing ones
-2. Import test utilities from `test-utils.js`
-3. Use `describe()` and `it()` from Node.js test runner
-4. Use `before()`/`after()` hooks for setup/teardown
-5. Use `assert` module for assertions
-
-Example test structure:
-
-```javascript
-const { describe, it, before, after } = require('node:test')
-const assert = require('node:assert')
-const { launchBrowserWithExtension, /* ... */ } = require('./test-utils')
-
-describe('My Test Suite', () => {
-    let browser, page
-
-    before(async () => {
-        browser = await launchBrowserWithExtension()
-        page = await browser.newPage()
-    })
-
-    after(async () => {
-        if (browser) await browser.close()
-    })
-
-    it('should do something', async () => {
-        // Test code here
-        assert.ok(true, 'Test passed')
-    })
-})
-```
-
-## Contributing
-
-When adding new features to the extension:
-
-1. Add corresponding tests to verify the feature works
-2. Update test pages if needed
-3. Add new test utilities if helpful for multiple tests
-4. Run all tests to ensure nothing broke
-
-## License
-
-Same as the main PhobiaBlocker project.
+`test-utils.js` provides `launchBrowserWithExtension()`, `setPhobiaWords()`, `setExtensionEnabled()`, `isElementBlurred()`, `waitForBlurState()`, `countBlurredImages()` and similar helpers. `EXTENSION_PATH` in that file must point at the repository root. Pages under `test-pages/` are loaded over `file://`.
+
+### Suites
+
+- `basic-functionality.test.js`: loading, trigger-word storage, blur/unblur, enable/disable, "always blur".
+- `flash-prevention.test.js`: media is blurred by CSS before any script runs, with the right specificity.
+- `framework-compatibility.test.js`: coexistence with common front-end frameworks.
+- `icon-status.test.js`: all fifteen icon variants (idle/processing/detected x 16/24/32/48/128 px) are preloaded in the service worker, pixel-level tint assertions (yellow for processing, red for detected, idle distinct), and the status flow (processing to idle on clean pages, processing to detected on trigger pages, idle-only when disabled, detected-only when `blurIsAlwaysOn`).
+- `hover-preview.test.js`: reduced blur on hover, `--previewBlurAmount`, pointer-events on blurred elements, live settings updates.
+- `nlp-analysis.test.js`: plurals, irregular plurals, verb forms, case, possessives, partial-match prevention, special characters.
+- `site-rules.test.js`: whitelist and blacklist storage, wildcard/subdomain/path matching, precedence.
+- `storage-persistence.test.js`: settings persist across sessions.
+- `visual-content.test.js`: img, background images, video, cross-origin vs same-origin iframes.
+- `attribute-lifecycle.test.js`: the `data-phobia-blur` attribute and blur-class lifecycle, including dynamically injected images.
+
+### Notes when reviving a suite
+
+- Each file launches one browser in `before()` and reuses it; pages are recreated per test. Storage is cleared before each suite.
+- Timing relies on `waitForTimeout()` for content-script start (~500 ms), analysis (1-2 s) and unveil timers; raise the waits before blaming the extension.
+- If the service worker is not found, check `EXTENSION_PATH` and that `manifest.json` declares `background.service_worker`.
+- If blur is not detected, confirm `phobiaBlockerEnabled: true`, the trigger words, that analysis finished, and the computed `filter` in DevTools.

@@ -9,12 +9,90 @@
     // Text inside these elements is neither indexed nor covered.
     const EXCLUDED_SELECTOR = [
         'script', 'style', 'noscript', 'input', 'textarea', 'select', 'option',
-        'form', '[contenteditable="true"]', '[hidden]', '[aria-hidden="true"]',
+        'form', '[hidden]', '[aria-hidden="true"]',
     ].join(', ')
     const WORD_RE = policy.WORD_RE
     const HAS_THREE_LETTERS_RE = /(?:\P{L}*\p{L}){3}/u
-    const VISIBILITY_ATTRIBUTES = new Set(['class', 'style', 'hidden', 'aria-hidden'])
+    const VISIBILITY_ATTRIBUTES = new Set(['class', 'style', 'hidden', 'aria-hidden', 'contenteditable'])
     const TEXT_SEGMENTER = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+
+    function composedParent(element) {
+        return element?.parentElement || element?.getRootNode?.().host || null
+    }
+
+    // These scans follow DOM ownership, including open shadow roots. Slot
+    // distribution does not change which subtree owns a text or media node.
+    function minimalRoots(nodes) {
+        const roots = new Set([...nodes].filter(Boolean))
+        return [...roots].filter(node => {
+            for (let parent = node.parentNode || node.host; parent; parent = parent.parentNode || parent.host) {
+                if (roots.has(parent)) return false
+            }
+            return true
+        })
+    }
+
+    function isEditableElement(node) {
+        const element = node?.nodeType === Node.TEXT_NODE ? composedParent(node) : node
+        return Boolean(element && (element.isContentEditable ||
+            element.ownerDocument?.designMode?.toLowerCase() === 'on'))
+    }
+
+    function isEditableDocument(doc) {
+        return Boolean(doc && (doc.body?.isContentEditable || doc.designMode?.toLowerCase() === 'on'))
+    }
+
+    function closestAcrossRoots(element, selector) {
+        for (let current = element; current; current = composedParent(current)) {
+            if (current.matches?.(selector)) return current
+        }
+        return null
+    }
+
+    // Selectors and tree walkers stop at a shadow boundary. Visit each open
+    // root once; slotted nodes stay in their original tree and are not doubled.
+    function collectDomRoots(root) {
+        if (!root) return []
+        const roots = [root]
+        for (let index = 0; index < roots.length; index++) {
+            const current = roots[index]
+            if (current.shadowRoot) roots.push(current.shadowRoot)
+            current.querySelectorAll?.('*').forEach(element => {
+                if (element.shadowRoot) roots.push(element.shadowRoot)
+            })
+        }
+        return roots
+    }
+
+    function containsEditingSurface(element) {
+        const isEditingSurface = candidate => {
+            if (isEditableElement(candidate) || candidate.matches?.(
+                'input, textarea, select, button, [role="textbox"], [role="combobox"]',
+            )) return true
+            if (candidate.tagName !== 'IFRAME') return false
+            try {
+                return isEditableDocument(candidate.contentDocument)
+            } catch (_) {
+                return false
+            }
+        }
+        const pending = element ? [element] : []
+        const seen = new Set()
+        while (pending.length > 0) {
+            const candidate = pending.pop()
+            if (seen.has(candidate)) continue
+            seen.add(candidate)
+            if (isEditingSurface(candidate)) return true
+            if (candidate.shadowRoot) pending.push(candidate.shadowRoot)
+            // A shadow wrapper can visually contain a slotted control that is
+            // outside its DOM subtree. Follow those assignments as well.
+            if (candidate.localName === 'slot') {
+                pending.push(...(candidate.assignedElements?.({ flatten: true }) || []))
+            }
+            pending.push(...(candidate.children || []))
+        }
+        return false
+    }
 
     function tokenize(value) {
         const normalized = typeof value === 'string' ? value.normalize('NFKC').toLowerCase() : ''
@@ -24,12 +102,14 @@
     function collectTextNodes(root) {
         const textNodes = []
         try {
-            const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
-            let current = walker.nextNode()
-            while (current) {
-                textNodes.push(current)
-                current = walker.nextNode()
-            }
+            collectDomRoots(root).forEach(tree => {
+                const walker = document.createTreeWalker(tree, NodeFilter.SHOW_TEXT)
+                let current = walker.nextNode()
+                while (current) {
+                    textNodes.push(current)
+                    current = walker.nextNode()
+                }
+            })
         } catch (_) {
             return []
         }
@@ -48,8 +128,8 @@
     function createWordCover(word, color) {
         const cover = document.createElement('span')
         cover.className = 'phobia-word-cover'
-        cover.setAttribute('title', 'Covered by PhobiaBlocker')
-        cover.setAttribute('aria-label', 'Covered by PhobiaBlocker')
+        cover.setAttribute('title', 'Covered by PhobiaBlur')
+        cover.setAttribute('aria-label', 'Covered by PhobiaBlur')
         cover.style.setProperty('--phobiablocker-word-cover-color', color)
         cover.textContent = word
         return cover
@@ -119,7 +199,7 @@
         }
 
         for (const { start, end } of coveredTextRanges(text, shouldCover)) {
-            if (color === null) color = coverColorFor(textNode.parentElement)
+            if (color === null) color = coverColorFor(composedParent(textNode))
             appendPlain(text.slice(lastIndex, start))
             const cover = createWordCover(text.slice(start, end), color)
             covers.push(cover)
@@ -185,6 +265,7 @@
             const mutations = (Array.isArray(records) ? records : [])
                 .filter(mutation => mutation && mutation.target)
             const changedCovers = new Set()
+            const removedRoots = []
             const trackCovers = Boolean(this._onOwnedCoverChange) && this._hasOwnedCovers()
 
             // Reconciliation can replace a cover's contents synchronously. Drop
@@ -192,33 +273,38 @@
             // and include the replacement text in this batch's net vocabulary.
             for (const mutation of mutations) {
                 if (mutation.type === 'childList') {
-                    mutation.removedNodes.forEach(node => this._removeSubtree(node))
+                    removedRoots.push(...mutation.removedNodes)
                 }
                 if (!trackCovers || (mutation.type !== 'characterData' && mutation.type !== 'childList')) continue
                 const cover = this._findOwnedCover(mutation.target)
                 if (cover && cover.isConnected !== false) changedCovers.add(cover)
             }
+            minimalRoots(removedRoots).forEach(node => this._removeSubtree(node))
             changedCovers.forEach(cover => this._onOwnedCoverChange(cover))
 
+            const changedRoots = []
+            let titleChanged = false
             for (const mutation of mutations) {
-                if (this._mutationTouchesTitle(mutation)) this._refreshTitle()
+                titleChanged = titleChanged || this._mutationTouchesTitle(mutation)
 
                 if (mutation.type === 'characterData') {
-                    if (!this._isInsideTitle(mutation.target)) this.indexTextNode(mutation.target)
+                    if (!this._isInsideTitle(mutation.target)) changedRoots.push(mutation.target)
                     continue
                 }
 
                 if (mutation.type === 'attributes') {
-                    if (VISIBILITY_ATTRIBUTES.has(mutation.attributeName)) this._reindexSubtree(mutation.target)
+                    if (VISIBILITY_ATTRIBUTES.has(mutation.attributeName)) changedRoots.push(mutation.target)
                     continue
                 }
 
                 if (mutation.type !== 'childList') continue
 
                 mutation.addedNodes.forEach((node) => {
-                    if (!this._isInsideTitle(node)) this._indexSubtree(node)
+                    if (!this._isInsideTitle(node)) changedRoots.push(node)
                 })
             }
+            if (titleChanged) this._refreshTitle()
+            minimalRoots(changedRoots).forEach(node => this._reindexSubtree(node))
 
             const added = this._recentAdded
             const removed = this._recentRemoved
@@ -293,10 +379,12 @@
                 this.indexTextNode(node)
                 return
             }
-            if (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.DOCUMENT_NODE) return
-            if (node.nodeType === Node.ELEMENT_NODE && this._shouldSkipElement(node)) return
+            if (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.DOCUMENT_NODE &&
+                node.nodeType !== Node.DOCUMENT_FRAGMENT_NODE) return
+            if (node.nodeType === Node.ELEMENT_NODE && node.matches(EXCLUDED_SELECTOR)) return
 
-            // Finish collecting before callbacks can replace text with word covers.
+            // Editability can be overridden by descendants, so test it per text
+            // node. Collect first: callbacks can replace text with word covers.
             collectTextNodes(node).forEach(textNode => this.indexTextNode(textNode))
         }
 
@@ -309,7 +397,8 @@
                 this.removeTextNode(node)
                 return
             }
-            if (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.DOCUMENT_NODE) return
+            if (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.DOCUMENT_NODE &&
+                node.nodeType !== Node.DOCUMENT_FRAGMENT_NODE) return
 
             collectTextNodes(node).forEach(textNode => this.removeTextNode(textNode))
         }
@@ -318,7 +407,7 @@
         // and reports no change when the vocabulary is identical, so a class or
         // style toggle that does not alter visible text costs nothing downstream.
         _reindexSubtree(node) {
-            if (node && node.nodeType === Node.ELEMENT_NODE && this._shouldSkipElement(node)) {
+            if (node && node.nodeType === Node.ELEMENT_NODE && node.matches(EXCLUDED_SELECTOR)) {
                 this._removeSubtree(node)
                 return
             }
@@ -372,7 +461,7 @@
 
         _shouldSkipElement(element) {
             if (!element || !element.matches) return false
-            return element.matches(EXCLUDED_SELECTOR)
+            return isEditableElement(element) || element.matches(EXCLUDED_SELECTOR)
         }
 
         _findOwnedCover(node) {
@@ -385,10 +474,10 @@
         }
 
         _isEligibleTextNode(node) {
-            const parent = node && node.parentElement
+            const parent = composedParent(node)
             if (!parent || node.isConnected === false) return false
 
-            if (parent.closest && parent.closest(EXCLUDED_SELECTOR)) return false
+            if (this._shouldSkipElement(parent) || closestAcrossRoots(parent, EXCLUDED_SELECTOR)) return false
 
             try {
                 if (parent.getClientRects().length === 0) return false
@@ -407,7 +496,11 @@
 
     // Shared with the early-blur shim and the controller's word covers so the
     // exclusion list and cover markup cannot drift between them.
-    Object.assign(PageTextIndex, { EXCLUDED_SELECTOR, collectTextNodes, splitTextNodeByWords, unwrapWordCover })
+    Object.assign(PageTextIndex, {
+        EXCLUDED_SELECTOR, collectDomRoots, composedParent, closestAcrossRoots, minimalRoots,
+        collectTextNodes, splitTextNodeByWords, unwrapWordCover,
+        isEditableElement, isEditableDocument, containsEditingSurface,
+    })
 
     globalThis.PhobiaBlockerPageTextIndex = PageTextIndex
 })()

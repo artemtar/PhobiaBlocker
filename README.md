@@ -1,109 +1,73 @@
-# PhobiaBlocker
+# PhobiaBlur
 
-A Chrome Extension that automatically blurs images on web pages if they might contain content related to your specific phobias. Using Natural Language Processing (NLP), PhobiaBlocker analyzes text around images to intelligently determine which images should be blurred, helping you browse the web with confidence.
+A Chrome extension for more control over phobia triggers while browsing. Add trigger words, adjust the blur, and choose when to preview or reveal media.
 
-## Features
+PhobiaBlur analyzes page text. When it finds one of your words or a supported word variation, it keeps the page's supported images, videos, backgrounds, and embedded frames blurred. It does not recognize what is inside an image or video, and it cannot guarantee a trigger-free experience.
 
-- **Intelligent Text Analysis**: Uses NLP (compromise.js) to analyze text content around images, detecting phobia-related words and their variations (plurals, verb forms, etc.)
-- **Custom Word List**: Define your own list of phobia-related words that should trigger image blurring
-- **Real-Time Processing**: Continuously monitors pages as they load, including infinite scroll content
-- **Manual Controls**: Blur or unblur all images instantly with keyboard shortcuts or buttons
-- **Adjustable Blur Intensity**: Customize how much images are blurred (0-7 levels)
-- **Always-On Mode**: Option to blur all images by default, bypassing text analysis
-- **Context Menu Integration**: Right-click any blurred image to unblur it permanently
-- **Lightweight**: Custom-built tag management system, optimized for performance
+## Controls
 
-## Installation
+- **Smart detection** checks page text for your trigger words and supported English word forms, such as "mouse" and "mice".
+- **Always blur** keeps supported media blurred regardless of text matches while protection is enabled.
+- **Cover words** visually covers literal matching trigger words in page text. It does not inspect text inside images or cover every NLP word variation.
+- **Blur all / Unblur all** changes the current page manually. Right-click **Unblur** reveals an individual item; reveal state is not permanent across page reloads or media changes.
+- **Blur amount** adjusts the popup slider from 0 to 100. This controls blur strength, not a percentage of guaranteed protection.
+- **Hover preview** temporarily reduces the blur. Choose the remaining blur strength in Settings; moving away restores the normal blur.
+- **Site rules** pause automatic protection on whitelisted sites or keep media blurred on blacklisted sites. Rules support domains, subdomains, and paths; the blacklist takes precedence.
 
-### From Source (Developer Mode)
+Protection follows media, text, and embedded frames inside open shadow roots used by web components. Closed shadow roots are not inspected. Debug logging is off by default; Settings can enable diagnostic counts and state changes without logging page text, trigger words, or URLs.
 
-1. Clone or download this repository to your local machine
-2. Open Chrome and navigate to `chrome://extensions/`
-3. Enable "Developer mode" using the toggle in the top right corner
-4. Click "Load unpacked" and select the PhobiaBlocker directory
-5. The extension icon should appear in your Chrome toolbar
+After Smart detection clears a page, unchanged media stays visible while newly displayed text is analyzed. New or changed media remains protected during that analysis. A newly added literal trigger re-blurs the page immediately; a match found only through word-form analysis re-blurs it when the result returns. Navigation, protection-setting changes, and failed analysis do not retain automatic clearance.
 
-### Configuration
+Editable text is excluded from word covering. Background images on controls and containers holding editors are hidden separately so their text stays readable. Same-origin editor frames are released only after their content controller confirms protection of the media inside; other frames retain the usual conservative handling.
 
-1. Click the PhobiaBlocker icon in your Chrome toolbar to open the popup
-2. The extension comes with example words (clown, mice, spider) - remove or keep them as needed
-3. Add your own phobia-related words in the "Your Words" section
-4. Adjust settings as desired (see Usage section below)
+## Install and configure
 
-## Usage
+1. Clone or download this repository.
+2. Open `chrome://extensions/` and enable **Developer mode**.
+3. Select **Load unpacked** and choose the repository directory.
+4. Open the PhobiaBlur popup and review the default trigger words (`clown`, `mice`, `spider`).
+5. Add or remove entries in **Trigger words**, then adjust blur and site preferences.
 
-### Adding Phobia Words
+You can save up to 20 trigger words. Each entry must be a single word of 3–30 characters; internal hyphens are supported.
 
-1. Open the extension popup by clicking the PhobiaBlocker icon
-2. Expand the "Your Words" section if collapsed
-3. Type a word in the input field and press Enter or click the + button
-4. Remove words by clicking the × button on any tag
-5. Limit: 20 words, 30 characters per word
+Default shortcuts are `Alt+Shift+B` for Blur all, `Alt+Shift+U` for Unblur all, and `Alt+Shift+W` for word covers. Chrome may assign different shortcuts; inspect or change them at `chrome://extensions/shortcuts`.
 
-The extension automatically handles word variations:
-- **Plurals**: "spider" also matches "spiders"
-- **Verb forms**: "crawl" also matches "crawling", "crawled", "crawls"
-- **Irregular forms**: "mouse" also matches "mice"
+## Privacy
 
-### Controls
+Page-text analysis runs in the browser using bundled code. Trigger words and preferences use `chrome.storage.sync` and may sync through Chrome when enabled. See the [privacy policy](support_documents/PRIVACY_POLICY.md).
 
-**Text Analyzer Toggle**
-- Enable/disable the automatic text analysis feature
-- When disabled, images won't be analyzed or blurred automatically
+The source repository remains [artemtar/PhobiaBlocker](https://github.com/artemtar/PhobiaBlocker). Internal preference keys and extension identifiers are preserved through the product rename.
 
-**Blur Always On Toggle**
-- When enabled, all images are blurred by default regardless of content
-- Useful for maximum protection when browsing sensitive topics
+## Submission assets
 
-**Blur ALL / Unblur ALL Buttons**
-- Manually blur or unblur all images on the current page
-- Works independently of the text analyzer
+The [submission package](store-assets/refresh-2026-09-22/REVIEW.md) contains the approved PhobiaBlur branding, five cat-meme screenshots, promotional images, final listing text, and the release candidate. The fifth screenshot demonstrates word covers.
 
-**Blur Amount Slider**
-- Adjust blur intensity from 0 (no blur) to 7 (maximum blur)
-- Changes apply to all tabs immediately
+Use the [canonical listing](store-assets/STORE_LISTING.md) and [publishing guide](support_documents/PUBLISHING_GUIDE.md) for submission. Update the existing Chrome Web Store item to preserve its extension ID and installed users.
 
-### Keyboard Shortcuts
+## Validation and packaging
 
-- **Alt + Shift + B**: Blur all images on the current page
-- **Alt + Shift + U**: Unblur all images on the current page
+Run the supported checks from the repository root:
 
-### Context Menu
-
-- **Right-click on any blurred image** and select "Unblur" to permanently unblur that specific image
-
-## How It Works
-
-1. **Page Load**: When you visit a webpage, PhobiaBlocker scans for all images (both `<img>` tags and background images)
-2. **Text Extraction**: The extension extracts text from the page body and title
-3. **NLP Analysis**: Text is tokenized, normalized, and compared against your phobia word list
-4. **Smart Matching**: Page words are normalized before comparison so irregular forms such as "fall" and "fell" can match
-5. **Blur Decision**: Images are blurred if phobia-related words are detected nearby
-6. **Continuous Monitoring**: A MutationObserver watches for dynamically loaded content (infinite scroll, lazy loading, etc.)
-
-## Testing
-
-PhobiaBlocker includes a comprehensive end-to-end test suite that verifies all functionality. The tests run separately from the extension using Puppeteer to automate Chrome with the extension loaded.
-
-### Running Tests
-
-```bash
-cd tests
-npm install
-npm test
+```sh
+npm run test:unit
+npm run lint
+bash -n pack.sh pack-dev.sh
 ```
 
-Or use the quick-start script:
+The unit suite includes archive-content checks. Root `npm test` and the historical synthetic browser suites are quarantined; they are not a release gate. Validate UI and media behavior with the loaded extension in Chrome. See [tests/README.md](tests/README.md).
 
-```bash
-cd tests
-./run-tests.sh
+Create a release archive with an explicit version:
+
+```sh
+npm run prod -- 1.3.1
 ```
 
-### Test Coverage
+This updates `manifest.json` and creates `phobiablur-v1.3.1.zip` containing runtime files only. Check all pending working-tree changes before packaging. A version submitted to the existing Web Store item must exceed its latest uploaded version, including unpublished drafts. Use a new explicit version for a subsequent release.
 
-- **Basic Functionality**: Enable/disable, blur/unblur, settings persistence
-- **NLP Analysis**: Word normalization, plurals, verb forms, case insensitivity
-- **Visual Content**: Images, videos, iframes, background images, dynamic content
+`npm run dev` creates a local DEV build; it is not the submission artifact.
 
-For detailed testing documentation, see [tests/README.md](tests/README.md).
+## Automated store updates
+
+The **Release to Chrome Web Store** GitHub Actions workflow accepts a new version, runs the supported checks, builds a verified ZIP, and uploads it to the existing store item. Uploading a draft is the default; review submission is an explicit workflow option.
+
+See the [automation setup guide](support_documents/CHROME_WEB_STORE_AUTOMATION.md) for the required GitHub environment, variables, OAuth secrets, and release steps. The workflow builds committed code from the default branch; local changes must be committed and pushed before they can be released.

@@ -140,6 +140,42 @@ test('matching retains original words across a large page vocabulary', () => {
     })
 })
 
+test('kana-only page text stays clear for unrelated triggers', () => {
+    assert.deepEqual(analyze(['spider'], ['アルインコ', 'パナソニック']), {
+        id: 7,
+        shouldBlur: false,
+        matchedWords: [],
+        matchedInputWords: [],
+    })
+})
+
+test('words after a dropped kana token retain their normalized and literal matches', () => {
+    assert.deepEqual(analyze(
+        ['fall', 'mouse', 'spider-man'],
+        ['garden', 'アルインコ', 'fell', 'near-death', 'mice', 'spider-man']
+    ), {
+        id: 7,
+        shouldBlur: true,
+        matchedWords: ['fall', 'mouse', 'spider-man'],
+        matchedInputWords: ['fell', 'mice', 'spider-man'],
+    })
+})
+
+test('a literal Japanese trigger mixed with a Latin trigger matches only its own word', () => {
+    assert.deepEqual(analyze(['アルインコ', 'spider'], ['garden', 'アルインコ']), {
+        id: 7,
+        shouldBlur: true,
+        matchedWords: ['アルインコ'],
+        matchedInputWords: ['アルインコ'],
+    })
+    assert.deepEqual(analyze(['アルインコ', 'spider'], ['garden', 'パナソニック']), {
+        id: 7,
+        shouldBlur: false,
+        matchedWords: [],
+        matchedInputWords: [],
+    })
+})
+
 for (const rule of [
     'example.com/gallery/',
     'https://example.com/gallery/',

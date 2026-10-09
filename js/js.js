@@ -3,10 +3,14 @@
 const Policy = globalThis.PhobiaBlockerPolicy
 const Storage = globalThis.PhobiaBlockerStorage
 const PageTextIndex = globalThis.PhobiaBlockerPageTextIndex
+const EditorFrames = globalThis.PhobiaBlockerEditorFrames
+const FrameClearance = globalThis.PhobiaBlockerFrameClearance
 
-if (!Policy || !Storage || !PageTextIndex) {
+if (!Policy || !Storage || !PageTextIndex || !EditorFrames || !FrameClearance) {
     throw new Error('PhobiaBlocker: required shared modules are unavailable')
 }
+
+const debug = Policy.createDebugLogger('content', () => window.PHOBIABLOCKER_DEBUG === true)
 
 const {
     DEFAULTS, PROTECTION_MODE, STORAGE_KEYS, FAIL_CLOSED_RESULT, FRAME_MESSAGES, CSS_VARS, ROOT_ATTRS,
@@ -18,6 +22,7 @@ const BACKGROUND_READY_ATTR = ROOT_ATTRS.backgroundReady
 const BACKGROUND_SCANNING_ATTR = ROOT_ATTRS.backgroundScanning
 const BACKGROUND_MARKER_ATTR = 'data-phobiablocker-background'
 const ROOT_BACKGROUND_MARKER_ATTR = 'data-phobiablocker-root-background'
+const SUPPRESSED_BACKGROUND_MARKER_ATTR = 'data-phobiablocker-suppressed-background'
 const MEDIA_MARKER_ATTR = 'data-phobiablocker-media'
 const POLICY_STORAGE_KEYS = new Set(Object.values(STORAGE_KEYS))
 // Popup accordion state never affects a page.
@@ -30,12 +35,15 @@ const INTERNAL_ATTRIBUTE_STATE = new WeakMap()
 // The only observed attributes this script writes itself.
 const INTERNAL_SNAPSHOT_ATTRIBUTES = Object.freeze(['class', 'style', BACKGROUND_READY_ATTR, BACKGROUND_SCANNING_ATTR])
 const OBSERVED_ATTRIBUTES = Object.freeze([
-    'class', 'style', 'hidden', 'aria-hidden',
+    'class', 'style', 'hidden', 'aria-hidden', 'contenteditable', 'role', 'slot', 'name',
     'src', 'srcset', 'sizes', 'poster', 'srcdoc', 'sandbox',
     'href', 'rel', 'media', 'disabled', 'type',
     BACKGROUND_READY_ATTR, BACKGROUND_SCANNING_ATTR,
 ])
 const STYLESHEET_POLL_INTERVAL_MS = 2000
+const SHADOW_DISCOVERY_NODE_BUDGET = 250
+const SHADOW_DISCOVERY_TIME_BUDGET_MS = 4
+const SHADOW_DISCOVERY_YIELD_MS = 16
 // Coalesce analysis across a burst of mutations instead of re-analysing the
 // whole page once per batch.
 const ANALYSIS_DEBOUNCE_MS = 200
@@ -52,6 +60,10 @@ const HOVER_HIT_TEST_INTERVAL_MS = 30
 // How many times a "nothing found" verdict may be postponed while the page is
 // still producing text, before it is accepted anyway.
 const MAX_DEFERRED_CLEAR_VERDICTS = 4
+// protection.css blurs media at 40px until the controller projects the user's
+// strength. Until the first settings read is applied the controller must not
+// weaken that, so its own projection starts from the same value.
+const FAIL_CLOSED_BLUR_PIXELS = '40px'
 const MEDIA_RESOURCE_EVENTS = Object.freeze(['load', 'loadstart', 'loadedmetadata', 'loadeddata', 'emptied'])
 const IFRAME_NAVIGATION_ATTRIBUTES = Object.freeze(['src', 'srcdoc', 'sandbox'])
 const IFRAME_NAVIGATION_START_EVENTS = Object.freeze(['pagehide', 'unload'])
@@ -67,6 +79,45 @@ const FRAME_AGGREGATE_REFRESH_DEBOUNCE_MS = 100
 // (a navigation, a child status change, a topology change) asks again.
 const FRAME_AGGREGATE_MAX_RETRIES = 3
 const FRAME_AGGREGATE_INITIAL_RETRY_MS = 1000
+const DOM_OBSERVER_OPTIONS = Object.freeze({
+    childList: true, characterData: true, subtree: true,
+    attributes: true, attributeOldValue: true, attributeFilter: OBSERVED_ATTRIBUTES,
+})
+const FRAME_OBSERVER_OPTIONS = Object.freeze({
+    attributes: true, childList: true, subtree: true, attributeFilter: IFRAME_NAVIGATION_ATTRIBUTES,
+})
+// Before the first settings read only inserted subtrees matter (shadow root
+// discovery); attribute and text records would be ignored anyway.
+const STARTUP_OBSERVER_OPTIONS = Object.freeze({ childList: true, subtree: true })
+// The document stylesheet cannot cross a shadow boundary. Keep its initial
+// media protection and word-cover appearance in an owned sheet in each root.
+const SHADOW_PROTECTION_CSS = `
+    :host-context(html:not([data-phobiablocker-background-ready]):not([data-phobiablocker-background-scanning])) * {
+        background-image: none !important;
+    }
+    :is(img, video, iframe) {
+        filter: blur(var(--phobiablocker-blurValueAmount, 40px)) !important;
+    }
+    :is(img, video, iframe)[data-phobia-blur] {
+        cursor: pointer !important;
+        transition: filter 0.2s ease;
+    }
+    .phobia-word-cover {
+        color: transparent !important;
+        -webkit-text-fill-color: transparent !important;
+        background-color: var(--phobiablocker-word-cover-color, currentColor) !important;
+        background-image: repeating-linear-gradient(135deg,
+            rgba(255,255,255,.22) 0, rgba(255,255,255,.22) 2px,
+            rgba(0,0,0,.16) 2px, rgba(0,0,0,.16) 4px) !important;
+        border-radius: 2px !important;
+        outline: 1px solid rgba(127,127,127,.5) !important;
+        outline-offset: 1px !important;
+        text-shadow: none !important;
+        box-decoration-break: clone !important;
+        -webkit-box-decoration-break: clone !important;
+        cursor: help !important;
+    }
+`
 const ANALYSIS_DEBUG_STATE = {
     pageAnalysisRequests: 0,
     mutationBatches: 0,
@@ -104,6 +155,19 @@ function markInternalMutationTarget(node) {
         })
         setTimeout(() => nodes.forEach(target => INTERNAL_ATTRIBUTE_STATE.delete(target)), 0)
     })
+}
+
+// Site rules match origin and path only, and a fragment change never replaces
+// the document. Policy and clearance therefore compare URLs without it; a
+// hash update must not re-blur or re-analyse an unchanged page.
+function stripUrlFragment(href) {
+    const text = String(href || '')
+    const hashIndex = text.indexOf('#')
+    return hashIndex === -1 ? text : text.slice(0, hashIndex)
+}
+
+function currentPolicyUrl() {
+    return stripUrlFragment(location.href)
 }
 
 function isInternalMutation(mutation) {
@@ -165,13 +229,18 @@ function getUnownedStyleSignature(styleText, projectedProperties) {
 // trust its shape.
 async function analyzePageWordsWithOffscreen(words) {
     ANALYSIS_DEBUG_STATE.pageAnalysisRequests++
+    debug('analysis.requested', () => ({ inputWordCount: words.length }))
     try {
         const response = await withTimeout(chrome.runtime.sendMessage({
             target: 'background',
             type: 'PB_ANALYZE_WORDS',
             words: Array.isArray(words) ? words : [],
         }), ANALYZE_TIMEOUT_MS, 'Analysis')
-        return Policy.normalizeAnalysisResult(response) || { ...FAIL_CLOSED_RESULT }
+        const result = Policy.normalizeAnalysisResult(response) || { ...FAIL_CLOSED_RESULT }
+        debug('analysis.completed', () => ({
+            shouldBlur: result.shouldBlur, matchedWordCount: result.matchedInputWords.length,
+        }))
+        return result
     } catch (error) {
         console.error('PhobiaBlocker: page analysis failed; keeping media blurred', error)
         return { ...FAIL_CLOSED_RESULT }
@@ -288,6 +357,7 @@ class VisualNode {
             ['data-phobia-blur', element.getAttribute('data-phobia-blur')],
             [BACKGROUND_MARKER_ATTR, element.getAttribute(BACKGROUND_MARKER_ATTR)],
             [ROOT_BACKGROUND_MARKER_ATTR, element.getAttribute(ROOT_BACKGROUND_MARKER_ATTR)],
+            [SUPPRESSED_BACKGROUND_MARKER_ATTR, element.getAttribute(SUPPRESSED_BACKGROUND_MARKER_ATTR)],
             [MEDIA_MARKER_ATTR, element.getAttribute(MEDIA_MARKER_ATTR)],
         ])
         this._pageStyles = new Map([
@@ -297,6 +367,9 @@ class VisualNode {
         this._styleProjections = new Map()
         this.isRootBackground = kind === 'background' &&
             (element === document.documentElement || element === document.body)
+        this.suppressesBackground = this.isRootBackground ||
+            (kind === 'background' && PageTextIndex.containsEditingSurface(element))
+        this._backgroundModeDirty = false
         this.backgroundImage = ''
         this.isBlurred = true
         // Last projection actually written to the DOM. Repeated requests for the
@@ -307,6 +380,7 @@ class VisualNode {
         markInternalMutationTarget(this.element)
         this.element.setAttribute(MEDIA_MARKER_ATTR, '1')
         if (this.isRootBackground) this.element.setAttribute(ROOT_BACKGROUND_MARKER_ATTR, '1')
+        if (this.suppressesBackground) this.element.setAttribute(SUPPRESSED_BACKGROUND_MARKER_ATTR, '1')
         this.blur()
     }
 
@@ -391,8 +465,23 @@ class VisualNode {
     }
 
     prepareBackgroundScan() {
-        if (!this.isRootBackground) return
+        if (!this.suppressesBackground) return
         this._restorePageStyle('background-image')
+        this.invalidateRendering()
+    }
+
+    refreshBackgroundMode() {
+        if (this.kind !== 'background' || !this._backgroundModeDirty) return
+        this._backgroundModeDirty = false
+        const suppress = this.isRootBackground || PageTextIndex.containsEditingSurface(this.element)
+        if (suppress === this.suppressesBackground) return
+        this._restorePageStyle('filter')
+        this._restorePageStyle('background-image')
+        this.suppressesBackground = suppress
+        this._previewActive = false
+        markInternalMutationTarget(this.element)
+        if (suppress) this.element.setAttribute(SUPPRESSED_BACKGROUND_MARKER_ATTR, '1')
+        else this._restoreAttribute(SUPPRESSED_BACKGROUND_MARKER_ATTR)
         this.invalidateRendering()
     }
 
@@ -415,7 +504,7 @@ class VisualNode {
         this._setProjectionClass('phobia-blur', true)
         this.element.setAttribute('data-phobia-blur', '1')
         if (this.kind === 'background') this.element.setAttribute(BACKGROUND_MARKER_ATTR, '1')
-        if (this.isRootBackground) {
+        if (this.suppressesBackground) {
             this._setStyleProjection('background-image', 'none', 'important')
             this._previewActive = false
             return
@@ -438,7 +527,7 @@ class VisualNode {
         this._setProjectionClass('phobia-noblur', true)
         this._setProjectionClass('phobia-permanent-unblur', options.explicit === true)
         this._restoreAttribute('data-phobia-blur')
-        if (this.isRootBackground) {
+        if (this.suppressesBackground) {
             this._restorePageStyle('background-image')
             this._previewActive = false
             return
@@ -458,9 +547,10 @@ class VisualNode {
         this._restoreAttribute('data-phobia-blur')
         this._restoreAttribute(BACKGROUND_MARKER_ATTR)
         this._restoreAttribute(ROOT_BACKGROUND_MARKER_ATTR)
+        this._restoreAttribute(SUPPRESSED_BACKGROUND_MARKER_ATTR)
         this._restoreAttribute(MEDIA_MARKER_ATTR)
         if (this._styleProjections.has('filter')) this._restorePageStyle('filter')
-        if (this.isRootBackground) this._restorePageStyle('background-image')
+        if (this._styleProjections.has('background-image')) this._restorePageStyle('background-image')
         this._styleProjections.clear()
     }
 
@@ -480,7 +570,7 @@ class VisualNode {
     // overlay, and listening on the parent missed media inside a wrapper smaller
     // than itself; hit testing the whole stack handles both.
     showPreview() {
-        if (this.isRootBackground || this._previewActive || !this.isBlurred || !this.element) return
+        if (this.suppressesBackground || this._previewActive || !this.isBlurred || !this.element) return
         this._previewActive = true
         this._applyPreviewFilter()
     }
@@ -500,7 +590,7 @@ class VisualNode {
     // hover cycle or a page-side style mutation happened to rewrite the filter.
     refreshBlurFilter() {
         if (!this.element || this.element.isConnected === false) return
-        if (this._renderState !== 'blur' || this.isRootBackground) return
+        if (this._renderState !== 'blur' || this.suppressesBackground) return
         if (this._previewActive) {
             this._applyPreviewFilter()
             return
@@ -606,6 +696,10 @@ class WordCoverManager {
 
     repairProjection(element) {
         if (!this._ownedWrappers.has(element)) return false
+        if (PageTextIndex.isEditableElement(element)) {
+            this._unwrap(element)
+            return true
+        }
         markInternalMutationTarget(element)
         const revealed = this._revealedWrappers.has(element)
         element.classList.toggle('phobia-word-cover', !revealed)
@@ -615,8 +709,9 @@ class WordCoverManager {
 
     coverTextNode(textNode, directMatches) {
         if (!this._active || !textNode || !textNode.parentNode) return false
-        const parentElement = textNode.parentElement
-        if (!parentElement || parentElement.closest?.(PageTextIndex.EXCLUDED_SELECTOR)) return false
+        const parentElement = PageTextIndex.composedParent(textNode)
+        if (!parentElement || PageTextIndex.closestAcrossRoots(parentElement, PageTextIndex.EXCLUDED_SELECTOR)) return false
+        if (PageTextIndex.isEditableElement(parentElement)) return false
         if (this._findOwnedWrapper(parentElement)) return false
 
         const matchesToCover = directMatches instanceof Set ? directMatches : this._targets
@@ -631,7 +726,7 @@ class WordCoverManager {
         })
         if (this._pageTextIndex) this._pageTextIndex.removeTextNode(textNode)
         markInternalMutationTarget(parentElement)
-        parentElement.replaceChild(split.fragment, textNode)
+        textNode.parentNode.replaceChild(split.fragment, textNode)
         // Re-index the pieces without notifying, or covering would recurse.
         split.plainTextNodes.forEach((node) => {
             this._pageTextIndex?.indexTextNode(node, { notify: false })
@@ -680,7 +775,7 @@ class WordCoverManager {
 
     prune() {
         Array.from(this._ownedWrappers).forEach((wrapper) => {
-            if (wrapper.isConnected === false) this._unwrap(wrapper)
+            if (wrapper.isConnected === false || PageTextIndex.isEditableElement(wrapper)) this._unwrap(wrapper)
         })
     }
 
@@ -708,41 +803,77 @@ class WordCoverManager {
 class Controller {
     constructor() {
         this.settings = this._cloneDefaults()
-        this.blurPixels = `${computeBlurPixels(DEFAULTS.blurValueAmount)}px`
+        this.blurPixels = FAIL_CLOSED_BLUR_PIXELS
         this.blurFilter = `blur(${this.blurPixels})`
         this.mode = PROTECTION_MODE.ALWAYS_BLUR
         this._policyGeneration = 0
         this._pageAnalysisResult = { ...FAIL_CLOSED_RESULT }
+        this._clearedMedia = new WeakMap()
+        this._clearedUrl = null
+        this._policyUrl = currentPolicyUrl()
         this._registry = new VisualRegistry(this)
         this._explicitReveals = new WeakMap()
         this._loadedIframeFingerprints = new WeakMap()
+        this._iframeEditorStates = new WeakMap()
         this._pendingIframeNavigations = new WeakSet()
         this._iframeNavigationGuards = new WeakMap()
         this._frameAggregateClear = false
         this._frameAggregateEpoch = 0
         this._frameAggregateRefreshTimer = null
         this._frameAggregateRetryAttempt = 0
+        this._verifiedClearIframes = new Set()
+        this._frameClearance = new FrameClearance({
+            frames: () => this._registry.all().filter(node => node.kind === 'iframe').map(node => node.element),
+            fingerprint: element => JSON.stringify([
+                getMediaFingerprint(element), element.getAttribute('sandbox'), element.baseURI || '',
+            ]),
+            isCurrent: epoch => epoch === this._frameAggregateEpoch && this._shouldRefreshFrameAggregate(),
+            canClear: element => !this._pendingIframeNavigations.has(element),
+            onClear: element => {
+                this._verifiedClearIframes.add(element)
+                this._applyResultToNode(this._registry.get(element), this._currentVisualResult())
+            },
+        })
+        window.addEventListener('pagehide', () => this._invalidateFrameAggregate({ refresh: false }))
+        window.addEventListener('pageshow', event => {
+            if (event.persisted) this._invalidateFrameAggregate()
+        })
         this._analysisPending = true
         this._lastFrameStatusSignature = ''
         this._disabledMediaFilters = new WeakMap()
         this._manualBlurAllActive = false
+        this._inheritedEditorBlur = false
+        this._editorDocumentEditable = PageTextIndex.isEditableDocument(document)
         this._observer = null
         this._analysisTimer = null
         this._backgroundTimer = null
         this._stylesheetPollTimer = null
-        this._stylesheetFingerprint = ''
+        this._stylesheetFingerprints = new Map()
+        this._stylesheetIds = new WeakMap()
+        this._nextStylesheetId = 0
         this._backgroundLinks = new WeakSet()
         this._backgroundPhase = 'pending'
         this._backgroundRetries = 0
         this._hasCompletedBackgroundScan = false
         this._mediaEventListenersAttached = false
         this._iframeLifecycleObserver = null
+        this._shadowRoots = new Set()
+        this._shadowStyleSheet = null
+        this._shadowDiscovery = null
+        this._shadowDiscoveryTimer = null
         this._onMediaResourceEvent = event => this._handleMediaResourceEvent(event)
         this._onIframeLifecycleLoad = event => this._handleIframeLifecycleLoad(event)
         this._globalRescanTimer = null
         this._onGlobalBackgroundStateEvent = () => {
             this._scheduleDebouncedRescan()
             this._scheduleHoverPreviewUpdate()
+        }
+        this._onSlotChange = event => {
+            if (this.mode === PROTECTION_MODE.DISABLED) return
+            const touched = new Set()
+            this._invalidateBackgroundAncestors(event.target, touched)
+            touched.forEach(node => this._applyResultToNode(node, this._currentVisualResult()))
+            this._scheduleDebouncedRescan()
         }
         this._earlyCoverReleased = false
         this._stylesheetReindexTimer = null
@@ -757,6 +888,15 @@ class Controller {
             hasOwnedCovers: () => this._wordCoverManager.ownedCount > 0,
         })
         this._wordCoverManager.attachIndex(this._pageTextIndex)
+        this._editorFrames = new EditorFrames({
+            applyInheritedProtection: blurred => this._applyInheritedEditorProtection(blurred),
+            onFrameReady: frame => {
+                if (this.mode === PROTECTION_MODE.DISABLED) return
+                const touched = this._registerMedia(frame)
+                this._invalidateBackgroundAncestors(frame, touched)
+                touched.forEach(node => this._applyResultToNode(node, this._currentVisualResult()))
+            },
+        })
         this._hoverNode = null
         this._hoverPoint = null
         this._lastHoverUpdateAt = 0
@@ -765,6 +905,22 @@ class Controller {
         this._deferredClearVerdicts = 0
         this._startHoverTracking()
         this._startIframeLifecycleTracking()
+        document.addEventListener('phobiablocker:shadow-root-attached', event => {
+            const host = event.composedPath()[0]
+            // The page can dispatch this event too. Only inspect the actual DOM;
+            // the event never supplies settings, frame verdicts or commands.
+            if (host instanceof Element && host.shadowRoot && this._discoverShadowRoots(host.shadowRoot)) {
+                this._initializeShadowRoot(host.shadowRoot)
+            }
+        }, true)
+        // The document stylesheet cannot reach into shadow roots, so roots that
+        // stream in while the shared settings read waits are discovered at
+        // once and adopt the protection sheet. Everything else (media, text,
+        // URL policy, the early-blur hand-off) waits for applyProtectionMode:
+        // until then the user's settings are unknown and the page stays in
+        // the stylesheet's fail-closed state with early-blur covering words.
+        this._discoverShadowRoots(document)
+        this._startupObserverInit()
     }
 
     _cloneDefaults() {
@@ -773,16 +929,205 @@ class Controller {
         )))
     }
 
+    _documentRoots() {
+        return [document, ...this._shadowRoots].filter(root => !root.host || root.host.isConnected)
+    }
+
+    _queryAll(root, selector) {
+        const roots = root === document ? this._documentRoots() : PageTextIndex.collectDomRoots(root)
+        return roots.flatMap(tree => Array.from(tree.querySelectorAll?.(selector) || []))
+    }
+
+    _observeRoot(root) {
+        this._observer?.observe(root, DOM_OBSERVER_OPTIONS)
+        this._iframeLifecycleObserver?.observe(root, FRAME_OBSERVER_OPTIONS)
+    }
+
+    _ensureShadowStyles(root) {
+        if (!this._shadowStyleSheet) {
+            this._shadowStyleSheet = new CSSStyleSheet()
+            this._shadowStyleSheet.replaceSync(SHADOW_PROTECTION_CSS)
+        }
+        if (!root.adoptedStyleSheets.includes(this._shadowStyleSheet)) {
+            root.adoptedStyleSheets = [...root.adoptedStyleSheets, this._shadowStyleSheet]
+        }
+    }
+
+    _discoverShadowRoots(subtree) {
+        return this._collectNewShadowRoots(subtree).length > 0
+    }
+
+    // The roots registered by this call, for callers that must know whether
+    // any of them changed the frame topology.
+    _collectNewShadowRoots(subtree) {
+        return PageTextIndex.collectDomRoots(subtree).filter(root => this._registerShadowRoot(root))
+    }
+
+    // Only a root that holds frame owners affects the cross-origin frame
+    // aggregate; the iframe lifecycle observer reports anything inserted into
+    // a registered root later.
+    _rootsContainFrameOwners(roots) {
+        return roots.some(root => this._queryAll(root, TRACKED_FRAME_OWNER_SELECTOR).length > 0)
+    }
+
+    // A component may replace adoptedStyleSheets after attachShadow (Lit,
+    // FAST, Stencil), dropping the protection sheet. Content it renders
+    // afterwards must be covered at once, not at the next stylesheet poll.
+    _ensureShadowStylesForTarget(target) {
+        const root = target?.getRootNode?.()
+        if (root && this._shadowRoots.has(root)) this._ensureShadowStyles(root)
+    }
+
+    _mayGainDeclarativeShadowRoot(element) {
+        if (element.shadowRoot) return false
+        if (element.localName.includes('-')) return true
+        return Array.from(element.children || []).some(child => (
+            child.localName === 'template' && child.hasAttribute('shadowrootmode')))
+    }
+
+    // The parser creates a declarative shadow root without attachShadow, so no
+    // notification arrives. A host whose insertion record is delivered before
+    // its template is parsed has no root yet; look again once the parser has
+    // had a chance to continue, in this task's microtasks and in the next task.
+    _scheduleLateShadowRootCheck(elements, { initialize }) {
+        const hosts = elements.filter(element => this._mayGainDeclarativeShadowRoot(element))
+        if (hosts.length === 0) return
+        const check = () => hosts.forEach(host => this._adoptLateShadowRoot(host, initialize))
+        queueMicrotask(check)
+        setTimeout(check, 0)
+    }
+
+    _adoptLateShadowRoot(host, initialize) {
+        const root = host.shadowRoot
+        if (!root || !host.isConnected || this._shadowRoots.has(root)) return
+        if (this._discoverShadowRoots(root) && initialize) this._initializeShadowRoot(root)
+    }
+
+    _registerShadowRoot(root) {
+        if (!root.host || !root.host.isConnected) return false
+        this._ensureShadowStyles(root)
+        if (this._shadowRoots.has(root)) return false
+        this._shadowRoots.add(root)
+        // Baseline only this new root: recording all sheets here could hide a
+        // simultaneous CSSOM change elsewhere before the next polling tick.
+        this._stylesheetFingerprints.set(root, this._computeStylesheetFingerprint(root))
+        this._observeRoot(root)
+        root.addEventListener('load', this._onIframeLifecycleLoad, true)
+        root.addEventListener('scroll', this._onHoverScroll, { capture: true, passive: true })
+        root.addEventListener('slotchange', this._onSlotChange)
+        if (this._mediaEventListenersAttached) {
+            MEDIA_RESOURCE_EVENTS.forEach(type => root.addEventListener(type, this._onMediaResourceEvent, true))
+        }
+        return true
+    }
+
+    _initializeShadowRoot(root) {
+        // Shadow styles can affect :host and ::slotted light content as well
+        // as the new tree. Reconcile this host, not unrelated document text.
+        const subtree = root.host
+        if (this.mode === PROTECTION_MODE.DISABLED) {
+            this._showMediaWhileDisabled(subtree)
+            return
+        }
+        // A fallback may find an already-populated root. Index only that new
+        // content; its protection stylesheet and observer are already installed.
+        const touched = this._registerMedia(subtree)
+        this._invalidateBackgroundAncestors(subtree, touched)
+        this._scanBackgrounds(subtree).nodes.forEach(node => touched.add(node))
+        this._queryAll(subtree, 'link').forEach(link => this._watchStylesheetLink(link))
+        const { added, removed } = this._pageTextIndex.applyMutations([{
+            type: 'childList', target: subtree, addedNodes: [subtree], removedNodes: [],
+        }])
+        this._handleVocabularyChange(added, removed)
+        touched.forEach(node => this._applyResultToNode(node, this._currentVisualResult()))
+        if (this._rootsContainFrameOwners([root])) this._handleFrameTopologyChange({ force: false })
+    }
+
+    _cancelShadowDiscovery() {
+        clearTimeout(this._shadowDiscoveryTimer)
+        this._shadowDiscoveryTimer = null
+        this._shadowDiscovery = null
+    }
+
+    _scheduleShadowDiscovery() {
+        if (this.mode === PROTECTION_MODE.DISABLED || this._shadowDiscovery) return
+        const roots = this._documentRoots()
+        this._shadowDiscovery = { roots, seen: new Set(roots), index: 0, walker: null }
+        this._shadowDiscoveryTimer = setTimeout(() => this._continueShadowDiscovery(), SHADOW_DISCOVERY_YIELD_MS)
+    }
+
+    _continueShadowDiscovery() {
+        this._shadowDiscoveryTimer = null
+        const state = this._shadowDiscovery
+        if (!state || this.mode === PROTECTION_MODE.DISABLED) {
+            this._cancelShadowDiscovery()
+            return
+        }
+        const started = performance.now()
+        let visited = 0
+        while (state.index < state.roots.length && visited < SHADOW_DISCOVERY_NODE_BUDGET &&
+            performance.now() - started < SHADOW_DISCOVERY_TIME_BUDGET_MS) {
+            const root = state.roots[state.index]
+            // A removed cursor can otherwise keep its detached subtree alive
+            // and prevent a TreeWalker from reaching the rest of the document.
+            if ((root.host && !root.host.isConnected) ||
+                (state.walker && !root.contains(state.walker.currentNode))) {
+                state.index++
+                state.walker = null
+                continue
+            }
+            if (!state.walker) state.walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT)
+            const element = state.walker.nextNode()
+            if (!element) {
+                state.index++
+                state.walker = null
+                continue
+            }
+            visited++
+            const shadow = element.shadowRoot
+            if (!shadow) continue
+            if (!state.seen.has(shadow)) {
+                state.seen.add(shadow)
+                state.roots.push(shadow)
+            }
+            if (!this._shadowRoots.has(shadow) && this._discoverShadowRoots(shadow)) {
+                this._initializeShadowRoot(shadow)
+            }
+        }
+        if (state.index === state.roots.length) this._shadowDiscovery = null
+        else this._shadowDiscoveryTimer = setTimeout(() => this._continueShadowDiscovery(), SHADOW_DISCOVERY_YIELD_MS)
+    }
+
+    _pruneShadowRoots() {
+        const pruned = [...this._shadowRoots].filter(root => !root.host.isConnected)
+        pruned.forEach((root) => {
+            this._shadowRoots.delete(root)
+            this._stylesheetFingerprints.delete(root)
+            root.removeEventListener('load', this._onIframeLifecycleLoad, true)
+            root.removeEventListener('scroll', this._onHoverScroll, true)
+            root.removeEventListener('slotchange', this._onSlotChange)
+            MEDIA_RESOURCE_EVENTS.forEach(type => root.removeEventListener(type, this._onMediaResourceEvent, true))
+        })
+        if (pruned.length === 0) return
+        this._handleIframeMutations(this._iframeLifecycleObserver.takeRecords())
+        // MutationObserver has no unobserve(root). Reconnect to release detached
+        // component trees rather than retaining them for the document lifetime.
+        this._observer?.disconnect()
+        this._iframeLifecycleObserver?.disconnect()
+        this._documentRoots().forEach(root => this._observeRoot(root))
+        if (this._rootsContainFrameOwners(pruned)) this._handleFrameTopologyChange({ force: false })
+    }
+
     _frameOwnerState() {
         return {
-            frameElementCount: document.querySelectorAll(FRAME_OWNER_SELECTOR).length,
-            hasUnsupportedFrameOwner: Boolean(document.querySelector(UNSUPPORTED_FRAME_OWNER_SELECTOR)),
+            frameElementCount: this._queryAll(document, FRAME_OWNER_SELECTOR).length,
+            hasUnsupportedFrameOwner: this._queryAll(document, UNSUPPORTED_FRAME_OWNER_SELECTOR).length > 0,
         }
     }
 
     _allowsFrameRelease() {
         if (this.mode === PROTECTION_MODE.DISABLED) return true
-        return this.mode === PROTECTION_MODE.ANALYZE && !this._manualBlurAllActive &&
+        return this.mode === PROTECTION_MODE.ANALYZE && !this._manualBlurAllActive && !this._inheritedEditorBlur &&
             !this._analysisPending && this._pageAnalysisResult.shouldBlur === false
     }
 
@@ -814,7 +1159,7 @@ class Controller {
     _shouldRefreshFrameAggregate() {
         return this.settings.keepCrossOriginIframesBlurred === true &&
             this.mode === PROTECTION_MODE.ANALYZE && this._allowsFrameRelease() &&
-            document.querySelector(FRAME_OWNER_SELECTOR) !== null
+            this._queryAll(document, FRAME_OWNER_SELECTOR).length > 0
     }
 
     _applyCurrentResultToIframes() {
@@ -826,13 +1171,16 @@ class Controller {
 
     _setFrameAggregateClear(clear) {
         const next = clear === true
-        if (this._frameAggregateClear === next) return
+        const hadIndividualClearance = this._verifiedClearIframes.size > 0
+        this._verifiedClearIframes.clear()
+        if (this._frameAggregateClear === next && !hadIndividualClearance) return
         this._frameAggregateClear = next
         this._applyCurrentResultToIframes()
     }
 
     _invalidateFrameAggregate({ refresh = true } = {}) {
         this._frameAggregateEpoch++
+        this._frameClearance.reset()
         this._frameAggregateRetryAttempt = 0
         clearTimeout(this._frameAggregateRefreshTimer)
         this._frameAggregateRefreshTimer = null
@@ -860,6 +1208,7 @@ class Controller {
         }
 
         const epoch = ++this._frameAggregateEpoch
+        this._frameClearance.begin(epoch)
         const ownerState = this._frameOwnerState()
         let response = null
         try {
@@ -867,6 +1216,7 @@ class Controller {
                 target: 'background',
                 type: FRAME_MESSAGES.aggregateRequest,
                 epoch,
+                individualClearance: true,
                 ...ownerState,
             }), ANALYZE_TIMEOUT_MS, 'Embedded-frame check')
         } catch (_) {
@@ -885,8 +1235,11 @@ class Controller {
             return
         }
 
-        const clear = Boolean(response?.ok && response.clear && response.epoch === epoch)
-        this._setFrameAggregateClear(clear)
+        const verified = response?.ok === true && response.epoch === epoch
+        const clear = verified && response.clear === true
+        this._verifiedClearIframes = this._frameClearance.approve(epoch, verified ? response.clearTokens : [])
+        this._frameAggregateClear = clear
+        this._applyCurrentResultToIframes()
         // Everything that can change the answer already invalidates this
         // aggregate: subframe navigations and child status changes arrive from
         // the service worker, frame additions and removals from the observers.
@@ -911,6 +1264,12 @@ class Controller {
             blacklistedSites: Array.isArray(settings?.blacklistedSites) ? [...settings.blacklistedSites] : [],
         }
         window.PHOBIABLOCKER_DEBUG = this.settings.debugMode === true
+        debug('settings.applied', () => ({
+            enabled: this.settings.phobiaBlockerEnabled,
+            alwaysBlur: this.settings.blurIsAlwaysOn,
+            targetWordCount: this.settings.targetWords.length,
+            wordCoverEnabled: this.settings.wordCoverEnabled,
+        }))
         const previousBlurPixels = this.blurPixels
         this.blurPixels = `${computeBlurPixels(this.settings.blurValueAmount)}px`
         this.blurFilter = `blur(${this.blurPixels})`
@@ -926,6 +1285,7 @@ class Controller {
     }
 
     cancelPendingAnalysis() {
+        this._cancelShadowDiscovery()
         clearTimeout(this._analysisTimer)
         clearTimeout(this._backgroundTimer)
         clearTimeout(this._globalRescanTimer)
@@ -942,10 +1302,14 @@ class Controller {
 
     async applyProtectionMode(mode, settings) {
         const generation = ++this._policyGeneration
+        const url = currentPolicyUrl()
+        this._policyUrl = url
+        this._invalidateClearance()
         this.protectionApplied = true
         this.cancelPendingAnalysis()
         this.setSettings(settings)
         this.mode = mode
+        debug('protection.mode', () => ({ mode }))
         this._invalidateFrameAggregate({ refresh: false })
         this._setAnalysisPending(mode === PROTECTION_MODE.ANALYZE && !this._manualBlurAllActive)
         this._releaseEarlyWordCover()
@@ -959,6 +1323,7 @@ class Controller {
         this._pageAnalysisResult = { ...FAIL_CLOSED_RESULT }
         this.enableProtection()
         this.protectAllKnownVisuals()
+        this._editorFrames.refresh()
         if (mode === PROTECTION_MODE.ALWAYS_BLUR || this._manualBlurAllActive) {
             this._notifyFrameStatusChanged()
             reportIconStatus('detected')
@@ -966,13 +1331,14 @@ class Controller {
         }
 
         const result = await this.analyzeCurrentPage(generation)
-        if (generation !== this._policyGeneration) return
+        if (generation !== this._policyGeneration || url !== currentPolicyUrl()) return
         this.applyPageResult(result)
     }
 
     enableProtection() {
         const root = document.documentElement
         if (!root) return
+        this._discoverShadowRoots(document)
         this._restoreDisabledMedia(document)
         this._setBackgroundPhase('pending')
         this._syncRootProjection()
@@ -983,7 +1349,7 @@ class Controller {
         this._pageTextIndex.build(document.body || root)
         this._registerMedia(document)
         this._scanBackgrounds(document, { full: true })
-        document.querySelectorAll('link[rel~="stylesheet"]').forEach(link => this._watchStylesheetLink(link))
+        this._queryAll(document, 'link[rel~="stylesheet"]').forEach(link => this._watchStylesheetLink(link))
         this._resumeObservation()
     }
 
@@ -995,6 +1361,9 @@ class Controller {
     }
 
     disableProtection() {
+        this._cancelShadowDiscovery()
+        this._editorFrames.clear()
+        this._discoverShadowRoots(document)
         const root = document.documentElement
         if (root) {
             this._setBackgroundPhase('ready')
@@ -1009,10 +1378,33 @@ class Controller {
         reportIconStatus('idle')
     }
 
+    _applyInheritedEditorProtection(blurred) {
+        this._inheritedEditorBlur = blurred === true
+        if (!this.protectionApplied || this.mode === PROTECTION_MODE.DISABLED) return false
+        this._wordCoverManager.prune()
+        this._registerMedia(document)
+        const scan = this._scanBackgrounds(document, { full: true })
+        this._registry.all().forEach(node => this._applyResultToNode(node, this._currentVisualResult()))
+        this._notifyFrameStatusChanged()
+        return scan.success
+    }
+
+    _refreshEditorState() {
+        const editable = PageTextIndex.isEditableDocument(document)
+        if (editable === this._editorDocumentEditable) return
+        this._editorDocumentEditable = editable
+        const touched = new Set()
+        this._invalidateBackgroundSubtree(document, touched)
+        touched.forEach(node => this._applyResultToNode(node, this._currentVisualResult()))
+        this._wordCoverManager.prune()
+        this._reindexAfterStylesheetChange()
+        this._editorFrames.refresh()
+    }
+
     _mediaElements(root) {
         const elements = []
         if (root?.nodeType === Node.ELEMENT_NODE && root.matches?.(MEDIA_SELECTOR)) elements.push(root)
-        root?.querySelectorAll?.(MEDIA_SELECTOR).forEach(element => elements.push(element))
+        this._queryAll(root, MEDIA_SELECTOR).forEach(element => elements.push(element))
         return elements
     }
 
@@ -1086,10 +1478,29 @@ class Controller {
     }
 
     _handleDisabledMutations(records) {
+        let elementsChanged = false
+        const newRoots = []
+        const addedSubtrees = []
         records.forEach((mutation) => {
             if (mutation.type !== 'childList') return
-            mutation.removedNodes.forEach(node => this._discardDisabledMediaState(node))
+            if (mutation.target.shadowRoot && !this._shadowRoots.has(mutation.target.shadowRoot)) {
+                newRoots.push(...this._collectNewShadowRoots(mutation.target))
+                this._showMediaWhileDisabled(mutation.target)
+            }
+            mutation.removedNodes.forEach(node => {
+                if (node.nodeType !== Node.ELEMENT_NODE) return
+                elementsChanged = true
+                this._discardDisabledMediaState(node)
+            })
+            mutation.addedNodes.forEach(node => {
+                if (node.nodeType === Node.ELEMENT_NODE) addedSubtrees.push(node)
+            })
         })
+        PageTextIndex.minimalRoots(addedSubtrees).forEach(node => {
+            newRoots.push(...this._collectNewShadowRoots(node))
+        })
+        if (elementsChanged) this._pruneShadowRoots()
+        if (this._rootsContainFrameOwners(newRoots)) this._handleFrameTopologyChange({ force: false })
 
         records.forEach((mutation) => {
             if (mutation.type === 'childList') {
@@ -1139,10 +1550,33 @@ class Controller {
 
     protectAllKnownVisuals() {
         this._registry.prune()
-        this._registry.all().forEach((node) => {
-            if (this.isExplicitlyRevealed(node.element)) node.unblur({ explicit: true })
-            else node.blur()
-        })
+        this._registry.all().forEach(node => this._applyResultToNode(node, FAIL_CLOSED_RESULT))
+    }
+
+    _invalidateClearance() {
+        this._clearedMedia = new WeakMap()
+        this._clearedUrl = null
+    }
+
+    _canRetainClearance(node) {
+        if (node.kind === 'iframe' || this.mode !== PROTECTION_MODE.ANALYZE ||
+            this._manualBlurAllActive || this._inheritedEditorBlur || this._pageAnalysisResult.shouldBlur ||
+            this._clearedUrl !== currentPolicyUrl()) return false
+        const saved = this._clearedMedia.get(node)
+        const current = this._clearanceIdentity(node)
+        return Boolean(saved && current.fingerprint && saved.fingerprint === current.fingerprint &&
+            saved.resource === current.resource && saved.stream === current.stream)
+    }
+
+    _clearanceIdentity(node) {
+        const element = node.element
+        return {
+            fingerprint: getMediaFingerprint(element, node.kind === 'background' ? node.backgroundImage : null),
+            // Automatic clearance is stricter than an explicit user reveal:
+            // responsive selection and resolved URLs can change the resource.
+            resource: JSON.stringify([element.currentSrc || '', element.src || '', element.baseURI || '']),
+            stream: element instanceof HTMLVideoElement ? element.srcObject : null,
+        }
     }
 
     async analyzeCurrentPage(generation) {
@@ -1181,9 +1615,18 @@ class Controller {
         this._deferredClearVerdicts = 0
         this._lastVerdictWordCount = wordCount
         this._pageAnalysisResult = result
+        this._invalidateClearance()
+        if (!result.shouldBlur) {
+            this._clearedUrl = currentPolicyUrl()
+            nodes.forEach(node => {
+                const identity = this._clearanceIdentity(node)
+                if (identity.fingerprint) this._clearedMedia.set(node, identity)
+            })
+        }
         this._setAnalysisPending(false)
         this._notifyFrameStatusChanged()
         nodes.forEach(node => this._applyResultToNode(node, result))
+        debug('media.protection-applied', () => ({ mediaCount: nodes.length, shouldBlur: result.shouldBlur }))
         this._scheduleFrameAggregateRefresh()
         reportIconStatus(result.shouldBlur ? 'detected' : 'idle')
         // The pointer may already be resting on media that only just became
@@ -1235,6 +1678,7 @@ class Controller {
     // A manual command supersedes any in-flight analysis.
     _beginManualCommand(blurAllActive) {
         ++this._policyGeneration
+        this._invalidateClearance()
         this.cancelPendingAnalysis()
         this._manualBlurAllActive = blurAllActive
         this._setAnalysisPending(false)
@@ -1246,7 +1690,7 @@ class Controller {
         this._explicitReveals = new WeakMap()
         this._registerMedia(document)
         this._scanBackgrounds(document, { full: true })
-        this._registry.all().forEach(node => node.blur())
+        this.protectAllKnownVisuals()
         this._resumeObservation()
         this._notifyFrameStatusChanged()
         reportIconStatus('detected')
@@ -1273,17 +1717,29 @@ class Controller {
 
     _applyResultToNode(node, result) {
         if (!node || !node.element || node.element.isConnected === false) return
+        node.refreshBackgroundMode()
+        if (node.kind === 'iframe' && !this._pendingIframeNavigations.has(node.element) &&
+            this._iframeNavigationGuards.get(node.element)?.active?.frameDocument === node.element.contentDocument &&
+            this._editorFrames.release(node.element, !this.isExplicitlyRevealed(node.element) &&
+                (this._analysisPending || this._manualBlurAllActive || this._inheritedEditorBlur || result.shouldBlur))) {
+            node.unblur()
+            return
+        }
         if (this.isExplicitlyRevealed(node.element)) {
             node.unblur({ explicit: true })
             return
         }
-        if (this._analysisPending || this._manualBlurAllActive || result.shouldBlur) {
+        if (this._analysisPending && this._canRetainClearance(node)) {
+            node.unblur()
+            return
+        }
+        if (this._analysisPending || this._manualBlurAllActive || this._inheritedEditorBlur || result.shouldBlur) {
             node.blur()
             return
         }
         if (node.kind === 'iframe' && this.settings.keepCrossOriginIframesBlurred) {
             const navigationPending = this._pendingIframeNavigations.has(node.element)
-            if (navigationPending || (!this._frameAggregateClear &&
+            if (navigationPending || (!this._frameAggregateClear && !this._verifiedClearIframes.has(node.element) &&
                 isCrossOriginIframe(node.element, this._isIframeNavigationComplete(node.element)))) {
                 node.blur()
                 return
@@ -1292,7 +1748,7 @@ class Controller {
         node.unblur()
     }
 
-    _registerMedia(root) {
+    _registerMedia(root, { subtree = true } = {}) {
         const touched = new Set()
         if (!root) return touched
 
@@ -1304,13 +1760,16 @@ class Controller {
             else if (element instanceof HTMLIFrameElement) kind = 'iframe'
             if (!kind) return
             const { node } = this._registry.register(element, kind)
-            if (kind === 'iframe') this._armIframeNavigationGuard(element)
+            if (kind === 'iframe') {
+                this._armIframeNavigationGuard(element)
+                this._refreshIframeEditorState(element, touched)
+            }
             touched.add(node)
         }
 
         if (root.nodeType === Node.ELEMENT_NODE) register(root)
         try {
-            root.querySelectorAll?.(MEDIA_SELECTOR).forEach(register)
+            if (subtree) this._queryAll(root, MEDIA_SELECTOR).forEach(register)
         } catch (_) { /* Detached roots have no media to register. */ }
         return touched
     }
@@ -1331,7 +1790,60 @@ class Controller {
             if (image) owners.push(image)
         }
         owners.forEach((owner) => {
-            this._registerMedia(owner).forEach(node => touched.add(node))
+            this._registerMedia(owner, { subtree: false }).forEach(node => touched.add(node))
+        })
+    }
+
+    _invalidateBackgroundAncestors(element, touched) {
+        const pending = [element]
+        const seen = new Set()
+        while (pending.length > 0) {
+            const current = pending.pop()
+            if (!current || seen.has(current)) continue
+            seen.add(current)
+            const node = this._registry.get(current)
+            if (node?.kind === 'background') {
+                node._backgroundModeDirty = true
+                touched.add(node)
+            }
+            // A slotted control has both an owning ancestor and a rendered
+            // ancestor. Either can have a background that would blur the editor.
+            pending.push(current.parentNode || current.host, current.assignedSlot)
+        }
+    }
+
+    _refreshIframeEditorState(frame, touched) {
+        let editable = false
+        try {
+            editable = PageTextIndex.isEditableDocument(frame.contentDocument)
+        } catch (_) { /* Cross-origin documents cannot expose an editing surface. */ }
+        const previous = this._iframeEditorStates.get(frame)
+        this._iframeEditorStates.set(frame, editable)
+        if (previous === undefined || previous === editable) return
+        this._invalidateBackgroundAncestors(frame, touched)
+        const node = this._registry.get(frame)
+        if (node) touched.add(node)
+    }
+
+    _refreshIframeEditorStates() {
+        // Disabled or uninstrumented children may never emit readiness. Read
+        // only each known frame's editing flag, never its descendant tree.
+        const touched = new Set()
+        this._registry.all().forEach(node => {
+            if (node.kind === 'iframe') this._refreshIframeEditorState(node.element, touched)
+        })
+        touched.forEach(node => this._applyResultToNode(node, this._currentVisualResult()))
+    }
+
+    _invalidateBackgroundSubtree(root, touched) {
+        this._registry.all().forEach(node => {
+            if (node.kind !== 'background') return
+            for (let current = node.element; current; current = current.parentNode || current.host) {
+                if (current !== root) continue
+                node._backgroundModeDirty = true
+                touched.add(node)
+                break
+            }
         })
     }
 
@@ -1343,20 +1855,20 @@ class Controller {
         // Disabled protection must not register or project onto anything.
         if (this.mode === PROTECTION_MODE.DISABLED) return { nodes: touched, success: false }
 
-        if (full) {
-            this._setBackgroundPhase('scanning')
-            this._registry.all().forEach(node => node.prepareBackgroundScan())
-        }
+        if (full) this._setBackgroundPhase('scanning')
 
         try {
             const candidates = []
             if (root.nodeType === Node.ELEMENT_NODE) candidates.push(root)
-            root.querySelectorAll?.('*').forEach(element => candidates.push(element))
+            this._queryAll(root, '*').forEach(element => candidates.push(element))
             const backgroundState = new Map()
 
             candidates.forEach((element) => {
                 if (!(element instanceof Element)) return
                 if (element.matches('head, script, style, link, meta, title, img, video, iframe')) return
+                // Read the page's background, not our suppression projection,
+                // including during a partial scan of a changed control.
+                this._registry.get(element)?.prepareBackgroundScan()
                 backgroundState.set(element, getComputedBackgroundImage(element))
             })
 
@@ -1365,6 +1877,7 @@ class Controller {
                 if (backgroundImage) {
                     if (existing && existing.kind !== 'background') return
                     const { node } = this._registry.register(element, 'background')
+                    if (existing) node._backgroundModeDirty = true
                     node.backgroundImage = backgroundImage
                     markInternalMutationTarget(element)
                     element.setAttribute(BACKGROUND_MARKER_ATTR, '1')
@@ -1415,7 +1928,8 @@ class Controller {
     }
 
     _currentVisualResult() {
-        if (this._analysisPending || this.mode === PROTECTION_MODE.ALWAYS_BLUR || this._manualBlurAllActive) {
+        if (this._analysisPending || this.mode === PROTECTION_MODE.ALWAYS_BLUR ||
+            this._manualBlurAllActive || this._inheritedEditorBlur) {
             return FAIL_CLOSED_RESULT
         }
         return this._pageAnalysisResult
@@ -1448,16 +1962,34 @@ class Controller {
         // Stylesheet edits can change visibility outside the mutated subtree.
         // Rebuild the visible-text index before reusing a page-wide verdict.
         const previousWords = new Set(this._pageTextIndex.getWords())
+        this._wordCoverManager.prune()
         this._pageTextIndex.build(document.body || document.documentElement)
-        this._stylesheetFingerprint = this._computeStylesheetFingerprint()
+        this._stylesheetFingerprints = this._captureStylesheetFingerprints()
         const words = this._pageTextIndex.getWords()
-        const vocabularyChanged = words.length !== previousWords.size ||
-            words.some(word => !previousWords.has(word))
-        if (vocabularyChanged && this.mode === PROTECTION_MODE.ANALYZE && !this._manualBlurAllActive) {
-            this.protectAllKnownVisuals()
-            this._scheduleAnalysis()
-        }
+        const currentWords = new Set(words)
+        this._handleVocabularyChange(new Set(words.filter(word => !previousWords.has(word))),
+            new Set([...previousWords].filter(word => !currentWords.has(word))))
         this._scheduleFullBackgroundRescan()
+    }
+
+    _handleVocabularyChange(added, removed) {
+        if (this.mode !== PROTECTION_MODE.ANALYZE || this._manualBlurAllActive) return
+        if (added.size > 0) {
+            // Only the offscreen analyser can tell whether a new word is an
+            // inflection of a trigger (spiders, mice, fell). A literal check
+            // here would keep cleared media revealed while such a word is
+            // already on the page, so any new vocabulary drops the clearance.
+            this._invalidateClearance()
+            // Mark pending before touching media. Only a committed clear verdict
+            // can preserve an unchanged node across incremental analysis.
+            this._scheduleAnalysis()
+            this.protectAllKnownVisuals()
+            return
+        }
+        const pendingInputRemoved = removed.size > 0 && this._analysisPending
+        const matchedWordRemoved = removed.size > 0 && this._pageAnalysisResult.shouldBlur === true &&
+            this._pageAnalysisResult.matchedInputWords.some(word => removed.has(word))
+        if (pendingInputRemoved || matchedWordRemoved) this._scheduleAnalysis()
     }
 
     _scheduleFullBackgroundRescan() {
@@ -1471,7 +2003,10 @@ class Controller {
         if (!this._hasCompletedBackgroundScan) this._setBackgroundPhase('pending')
         this._backgroundTimer = setTimeout(() => {
             this._backgroundTimer = null
-            this._scanBackgrounds(document, { full: true })
+            const scan = this._scanBackgrounds(document, { full: true })
+            // A failed child scan cannot acknowledge editor release. Tell its
+            // parent when a scheduled retry succeeds, outside the handshake.
+            if (scan.success && PageTextIndex.isEditableDocument(document)) this._editorFrames.refresh()
         }, 0)
     }
 
@@ -1499,7 +2034,7 @@ class Controller {
         }
         if (mutation.type !== 'childList') return false
         return [...mutation.addedNodes, ...mutation.removedNodes].some((node) => {
-            const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement
+            const element = node.nodeType === Node.ELEMENT_NODE ? node : null
             if (!element) return false
             if (element.tagName === 'STYLE') return true
             if (element.tagName === 'LINK' && String(element.rel || '').toLowerCase() === 'stylesheet') return true
@@ -1507,10 +2042,13 @@ class Controller {
         })
     }
 
-    _computeStylesheetFingerprint() {
+    _captureStylesheetFingerprints() {
+        return new Map(this._documentRoots().map(root => [root, this._computeStylesheetFingerprint(root)]))
+    }
+
+    _computeStylesheetFingerprint(root) {
         let hash = 2166136261
         let itemCount = 0
-        const seen = new Set()
         const update = (value) => {
             const text = String(value ?? '')
             itemCount++
@@ -1519,19 +2057,17 @@ class Controller {
                 hash = Math.imul(hash, 16777619)
             }
         }
-        const stylesheets = [
-            ...Array.from(document.styleSheets || []),
-            ...Array.from(document.adoptedStyleSheets || []),
-        ]
-
         // Deliberately cheap: identity, enabled state, media match and rule
         // count per sheet. That still detects sheets being added, removed,
         // toggled, media-flipped, or edited through insertRule/deleteRule,
         // without hashing every rule's cssText on every poll. Viewport size is
         // excluded because the debounced resize listener already rescans.
-        stylesheets.forEach((sheet) => {
-            if (!sheet || seen.has(sheet)) return
-            seen.add(sheet)
+        // Keep each root's cascade order, including adopted sheets.
+        const sheets = [...Array.from(root.styleSheets || []), ...Array.from(root.adoptedStyleSheets || [])]
+        sheets.forEach(sheet => {
+            if (!sheet) return
+            if (!this._stylesheetIds.has(sheet)) this._stylesheetIds.set(sheet, ++this._nextStylesheetId)
+            update(this._stylesheetIds.get(sheet))
             update(sheet.href)
             update(sheet.disabled)
             update(sheet.media?.mediaText)
@@ -1549,22 +2085,32 @@ class Controller {
 
     _startStylesheetPolling() {
         clearInterval(this._stylesheetPollTimer)
-        this._stylesheetFingerprint = this._computeStylesheetFingerprint()
+        this._stylesheetFingerprints = this._captureStylesheetFingerprints()
         this._stylesheetPollTimer = setInterval(() => {
             if (this.mode === PROTECTION_MODE.DISABLED) return
-            const next = this._computeStylesheetFingerprint()
-            if (next === this._stylesheetFingerprint) return
-            this._stylesheetFingerprint = next
-            this._handleStylesheetChange()
+            this._refreshEditorState()
+            this._editorFrames.prune()
+            this._refreshIframeEditorStates()
+            // Keep the native attachShadow fallback, but yield between bounded
+            // TreeWalker slices instead of enumerating the whole page here.
+            this._scheduleShadowDiscovery()
+            this._shadowRoots.forEach(root => {
+                if (root.host.isConnected) this._ensureShadowStyles(root)
+            })
+            const next = this._captureStylesheetFingerprints()
+            const changed = next.size !== this._stylesheetFingerprints.size ||
+                [...next].some(([root, fingerprint]) => this._stylesheetFingerprints.get(root) !== fingerprint)
+            this._stylesheetFingerprints = next
+            if (changed) this._handleStylesheetChange()
         }, STYLESHEET_POLL_INTERVAL_MS)
     }
 
     _attachMediaResourceListeners() {
         if (this._mediaEventListenersAttached) return
         this._mediaEventListenersAttached = true
-        MEDIA_RESOURCE_EVENTS.forEach((type) => {
-            document.addEventListener(type, this._onMediaResourceEvent, true)
-        })
+        this._documentRoots().forEach(root => MEDIA_RESOURCE_EVENTS.forEach(type => {
+            root.addEventListener(type, this._onMediaResourceEvent, true)
+        }))
         window.addEventListener('resize', this._onGlobalBackgroundStateEvent)
         window.addEventListener('hashchange', this._onGlobalBackgroundStateEvent)
     }
@@ -1572,9 +2118,9 @@ class Controller {
     _detachMediaResourceListeners() {
         if (!this._mediaEventListenersAttached) return
         this._mediaEventListenersAttached = false
-        MEDIA_RESOURCE_EVENTS.forEach((type) => {
-            document.removeEventListener(type, this._onMediaResourceEvent, true)
-        })
+        this._documentRoots().forEach(root => MEDIA_RESOURCE_EVENTS.forEach(type => {
+            root.removeEventListener(type, this._onMediaResourceEvent, true)
+        }))
         window.removeEventListener('resize', this._onGlobalBackgroundStateEvent)
         window.removeEventListener('hashchange', this._onGlobalBackgroundStateEvent)
     }
@@ -1787,7 +2333,7 @@ class Controller {
     }
 
     _canRenderPreview(node) {
-        if (node.isRootBackground) return false
+        if (node.suppressesBackground) return false
         if (node.kind !== 'video') return true
         const video = node.element
         if (!(video instanceof HTMLVideoElement)) return false
@@ -1798,7 +2344,10 @@ class Controller {
     }
 
     _updateHoverPreview() {
-        if (this.mode === PROTECTION_MODE.DISABLED || this.settings.previewEnabled !== true) {
+        // Before the first settings read the preview preference is unknown;
+        // revealing media on hover with the default would not be fail-closed.
+        if (!this.protectionApplied || this.mode === PROTECTION_MODE.DISABLED ||
+            this.settings.previewEnabled !== true) {
             this._clearHoverPreview()
             return
         }
@@ -1808,7 +2357,18 @@ class Controller {
         let found = null
         let backgroundFallback = null
         try {
-            for (const element of document.elementsFromPoint(point.x, point.y)) {
+            const elements = []
+            const seen = new Set()
+            const visit = (root) => {
+                for (const element of root.elementsFromPoint(point.x, point.y)) {
+                    if (seen.has(element)) continue
+                    seen.add(element)
+                    if (element.shadowRoot) visit(element.shadowRoot)
+                    elements.push(element)
+                }
+            }
+            visit(document)
+            for (const element of elements) {
                 const node = this._registry.get(element)
                 if (!node || !node.isBlurred || !this._canRenderPreview(node)) continue
                 // Prefer real media over a decorative background. Sites stack
@@ -1835,91 +2395,118 @@ class Controller {
         this._hoverNode = null
     }
 
-    _handleFrameTopologyChange() {
-        this._notifyFrameStatusChanged(true)
+    // Replacing one frame with another keeps the owner count, so iframe
+    // mutations force the status message. Shadow-root changes only matter
+    // when they add or remove frame owners, which the signature reflects.
+    _handleFrameTopologyChange({ force = true } = {}) {
+        this._notifyFrameStatusChanged(force)
         this._invalidateFrameAggregate()
     }
 
     _startIframeLifecycleTracking() {
         document.addEventListener('load', this._onIframeLifecycleLoad, true)
-        this._iframeLifecycleObserver = new MutationObserver((mutations) => {
-            let frameTopologyChanged = false
-            // Check the changed subtrees themselves: replacing one frame with
-            // another can preserve the owner count while invalidating its verdict.
-            const hasFrameOwner = (nodes) => {
-                for (const node of nodes) {
-                    if (node instanceof Element && (node.matches(TRACKED_FRAME_OWNER_SELECTOR) ||
-                        node.querySelector(TRACKED_FRAME_OWNER_SELECTOR))) return true
-                }
-                return false
+        this._iframeLifecycleObserver = new MutationObserver(mutations => this._handleIframeMutations(mutations))
+        this._documentRoots().forEach(root => this._iframeLifecycleObserver.observe(root, FRAME_OBSERVER_OPTIONS))
+    }
+
+    _handleIframeMutations(mutations) {
+        let frameTopologyChanged = false
+        // Check the changed subtrees themselves: replacing one frame with
+        // another can preserve the owner count while invalidating its verdict.
+        const hasFrameOwner = (nodes) => {
+            for (const node of nodes) {
+                if (node instanceof Element && (node.matches(TRACKED_FRAME_OWNER_SELECTOR) ||
+                        this._queryAll(node, TRACKED_FRAME_OWNER_SELECTOR).length > 0)) return true
             }
+            return false
+        }
 
-            mutations.forEach((mutation) => {
-                if (mutation.type === 'childList') {
-                    mutation.removedNodes.forEach(node => this._disarmDetachedIframeGuards(node))
-                    frameTopologyChanged = frameTopologyChanged ||
+        mutations.forEach((mutation) => {
+            if (mutation.type === 'childList') {
+                mutation.removedNodes.forEach(node => this._disarmDetachedIframeGuards(node))
+                frameTopologyChanged = frameTopologyChanged ||
                         hasFrameOwner(mutation.addedNodes) || hasFrameOwner(mutation.removedNodes)
-                    return
+                return
+            }
+            if (mutation.target instanceof HTMLIFrameElement) {
+                frameTopologyChanged = true
+                if (mutation.attributeName === 'sandbox') {
+                    // Sandbox changes affect future navigations; they do
+                    // not navigate the current document or emit a load.
+                    // Keep any actual src/srcdoc navigation pending.
+                    this._armIframeNavigationGuard(mutation.target)
+                } else {
+                    this._markIframeNavigationPending(mutation.target)
                 }
-                if (mutation.target instanceof HTMLIFrameElement) {
-                    frameTopologyChanged = true
-                    if (mutation.attributeName === 'sandbox') {
-                        // Sandbox changes affect future navigations; they do
-                        // not navigate the current document or emit a load.
-                        // Keep any actual src/srcdoc navigation pending.
-                        this._armIframeNavigationGuard(mutation.target)
-                    } else {
-                        this._markIframeNavigationPending(mutation.target)
-                    }
-                }
-            })
+            }
+        })
 
-            if (frameTopologyChanged) this._handleFrameTopologyChange()
-        })
-        this._iframeLifecycleObserver.observe(document, {
-            attributes: true,
-            childList: true,
-            subtree: true,
-            attributeFilter: IFRAME_NAVIGATION_ATTRIBUTES,
-        })
+        if (frameTopologyChanged) this._handleFrameTopologyChange()
     }
 
     _handleIframeLifecycleLoad(event) {
-        const element = event?.target
+        const element = event?.composedPath?.()[0] || event?.target
         if (!(element instanceof HTMLIFrameElement) || !event.isTrusted) return
 
         const node = this._blurForIframeNavigation(element)
         this._armIframeNavigationGuard(element)
         this._completeIframeNavigation(element, node)
+        const touched = new Set()
+        this._invalidateBackgroundAncestors(element, touched)
+        touched.forEach(visual => this._applyResultToNode(visual, this._currentVisualResult()))
     }
 
     _handleMediaResourceEvent(event) {
-        const element = event?.target
+        const element = event?.composedPath?.()[0] || event?.target
         if (!(element instanceof HTMLImageElement) && !(element instanceof HTMLVideoElement)) return
         const node = this._registry.get(element)
         if (!node) return
         if (element instanceof HTMLVideoElement) this._scheduleHoverPreviewUpdate()
-        if (!this._explicitReveals.has(element)) return
-        if (this.isExplicitlyRevealed(element)) return
-        node.blur()
+        if (this._explicitReveals.has(element) && this.isExplicitlyRevealed(element)) return
         this._applyResultToNode(node, this._currentVisualResult())
     }
 
     _observerInit() {
         if (this._observer) this._observer.disconnect()
         this._observer = new MutationObserver((mutations) => this._handleMutations(mutations))
-        this._observer.observe(document, {
-            childList: true,
-            characterData: true,
-            subtree: true,
-            attributes: true,
-            attributeOldValue: true,
-            attributeFilter: OBSERVED_ATTRIBUTES,
-        })
+        this._documentRoots().forEach(root => this._observer.observe(root, DOM_OBSERVER_OPTIONS))
+    }
+
+    // The observer that runs from document_start until applyProtectionMode
+    // replaces it through _observerInit. It only finds shadow roots (declarative
+    // ones produce no attachShadow notification) so they adopt the protection
+    // stylesheet; it registers no media, indexes no text and applies no policy.
+    _startupObserverInit() {
+        if (this._observer) this._observer.disconnect()
+        this._observer = new MutationObserver((mutations) => this._handleStartupMutations(mutations))
+        this._documentRoots().forEach(root => this._observer.observe(root, STARTUP_OBSERVER_OPTIONS))
+    }
+
+    _handleStartupMutations(mutations) {
+        if (this.protectionApplied) return
+        const candidates = mutations.flatMap((mutation) => (
+            mutation.type === 'childList' ? [mutation.target, ...mutation.addedNodes] : []
+        ))
+        const connected = candidates.filter(node => node instanceof Element && node.isConnected)
+        connected.forEach(node => this._discoverShadowRoots(node))
+        // Settings are still unknown, so a late declarative root only adopts
+        // the protection sheet; applyProtectionMode indexes it with the page.
+        this._scheduleLateShadowRootCheck(connected, { initialize: false })
     }
 
     _handleMutations(mutations) {
+        // Only a page whose settings have been applied may re-resolve its policy;
+        // before that the defaults must not be analysed against or projected.
+        if (this.protectionApplied && this._policyUrl !== currentPolicyUrl()) {
+            void this.applyProtectionMode(Policy.resolveProtectionMode(this.settings, location.href), this.settings)
+            return
+        }
         const records = mutations.filter((mutation) => {
+            // Editors often write the same class/style string on every key.
+            // MutationObserver still reports it, but nothing needs rescanning.
+            if (mutation.type === 'attributes' && mutation.target instanceof Element &&
+                (mutation.attributeName === 'class' || mutation.attributeName === 'style') &&
+                mutation.oldValue === mutation.target.getAttribute(mutation.attributeName)) return false
             if (mutation.type === 'attributes' && mutation.attributeName === 'style' &&
                 mutation.target instanceof Element) {
                 if (this.mode === PROTECTION_MODE.DISABLED &&
@@ -1930,6 +2517,7 @@ class Controller {
             return !isInternalMutation(mutation)
         })
         if (records.length === 0) return
+        debug('dom.mutations', () => ({ mutationCount: records.length }))
         if (this.mode === PROTECTION_MODE.DISABLED) {
             this._handleDisabledMutations(records)
             return
@@ -1937,41 +2525,63 @@ class Controller {
         ANALYSIS_DEBUG_STATE.mutationBatches++
 
         const touched = new Set()
+        const addedSubtrees = []
+        const backgroundSubtrees = []
+        const discoveredHosts = new Set()
+        const newRoots = []
         let stylesheetChanged = false
+        let elementsChanged = false
+        let attributesChanged = false
 
         records.forEach((mutation) => {
+            // Before any cover or media projection is created in a shadow root.
+            this._ensureShadowStylesForTarget(mutation.target)
             stylesheetChanged = stylesheetChanged || this._mutationTouchesStylesheet(mutation)
 
             if (mutation.type === 'childList') {
                 this._addOwningMedia(mutation.target, touched)
-                mutation.addedNodes.forEach((node) => {
-                    this._restoreDisabledMedia(node)
-                    this._registerMedia(node).forEach(visual => touched.add(visual))
-                    this._scanBackgrounds(node).nodes.forEach(visual => touched.add(visual))
-                    const element = node.nodeType === Node.ELEMENT_NODE ? node : null
-                    if (element) {
-                        this._watchStylesheetLink(element)
-                        element.querySelectorAll?.('link').forEach(link => this._watchStylesheetLink(link))
-                        this._addOwningMedia(element, touched)
+                const addedElements = [...mutation.addedNodes].filter(node => node.nodeType === Node.ELEMENT_NODE)
+                const removedElements = [...mutation.removedNodes].some(node => node.nodeType === Node.ELEMENT_NODE)
+                if (addedElements.length > 0 || removedElements) {
+                    elementsChanged = true
+                    this._invalidateBackgroundAncestors(mutation.target, touched)
+                }
+                addedSubtrees.push(...addedElements)
+                backgroundSubtrees.push(...addedElements)
+                if (mutation.target.shadowRoot && !this._shadowRoots.has(mutation.target.shadowRoot)) {
+                    const roots = this._collectNewShadowRoots(mutation.target)
+                    if (roots.length > 0) {
+                        newRoots.push(...roots)
+                        discoveredHosts.add(mutation.target)
+                        addedSubtrees.push(mutation.target)
+                        backgroundSubtrees.push(mutation.target)
+                        this._invalidateBackgroundAncestors(mutation.target, touched)
                     }
-                })
+                }
                 return
             }
 
             if (mutation.type !== 'attributes') return
             const element = mutation.target
             if (!(element instanceof Element)) return
+            attributesChanged = true
             if (element === document.documentElement) this._syncRootProjection()
             this._wordCoverManager.repairProjection(element)
             if (element instanceof HTMLLinkElement) this._watchStylesheetLink(element)
 
-            this._registerMedia(element).forEach(visual => touched.add(visual))
+            this._registerMedia(element, { subtree: false }).forEach(visual => touched.add(visual))
             this._addOwningMedia(element, touched)
+            if (['class', 'style', 'contenteditable', 'role', 'slot', 'name'].includes(mutation.attributeName)) {
+                this._invalidateBackgroundAncestors(element, touched)
+            }
+            if (mutation.attributeName === 'contenteditable') {
+                this._invalidateBackgroundSubtree(element, touched)
+            }
             if (mutation.attributeName === 'class' || mutation.attributeName === 'style') {
                 if (element === document.documentElement || element === document.body) {
                     this._scheduleFullBackgroundRescan()
                 } else {
-                    this._scanBackgrounds(element).nodes.forEach(visual => touched.add(visual))
+                    backgroundSubtrees.push(element)
                 }
             }
             const visual = this._registry.get(element)
@@ -1986,13 +2596,43 @@ class Controller {
             }
         })
 
-        this._registry.prune()
+        // Attribute batches often describe the same editor subtree several
+        // times. Discover media only for inserted elements and scan each
+        // affected background subtree once, after all cache invalidations.
+        PageTextIndex.minimalRoots(addedSubtrees).forEach(element => {
+            if (!element.isConnected) return
+            newRoots.push(...this._collectNewShadowRoots(element))
+            this._restoreDisabledMedia(element)
+            this._registerMedia(element).forEach(visual => touched.add(visual))
+            this._watchStylesheetLink(element)
+            this._queryAll(element, 'link').forEach(link => this._watchStylesheetLink(link))
+            this._addOwningMedia(element, touched)
+        })
+        PageTextIndex.minimalRoots(backgroundSubtrees).forEach(element => {
+            if (element.isConnected) this._scanBackgrounds(element).nodes.forEach(visual => touched.add(visual))
+        })
+        this._scheduleLateShadowRootCheck(addedSubtrees.filter(element => element.isConnected), { initialize: true })
+        if (elementsChanged) {
+            this._pruneShadowRoots()
+            this._registry.prune()
+            this._editorFrames.prune()
+        }
+        if (this._rootsContainFrameOwners(newRoots)) this._handleFrameTopologyChange({ force: false })
+        this._refreshEditorState()
         // Media can be registered or replaced under a pointer that is not
         // moving, so re-run the hit test rather than waiting for another event.
         this._scheduleHoverPreviewUpdate()
 
-        const { added, removed } = this._pageTextIndex.applyMutations(records)
-        this._wordCoverManager.prune()
+        const { added, removed } = this._pageTextIndex.applyMutations([
+            ...records,
+            ...[...discoveredHosts].map(host => ({
+                type: 'childList', target: host, addedNodes: [host], removedNodes: [],
+            })),
+        ])
+        debug('dom.processed', () => ({
+            touchedMediaCount: touched.size, addedWordCount: added.size, removedWordCount: removed.size,
+        }))
+        if (elementsChanged || attributesChanged) this._wordCoverManager.prune()
 
         if (stylesheetChanged) {
             this._handleStylesheetChange()
@@ -2003,33 +2643,20 @@ class Controller {
             return
         }
 
-        // New vocabulary can flip a clear verdict, so stay fail-closed until the
-        // analysis returns. Equivalent text replacement needs no new analysis.
-        if (added.size > 0) {
-            this.protectAllKnownVisuals()
-            this._scheduleAnalysis()
-            return
-        }
-
-        // Losing vocabulary can only clear a verdict, never create one, so
-        // nothing needs re-protecting. A pending verdict still describes the
-        // old vocabulary and must be discarded even if the last result was clear.
-        const pendingInputRemoved = removed.size > 0 && this._analysisPending
-        const matchedWordRemoved = removed.size > 0 && this._pageAnalysisResult.shouldBlur === true &&
-            this._pageAnalysisResult.matchedInputWords.some(word => removed.has(word))
-        if (pendingInputRemoved || matchedWordRemoved) this._scheduleAnalysis()
-
+        this._handleVocabularyChange(added, removed)
         touched.forEach(node => this._applyResultToNode(node, this._currentVisualResult()))
     }
 
     _scheduleAnalysis() {
         clearTimeout(this._analysisTimer)
         const generation = ++this._policyGeneration
+        const url = currentPolicyUrl()
         this._setAnalysisPending(true)
         this._analysisTimer = setTimeout(async () => {
             this._analysisTimer = null
             const result = await this.analyzeCurrentPage(generation)
-            if (generation !== this._policyGeneration || this.mode !== PROTECTION_MODE.ANALYZE) return
+            if (generation !== this._policyGeneration || url !== currentPolicyUrl() ||
+                this.mode !== PROTECTION_MODE.ANALYZE) return
             this.applyPageResult(result)
         }, ANALYSIS_DEBOUNCE_MS)
     }
@@ -2122,7 +2749,9 @@ async function readAndApplySettings({ visualOnly = false } = {}) {
 function applyCurrentUrlPolicy() {
     if (!settingsInitialized) return
     const mode = Policy.resolveProtectionMode(controller.settings, location.href)
-    if (mode !== controller.mode) void controller.applyProtectionMode(mode, controller.settings)
+    if (mode !== controller.mode || controller._policyUrl !== currentPolicyUrl()) {
+        void controller.applyProtectionMode(mode, controller.settings)
+    }
 }
 
 // These events also work while protection is disabled. The service worker
@@ -2163,13 +2792,13 @@ function resolveContextVisual() {
     while (current && current !== document.documentElement) {
         const node = controller.getVisualNode(current)
         if (node) return node
-        current = current.parentElement
+        current = PageTextIndex.composedParent(current)
     }
     return null
 }
 
 document.addEventListener('contextmenu', (event) => {
-    lastElementContext = event.target
+    lastElementContext = event.composedPath?.()[0] || event.target
     lastContextMenuPoint = { clientX: event.clientX, clientY: event.clientY }
 }, true)
 
@@ -2196,6 +2825,11 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || (message.target && message.target !== 'content')) return false
 
+    if (['PB_URL_CHANGED', 'getTriggeredWords', 'blurAll', 'unblurAll', 'unblur',
+        FRAME_MESSAGES.statusRequest, FRAME_MESSAGES.aggregateInvalidated].includes(message.type)) {
+        debug('message.received', () => ({ type: message.type }))
+    }
+
     switch (message.type) {
     case 'PB_URL_CHANGED':
         applyCurrentUrlPolicy()
@@ -2204,6 +2838,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case FRAME_MESSAGES.statusRequest:
         sendResponse(controller.getFrameProtectionStatus())
+        return true
+
+    case FRAME_MESSAGES.clearanceArm:
+        sendResponse({ ok: controller._frameClearance.arm(message.epoch, message.tokens) })
+        return true
+
+    case FRAME_MESSAGES.clearanceEmit:
+        sendResponse({ ok: FrameClearance.emit(message.token) })
         return true
 
     case FRAME_MESSAGES.aggregateInvalidated:

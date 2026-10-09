@@ -1,0 +1,71 @@
+/* Separate help controls never share the setting's clickable area. */
+.pb-help {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid var(--pb-border);
+    border-radius: 8px;
+    background: var(--pb-surface-2);
+    color: var(--pb-text-2);
+    font: inherit;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1;
+    cursor: help;
+}
+
+.pb-help svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.pb-help:hover {
+    border-color: var(--pb-accent);
+    background: var(--pb-accent-bg);
+    color: var(--pb-accent-text);
+}
+
+.pb-help:focus-visible {
+    outline: none;
+    box-shadow: var(--pb-focus);
+}
+
+.pb-tooltip {
+    position: fixed;
+    z-index: 1000;
+    width: max-content;
+    max-width: min(260px, calc(100vw - 16px));
+    max-height: calc(100vh - 16px);
+    overflow: auto;
+    padding: 10px 12px;
+    border: 1px solid var(--pb-border-strong);
+    border-radius: var(--pb-radius);
+    background: var(--pb-surface);
+    color: var(--pb-text);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.5;
+    text-align: left;
+    overflow-wrap: anywhere;
+}
+
+.pb-tooltip[hidden] {
+    display: none;
+}
+
+@media (pointer: coarse) {
+    .pb-help {
+        width: 44px;
+        height: 44px;
+    }
+}

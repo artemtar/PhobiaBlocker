@@ -7,6 +7,8 @@
     if (!policy) throw new Error('PhobiaBlockerPolicy must load before offscreen.js')
 
     const { FAIL_CLOSED_RESULT, CLEAR_RESULT } = policy
+    let debugMode = false
+    const debug = policy.createDebugLogger('offscreen', () => debugMode)
     const NORMALIZE_PARAMS = Object.freeze({
         whitespace: true,
         unicode: true,
@@ -91,6 +93,10 @@
             literalTargetSet: new Set(validatedTargets),
             normalizedTargetSet: new Set(normalizedWords),
         }
+        debug('analysis.targets-normalized', () => ({
+            literalTargetCount: targetArtifacts.literalTargetSet.size,
+            normalizedTargetCount: targetArtifacts.normalizedTargetSet.size,
+        }))
     }
 
     function analyzeWords(words) {
@@ -108,10 +114,15 @@
             // Bounded batches keep the NLP library's large-document work small.
             for (let start = 0; start < uniqueWords.length; start += NORMALIZE_BATCH_SIZE) {
                 const batch = uniqueWords.slice(start, start + NORMALIZE_BATCH_SIZE)
-                // JSON retains empty entries; out('array') drops them and would
-                // lose the association between normalized and original words.
-                const entries = nlp(batch).normalize(NORMALIZE_PARAMS).json({ terms: false })
-                if (entries.length !== batch.length) return { ...FAIL_CLOSED_RESULT }
+                // NLP can drop entire phrases, including kana-only words. Retry
+                // that batch individually to preserve every original input slot.
+                let entries = nlp(batch).normalize(NORMALIZE_PARAMS).json({ terms: false })
+                if (entries.length !== batch.length) {
+                    debug('analysis.normalization-fallback', () => ({ wordCount: batch.length }))
+                    entries = batch.map(word => ({
+                        text: nlp(word).normalize(NORMALIZE_PARAMS).text(),
+                    }))
+                }
                 entries.forEach((entry, index) => {
                     normalizedPageWords[start + index] = normalizeWords([entry.text])[0]
                 })
@@ -153,6 +164,8 @@
 
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (!message || message.target !== 'offscreen' || message.type !== 'PB_ANALYZE_SCOPES') return
+        debugMode = message.debugMode === true
+        debug('message.received', () => ({ type: 'PB_ANALYZE_SCOPES' }))
 
         try {
             rebuildTargetWordArtifacts(message.targetWords)
@@ -162,7 +175,14 @@
             ))) {
                 throw new TypeError('Analysis scopes must contain numeric IDs and string word arrays')
             }
-            sendResponse({ results: analyzeScopes(message.scopes) })
+            const results = analyzeScopes(message.scopes)
+            debug('analysis.completed', () => ({
+                scopeCount: results.length,
+                inputWordCount: message.scopes.reduce((count, scope) => count + scope.words.length, 0),
+                blurredScopeCount: results.filter(result => result.shouldBlur).length,
+                matchedWordCount: results.reduce((count, result) => count + result.matchedInputWords.length, 0),
+            }))
+            sendResponse({ results })
         } catch (error) {
             console.error('PhobiaBlocker: invalid scoped analysis request', error)
             const scopes = Array.isArray(message.scopes) ? message.scopes : []

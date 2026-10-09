@@ -1428,9 +1428,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                 'covered word should use an intentional redaction pattern')
             assert.strictEqual(before.cursor, 'help',
                 'covered word cursor should indicate explanatory help is available')
-            assert.strictEqual(before.title, 'Covered by PhobiaBlocker',
+            assert.strictEqual(before.title, 'Covered by PhobiaBlur',
                 'covered word should expose a tooltip explaining the cover')
-            assert.strictEqual(before.ariaLabel, 'Covered by PhobiaBlocker',
+            assert.strictEqual(before.ariaLabel, 'Covered by PhobiaBlur',
                 'covered word should expose an accessible explanation')
             assert.notStrictEqual(after.backgroundColor, 'rgba(0, 0, 0, 0)',
                 'covered word background should remain opaque on hover')

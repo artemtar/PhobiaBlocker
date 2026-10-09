@@ -32,7 +32,7 @@
     opacity: 0 !important;
 }
 
-:root [data-phobiablocker-background][data-phobia-blur]:not([data-phobiablocker-root-background]) {
+:root [data-phobiablocker-background][data-phobia-blur]:not([data-phobiablocker-suppressed-background]) {
     filter: blur(40px) !important;
 }
 

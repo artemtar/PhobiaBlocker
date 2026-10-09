@@ -2,151 +2,77 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>PhobiaBlocker</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PhobiaBlur</title>
     <link rel="stylesheet" href="css/theme.css">
+    <link rel="stylesheet" href="css/ui-help.css">
     <link rel="stylesheet" href="css/popup.css">
 </head>
-
 <body>
     <header class="pb-header">
-        <span class="pb-wordmark">
-            <span class="pb-wordmark-mark" aria-hidden="true">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M12 3l7 3v5c0 4.4-2.9 8.4-7 9.6-4.1-1.2-7-5.2-7-9.6V6l7-3z"/>
-                </svg>
-            </span>
-            PhobiaBlocker
-        </span>
-        <button id="open-settings-btn" class="pb-icon-btn" title="Settings" aria-label="Settings">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="12" r="3"/>
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.14.37.4.68.74.88H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-            </svg>
+        <span class="pb-wordmark"><img src="icons/icon24.png" width="22" height="22" alt="">PhobiaBlur</span>
+        <button type="button" id="open-settings-btn" class="settings-link" data-tooltip="Open the separate Settings page for blur strength, site rules, and other preferences.">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16M8 4v6M16 14v6"/></svg>Settings
         </button>
     </header>
-
     <main class="pb-body">
-        <div id="site-status-bar" class="site-status-bar" role="status"></div>
-
-        <div class="pb-tiles">
-            <label class="pb-tile" title="Scans page text for words that trigger your phobias using intelligent word matching.">
-                <input type="checkbox" id="enabled-switch">
-                <span class="pb-tile-icon" aria-hidden="true">
-                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/>
-                        <circle cx="12" cy="12" r="3"/>
-                    </svg>
-                </span>
-                <span class="pb-tile-label">Smart<br>detection</span>
-                <span class="pb-tile-state"></span>
-            </label>
-
-            <label class="pb-tile" title="Skip text analysis and blur all visual content for maximum protection.">
-                <input type="checkbox" id="blurIsAlwaysOn-switch">
-                <span class="pb-tile-icon" aria-hidden="true">
-                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M12 3s6 6.1 6 10a6 6 0 0 1-12 0c0-3.9 6-10 6-10z"/>
-                    </svg>
-                </span>
-                <span class="pb-tile-label">Always<br>blur</span>
-                <span class="pb-tile-state"></span>
-            </label>
-
-            <label class="pb-tile" title="Cover matching trigger words on web pages. Use right-click Unblur or Unblur all to reveal them.">
-                <input type="checkbox" id="wordCoverEnabled-switch">
-                <span class="pb-tile-icon" aria-hidden="true">
-                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M4 7V5h16v2M9 19h6M12 5v14"/>
-                    </svg>
-                </span>
-                <span class="pb-tile-label">Cover<br>words</span>
-                <span class="pb-tile-state"></span>
-            </label>
+        <div class="site-domain"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a19 19 0 0 1 0 18 19 19 0 0 1 0-18"/></svg><span id="site-domain">Current page</span></div>
+        <div id="site-status-bar" class="site-status-bar" role="status">
+            <h1 id="site-status-title">Loading preferences…</h1>
+            <p id="site-status-reason">Page controls will be available shortly.</p>
         </div>
-
-        <div class="pb-actions">
-            <button class="pb-btn pb-btn-primary" id="blurBtn">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <path d="M17.9 17.9A10.6 10.6 0 0 1 12 20c-7 0-11-8-11-8a19.5 19.5 0 0 1 5.1-6M9.9 4.2A10.6 10.6 0 0 1 12 4c7 0 11 8 11 8a19.5 19.5 0 0 1-2.2 3.2M1 1l22 22"/>
-                </svg>
-                <span>Blur all</span>
-            </button>
-            <button class="pb-btn" id="unblurBtn">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-                    <circle cx="12" cy="12" r="3"/>
-                </svg>
-                <span>Unblur all</span>
-            </button>
+        <div class="site-rule-line"><span id="site-rule-summary">Checking site rules…</span><button type="button" id="change-site-rule" class="text-button" aria-expanded="false" aria-controls="site-rule-panel" disabled>Change</button></div>
+        <div id="site-rule-panel" class="site-rule-panel" hidden>
+            <label for="site-rule-select" id="site-rule-label">Rule for this domain</label>
+            <select id="site-rule-select" disabled>
+                <option value="default">No rule for this domain</option>
+                <option value="always">Always blur media</option>
+                <option value="off">Pause automatic protection</option>
+            </select>
+            <p class="caption">Applies to this domain and its subdomains. Other matching rules still apply; Always blur takes priority.</p>
         </div>
-
-        <section class="pb-section">
-            <div class="pb-section-head">
-                <span class="pb-section-title">
-                    Blur amount
-                    <span class="info-icon" data-tooltip="Adjust the intensity of the blur applied to visual content.">
-                        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
-                            <circle cx="8" cy="8" r="6.5"/>
-                            <path d="M8 7.2v4M8 4.9v.9" stroke-linecap="round"/>
-                        </svg>
-                    </span>
-                </span>
-                <span id="blurRangeValue" class="pb-section-value">50%</span>
+        <section class="pb-section" aria-labelledby="default-protection-heading">
+            <div class="section-heading"><h2 id="default-protection-heading">Default protection</h2><button type="button" class="pb-help" aria-label="Explain default protection" data-tooltip="Choose the protection used on sites without an overriding site rule."><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3m.1 4h.01"/></svg></button></div>
+            <p class="caption">Applies where no site rule is set.</p>
+            <div class="mode-tiles" role="group" aria-label="Default protection mode">
+                <button type="button" id="mode-smart" class="mode-tile" aria-pressed="false" disabled data-tooltip="Check page text for your trigger words to decide when to blur media."><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z"/></svg><span>Smart</span><span class="selected-mark" aria-hidden="true">✓</span></button>
+                <button type="button" id="mode-always" class="mode-tile" aria-pressed="false" disabled data-tooltip="Blur media without waiting for a text match. Site rules still apply."><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z"/></svg><span>Always blur</span><span class="selected-mark" aria-hidden="true">✓</span></button>
+                <button type="button" id="mode-off" class="mode-tile" aria-pressed="false" disabled data-tooltip="Turn off default automatic protection. Site rules and manual page actions still apply."><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9M6.3 5.7a9 9 0 1 0 11.4 0"/></svg><span>Off</span><span class="selected-mark" aria-hidden="true">✓</span></button>
             </div>
-            <input type="range" id="blurRange" class="pb-range" min="0" max="100" step="1" aria-label="Blur amount">
+            <div class="preference-row">
+                <button type="button" id="cover-toggle" class="preference-button" aria-pressed="false" disabled><span class="preference-label"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7V5h16v2M12 5v14M8 19h8"/></svg>Cover trigger words</span><span id="cover-state" class="preference-state" aria-hidden="true">Off −</span></button>
+                <button type="button" class="pb-help" aria-label="Explain covering trigger words" data-tooltip="Hide matching trigger words in page text while protection is enabled. Hover preview does not reveal them."><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3m.1 4h.01"/></svg></button>
+            </div>
+            <div class="preference-row">
+                <button type="button" id="preview-toggle" class="preference-button" aria-pressed="false" disabled><span class="preference-label"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 3 7 18 2-8 8-2Z"/></svg>Preview on hover</span><span id="preview-state" class="preference-state" aria-hidden="true">Off −</span></button>
+                <button type="button" class="pb-help" aria-label="Explain preview on hover" data-tooltip="Preview blurred media while hovering; move away to restore blur. Word covers stay in place. Set preview strength in Settings."><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3m.1 4h.01"/></svg></button>
+            </div>
+            <p class="caption" id="preference-note" hidden></p>
         </section>
-
-        <section class="pb-section">
-            <div class="pb-section-head">
-                <span class="pb-section-title">
-                    Trigger words
-                    <span id="trigger-count-badge" class="count-badge" style="display:none"></span>
-                    <span class="info-icon" data-tooltip="Words related to your phobias that trigger content blurring.">
-                        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
-                            <circle cx="8" cy="8" r="6.5"/>
-                            <path d="M8 7.2v4M8 4.9v.9" stroke-linecap="round"/>
-                        </svg>
-                    </span>
-                </span>
-                <span name="supportedWords" id="btn-supported-words" class="pb-collapse-btn" role="button" tabindex="0" aria-label="Toggle trigger words"></span>
-            </div>
+        <section id="detected-words-container" class="word-section" hidden>
+            <button type="button" id="btn-detected-words" class="disclosure-button" aria-expanded="false" aria-controls="detected-words-area" data-tooltip="Words matched in the checked page text."><span>Show matched words <span id="detected-count-badge" class="count-badge"></span></span><span class="chevron" aria-hidden="true">⌄</span></button>
+            <div id="detected-words-area" class="collapse"><div id="detected-words-list" class="detected-words-list"></div><p class="caption">Page text only.</p></div>
+        </section>
+        <section class="word-section">
+            <button type="button" id="btn-supported-words" class="disclosure-button" aria-expanded="false" aria-controls="supported-words-area" data-tooltip="Manage the trigger words used across your protected sites."><span>Your trigger words <span id="trigger-count-badge" class="count-badge"></span></span><span class="chevron" aria-hidden="true">⌄</span></button>
             <div id="supported-words-area" class="collapse">
                 <div id="tags-container" class="tags-container"></div>
-                <div class="add-word-input-container">
-                    <input type="text" id="word-input" class="pb-input word-input" placeholder="Add a word" maxlength="30">
-                    <button id="addTagBtn" class="add-word-btn" title="Add word" aria-label="Add word">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                            <path d="M8 3V13M3 8H13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                        </svg>
-                    </button>
-                </div>
-                <p id="word-error" class="word-error" role="alert" hidden></p>
+                <div class="word-entry"><input type="text" id="word-input" class="pb-input" placeholder="Add a word" aria-label="Add a trigger word" maxlength="30" disabled><button type="button" id="addTagBtn" class="pb-btn" disabled>Add</button></div>
+                <p class="caption">Used across sites with protection enabled.</p>
             </div>
         </section>
-
-        <section id="detected-words-container" class="pb-section">
-            <div class="pb-section-head">
-                <span class="pb-section-title">
-                    Detected on this page
-                    <span id="detected-count-badge" class="count-badge" style="display:none"></span>
-                    <span class="info-icon" data-tooltip="Trigger words currently detected in this page's text.">
-                        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
-                            <circle cx="8" cy="8" r="6.5"/>
-                            <path d="M8 7.2v4M8 4.9v.9" stroke-linecap="round"/>
-                        </svg>
-                    </span>
-                </span>
-                <span id="btn-detected-words" class="pb-collapse-btn" role="button" tabindex="0" aria-label="Toggle detected words"></span>
-            </div>
-            <div id="detected-words-area" class="collapse">
-                <div id="detected-words-list"></div>
-            </div>
+        <section class="pb-section" aria-labelledby="current-page-heading">
+            <div class="section-heading"><h2 id="current-page-heading">Current page</h2><button type="button" class="pb-help" aria-label="Explain current page actions" data-tooltip="These actions affect current page content. Your saved protection preferences stay the same."><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3m.1 4h.01"/></svg></button></div>
+            <p class="caption">Saved preferences stay the same.</p>
+            <div class="pb-actions"><button type="button" id="blurBtn" class="pb-btn pb-btn-primary" disabled data-tooltip="Blur media on the current page without changing your saved preferences.">Blur media</button><button type="button" id="unblurBtn" class="pb-btn" disabled data-tooltip="Reveal current media and covered words. New or changed media may be protected again.">Reveal current content</button></div>
         </section>
+        <p id="word-error" class="word-error" role="alert" hidden></p>
+        <p id="action-result" class="caption" role="status" hidden></p>
     </main>
-
     <script src="js/shared-policy.js"></script>
     <script src="js/storage.js"></script>
     <script src="js/settings-ui.js"></script>
+    <script src="js/ui-help.js"></script>
     <script src="js/popup.js"></script>
 </body>
 </html>

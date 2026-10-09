@@ -8,6 +8,8 @@ const OFFSCREEN_ANALYSIS_TIMEOUT_MS = 3500
 const KEYBOARD_TOGGLE_DEBOUNCE_MS = 350
 const FRAME_STATUS_TIMEOUT_MS = 1500
 const URL_POLICY_RETRY_DELAY_MS = 250
+// The first release whose blur curve stores slider values on the current scale.
+const BLUR_CURVE_VERSION = '1.3.1'
 const {
     DEFAULTS,
     STORAGE_KEYS,
@@ -17,9 +19,13 @@ const {
     isStringArray,
     normalizeTargetWords,
     normalizeAnalysisResult,
+    convertLegacyBlurSliderValue,
     withTimeout,
 } = globalThis.PhobiaBlockerPolicy
 const storageApi = globalThis.PhobiaBlockerStorage
+let _debugMode = false
+let _debugModeGeneration = 0
+const debug = globalThis.PhobiaBlockerPolicy.createDebugLogger('background', () => _debugMode)
 let _offscreenCreatePromise = null
 let _cachedTargetWords = null
 let _targetWordsLoadPromise = null
@@ -162,35 +168,38 @@ async function computeFrameAggregate(message, sender) {
     const parentDocumentId = sender.documentId
     const epoch = message.epoch
     const requestedCount = message.frameElementCount
+    const individualClearance = message.individualClearance === true
+    const result = (ok, clear = false, clearTokens = []) => ({
+        ok, clear, epoch, ...(individualClearance ? { clearTokens } : {}),
+    })
     const requestIsValid = Number.isInteger(epoch) && epoch >= 0 &&
         Number.isInteger(requestedCount) && requestedCount >= 0 &&
         typeof message.hasUnsupportedFrameOwner === 'boolean'
     if (!requestIsValid || typeof tabId !== 'number' || typeof parentFrameId !== 'number' ||
         typeof parentDocumentId !== 'string') {
-        return { ok: false, clear: false, epoch }
+        return result(false)
     }
 
     const before = await getAllTabFrames(tabId)
-    if (!before) return { ok: false, clear: false, epoch }
+    if (!before) return result(false)
     const { byId, childrenByParent } = indexFrameTree(before)
     const parent = byId.get(parentFrameId)
     if (!parent || parent.documentId !== parentDocumentId) {
-        return { ok: false, clear: false, epoch }
+        return result(false)
     }
     const descendants = collectFrameDescendants(childrenByParent, parentFrameId)
     await retryUnconfirmedUrlPolicies(tabId, [parent, ...descendants])
     if (frameNavigationIsPending(tabId, parentFrameId, parent.documentId)) {
-        return { ok: true, clear: false, epoch }
+        return result(true)
     }
 
     const directChildren = childrenByParent.get(parentFrameId) || []
-    if (message.hasUnsupportedFrameOwner || directChildren.length !== requestedCount) {
-        return { ok: true, clear: false, epoch }
-    }
+    const allOwnersSupported = !message.hasUnsupportedFrameOwner && directChildren.length === requestedCount
+    if (!allOwnersSupported && !individualClearance) return result(true)
 
     const beforeSignature = frameSnapshotSignature([parent, ...descendants])
-    if (descendants.some(frame => frameNavigationIsPending(tabId, frame.frameId, frame.documentId))) {
-        return { ok: true, clear: false, epoch }
+    if (!individualClearance && descendants.some(frame => frameNavigationIsPending(tabId, frame.frameId, frame.documentId))) {
+        return result(true)
     }
 
     const statusPairs = await Promise.all(descendants.map(async (frame) => {
@@ -205,23 +214,23 @@ async function computeFrameAggregate(message, sender) {
     const statuses = new Map(statusPairs)
 
     const after = await getAllTabFrames(tabId)
-    if (!after) return { ok: true, clear: false, epoch }
+    if (!after) return result(true)
     const { byId: afterById, childrenByParent: afterChildrenByParent } = indexFrameTree(after)
     const afterParent = afterById.get(parentFrameId)
     if (!afterParent || afterParent.documentId !== parentDocumentId) {
-        return { ok: true, clear: false, epoch }
+        return result(true)
     }
     const afterDescendants = collectFrameDescendants(afterChildrenByParent, parentFrameId)
     if (frameSnapshotSignature([afterParent, ...afterDescendants]) !== beforeSignature) {
-        return { ok: true, clear: false, epoch }
+        return result(true)
     }
-    if (frameNavigationIsPending(tabId, parentFrameId, afterParent.documentId) ||
-        afterDescendants.some(frame => frameNavigationIsPending(tabId, frame.frameId, frame.documentId))) {
-        return { ok: true, clear: false, epoch }
+    if (frameNavigationIsPending(tabId, parentFrameId, afterParent.documentId) || (!individualClearance &&
+        afterDescendants.some(frame => frameNavigationIsPending(tabId, frame.frameId, frame.documentId)))) {
+        return result(true)
     }
 
     const subtreeIsClear = (frame, visiting = new Set()) => {
-        if (visiting.has(frame.frameId)) return false
+        if (visiting.has(frame.frameId) || frameNavigationIsPending(tabId, frame.frameId, frame.documentId)) return false
         const children = childrenByParent.get(frame.frameId) || []
 
         const status = statuses.get(frame.frameId)
@@ -233,11 +242,43 @@ async function computeFrameAggregate(message, sender) {
         return children.every(child => subtreeIsClear(child, nextVisiting))
     }
 
-    return {
-        ok: true,
-        clear: directChildren.every(child => subtreeIsClear(child)),
-        epoch,
-    }
+    const clear = allOwnersSupported && directChildren.every(child => subtreeIsClear(child))
+    if (clear || !individualClearance) return result(true, clear)
+
+    // A failed sibling must not hide a checked document. The parent receives
+    // each fresh ticket privately before its exact child document emits it;
+    // only the parent's WindowProxy check can associate it with a DOM owner.
+    // No URL matching or durable ticket registry participates in clearance.
+    const candidates = directChildren.filter(child => subtreeIsClear(child))
+        .map(frame => ({ frame, token: crypto.randomUUID() }))
+    if (candidates.length === 0) return result(true)
+    const armed = await sendContentMessage(tabId, {
+        target: 'content', type: FRAME_MESSAGES.clearanceArm,
+        epoch, tokens: candidates.map(({ token }) => token),
+    }, { frameId: parentFrameId, documentId: parentDocumentId })
+    if (armed?.ok !== true) return result(true)
+
+    const emitted = await Promise.all(candidates.map(async ({ frame, token }) => {
+        const response = await sendContentMessage(tabId, {
+            target: 'content', type: FRAME_MESSAGES.clearanceEmit, token,
+        }, { frameId: frame.frameId, documentId: frame.documentId })
+        return response?.ok === true ? { frame, token } : null
+    }))
+
+    // Emission is another asynchronous boundary. A different parent, child,
+    // sibling topology, or pending candidate policy invalidates its proof.
+    const finalFrames = await getAllTabFrames(tabId)
+    if (!finalFrames) return result(true)
+    const finalTree = indexFrameTree(finalFrames)
+    const finalParent = finalTree.byId.get(parentFrameId)
+    if (!finalParent || finalParent.documentId !== parentDocumentId ||
+        frameNavigationIsPending(tabId, parentFrameId, parentDocumentId)) return result(true)
+    const finalDescendants = collectFrameDescendants(finalTree.childrenByParent, parentFrameId)
+    if (frameSnapshotSignature([finalParent, ...finalDescendants]) !== beforeSignature) return result(true)
+
+    return result(true, false, emitted
+        .filter(candidate => candidate && subtreeIsClear(candidate.frame))
+        .map(({ token }) => token))
 }
 
 async function invalidateFrameAncestors(tabId, firstAncestorFrameId, knownFrames = null) {
@@ -330,18 +371,67 @@ async function loadTargetWordsFromStorage() {
 
 // Warm cache on startup
 void loadTargetWordsFromStorage().catch(() => {})
+const debugModeGeneration = _debugModeGeneration
+void storageApi.getWithDefaults(STORAGE_KEYS.debugMode).then(values => {
+    if (debugModeGeneration !== _debugModeGeneration) return
+    _debugMode = values[STORAGE_KEYS.debugMode] === true
+    debug('settings.loaded', () => ({ debugMode: true }))
+}).catch(() => {})
 
 // Keep cache fresh
 chrome.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName !== 'sync' || !changes[STORAGE_KEYS.targetWords]) return
+    if (areaName !== 'sync') return
+    if (changes[STORAGE_KEYS.debugMode]) {
+        _debugModeGeneration++
+        _debugMode = changes[STORAGE_KEYS.debugMode].newValue === true
+    }
+    debug('settings.changed', () => ({
+        keys: Object.keys(changes).filter(key => Object.prototype.hasOwnProperty.call(DEFAULTS, key)),
+    }))
+    if (!changes[STORAGE_KEYS.targetWords]) return
     _targetWordsGeneration++
     _cachedTargetWords = null
     _targetWordsLoadPromise = null
     void loadTargetWordsFromStorage().catch(() => {})
 })
 
+// Null when the string is not a dotted release number.
+function parseVersion(version) {
+    if (typeof version !== 'string' || !/^\d+(\.\d+)*$/.test(version)) return null
+    return version.split('.').map(Number)
+}
+
+function isVersionBelow(version, reference) {
+    const left = parseVersion(version)
+    const right = parseVersion(reference)
+    if (!left || !right) return false
+    const length = Math.max(left.length, right.length)
+    for (let index = 0; index < length; index++) {
+        const difference = (left[index] || 0) - (right[index] || 0)
+        if (difference !== 0) return difference < 0
+    }
+    return false
+}
+
+// Chrome fires one 'update' per version change, so the previous version is
+// the only guard: a marker key would surface as a settings change in every
+// frame. Any failure logs and leaves the stored value untouched.
+async function migrateLegacyBlurStrength(details) {
+    if (details.reason !== 'update' || !isVersionBelow(details.previousVersion, BLUR_CURVE_VERSION)) return
+    try {
+        const values = await storageApi.getWithDefaults([STORAGE_KEYS.blurAmount])
+        const converted = convertLegacyBlurSliderValue(values[STORAGE_KEYS.blurAmount])
+        await storageApi.set({ [STORAGE_KEYS.blurAmount]: converted })
+        debug('settings.migrated', () => ({ key: STORAGE_KEYS.blurAmount, from: details.previousVersion }))
+    } catch (error) {
+        console.error('PhobiaBlocker: blur strength migration failed', error)
+    }
+}
+
 // Create context menu and initialize storage on extension install/update
 chrome.runtime.onInstalled.addListener((details) => {
+    void migrateLegacyBlurStrength(details)
+
     // removeAll first: onInstalled also fires on update and on reload during
     // development, where a bare create() fails with a duplicate-id error.
     chrome.contextMenus.removeAll(() => {
@@ -456,13 +546,14 @@ function toggleWordCover(sendResponse, options = {}) {
 // Pre-render all tinted icon variants at service worker startup.
 globalThis._tintedIcons = {}
 const _tintedIcons = globalThis._tintedIcons
+const ICON_SIZES = [16, 24, 32, 48, 128]
 
 async function _preloadTintedIcons() {
     const VARIANTS = [
         { status: 'processing', color: '#F5A623' },
         { status: 'detected',   color: '#E53935' },
     ]
-    for (const size of [16, 48, 128]) {
+    for (const size of ICON_SIZES) {
         const resp = await fetch(chrome.runtime.getURL(`icons/icon${size}.png`))
         const blob = await resp.blob()
         const bitmap = await createImageBitmap(blob)
@@ -475,9 +566,10 @@ async function _preloadTintedIcons() {
             ctx.drawImage(bitmap, 0, 0, size, size)
             ctx.globalCompositeOperation = 'color'
             ctx.fillStyle = color
-            ctx.beginPath()
-            ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2)
-            ctx.fill()
+            ctx.fillRect(0, 0, size, size)
+            // Keep the original silhouette and transparent padding in every state.
+            ctx.globalCompositeOperation = 'destination-in'
+            ctx.drawImage(bitmap, 0, 0, size, size)
             _tintedIcons[`${status}_${size}`] = ctx.getImageData(0, 0, size, size)
         }
     }
@@ -494,13 +586,15 @@ chrome.runtime.onMessage.addListener((message, sender) => {
     if (!tabId) return
 
     _preloadPromise.then(() => {
-        const i16  = _tintedIcons[`${message.status}_16`]
-        const i48  = _tintedIcons[`${message.status}_48`]
-        const i128 = _tintedIcons[`${message.status}_128`]
-        if (!i16 || !i48 || !i128) return
+        const imageData = {}
+        for (const size of ICON_SIZES) {
+            const icon = _tintedIcons[`${message.status}_${size}`]
+            if (!icon) return
+            imageData[size] = icon
+        }
 
         chrome.action.setIcon({
-            imageData: { 16: i16, 48: i48, 128: i128 },
+            imageData,
             tabId
         }).catch(() => {})
     })
@@ -522,7 +616,10 @@ function failClosedResult(id) {
 
 function sendOffscreenMessage(payload) {
     return withTimeout(
-        ensureOffscreenDocument().then(() => chrome.runtime.sendMessage(payload)),
+        ensureOffscreenDocument().then(() => {
+            debug('message.sent', () => ({ type: 'PB_ANALYZE_SCOPES', target: 'offscreen' }))
+            return chrome.runtime.sendMessage({ ...payload, debugMode: _debugMode })
+        }),
         OFFSCREEN_ANALYSIS_TIMEOUT_MS,
         'Offscreen analysis'
     )
@@ -530,6 +627,7 @@ function sendOffscreenMessage(payload) {
 
 async function analyzeScopes(scopes) {
     const requestedScopes = normalizeScopeRequest(scopes)
+    debug('analysis.requested', () => ({ scopeCount: requestedScopes.length }))
     const requestIds = requestedScopes.map(scope => scope.id)
     const requestIsValid = Array.isArray(scopes) && scopes.length > 0 &&
         requestedScopes.length === scopes.length &&
@@ -592,9 +690,14 @@ async function analyzeScopes(scopes) {
     }
 
     if (!responseIsValid || resultsById.size !== requestedScopes.length) {
+        debug('analysis.invalid-response', () => ({ scopeCount: requestedScopes.length }))
         return { results: requestedScopes.map(scope => failClosedResult(scope.id)) }
     }
 
+    debug('analysis.completed', () => ({
+        scopeCount: resultsById.size,
+        blurredScopeCount: [...resultsById.values()].filter(result => result.shouldBlur).length,
+    }))
     return {
         results: requestedScopes.map(scope => resultsById.get(scope.id)),
     }
@@ -605,13 +708,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || message.target !== 'background') return
 
     if (message.type === FRAME_MESSAGES.aggregateRequest) {
+        debug('message.received', () => ({ type: FRAME_MESSAGES.aggregateRequest, frameId: sender.frameId }))
         void computeFrameAggregate(message, sender)
             .then(sendResponse)
-            .catch(() => sendResponse({ ok: false, clear: false, epoch: message.epoch }))
+            .catch(() => sendResponse({
+                ok: false, clear: false, epoch: message.epoch,
+                ...(message.individualClearance === true ? { clearTokens: [] } : {}),
+            }))
         return true
     }
 
     if (message.type === FRAME_MESSAGES.statusChanged) {
+        debug('message.received', () => ({ type: FRAME_MESSAGES.statusChanged, frameId: sender.frameId }))
         void invalidateSenderAncestors(sender)
             .then(() => sendResponse({ ok: true }))
             .catch(() => sendResponse({ ok: false }))
@@ -619,11 +727,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.type === 'toggleWordCover') {
+        debug('message.received', () => ({ type: 'toggleWordCover' }))
         toggleWordCover(sendResponse, { source: message.source })
         return true
     }
 
     if (message.type !== 'PB_ANALYZE_WORDS') return
+    debug('message.received', () => ({ type: 'PB_ANALYZE_WORDS', frameId: sender.frameId }))
 
     ;(async () => {
         try {

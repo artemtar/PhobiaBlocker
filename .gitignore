@@ -1,5 +1,4 @@
 node_modules
-package-lock.json
 .DS_Store
 
 # Build outputs
@@ -7,5 +6,16 @@ build/
 *.zip
 manifest.json.backup
 
-# Playwright MCP browser profile data
-.playwright-mcp/chromium-profile/
+# Agent / browser-tool scratch
+.playwright-mcp/
+.superpowers/
+.claude/
+.codex/
+.mcp.json
+playwright.mcp.config.json
+**/.cc-writes/
+# Unrelated binaries and ad-hoc captures
+*.dmg
+/*.png
+store-assets/v2/raw/manifest.json
+store-assets/v2/capture.log

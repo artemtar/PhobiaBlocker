@@ -22,9 +22,9 @@ const frameTree = [
     { frameId: 9, parentFrameId: 2, documentId: 'child', documentLifecycle: 'active', url: 'https://child.example.com/restricted' },
 ]
 
-function loadBackground({ onSend } = {}) {
+function loadBackground({ onSend, frameData = frameTree } = {}) {
     const messages = []
-    const frames = clone(frameTree)
+    const frames = clone(frameData)
     const timers = new Map()
     let clock = 0
     let nextTimerId = 0
@@ -62,7 +62,7 @@ function loadBackground({ onSend } = {}) {
                 if (message.type === 'PB_FRAME_STATUS_REQUEST') {
                     return Promise.resolve({
                         allowsUnblur: true,
-                        frameElementCount: options.frameId === 2 ? 1 : 0,
+                        frameElementCount: frames.filter(frame => frame.parentFrameId === options.frameId).length,
                         hasUnsupportedFrameOwner: false,
                     })
                 }
@@ -81,6 +81,7 @@ function loadBackground({ onSend } = {}) {
     context = vm.createContext({
         chrome,
         console,
+        crypto: require('node:crypto').webcrypto,
         URL,
         setTimeout(callback, delay) {
             const id = ++nextTimerId
@@ -111,13 +112,14 @@ function loadBackground({ onSend } = {}) {
             clock = deadline
             await settle()
         },
-        aggregate() {
+        aggregate(overrides = {}) {
             return new Promise(resolve => runtime.onMessage.emit({
                 target: 'background',
                 type: 'PB_FRAME_AGGREGATE_REQUEST',
                 epoch: 3,
                 frameElementCount: 1,
                 hasUnsupportedFrameOwner: false,
+                ...overrides,
             }, { tab: { id: 42 }, frameId: 0, documentId: 'main' }, value => resolve(clone(value))))
         },
     }
@@ -387,4 +389,173 @@ test('ordinary child navigation still invalidates ancestors and guards aggregate
     await settle()
     assert.equal(background.messages.filter(({ message }) => message.type === 'PB_FRAME_AGGREGATE_INVALIDATED').length, 4)
     assert.deepEqual(await background.aggregate(), { ok: true, clear: true, epoch: 3 })
+})
+
+const individualRequest = { individualClearance: true, frameElementCount: 2 }
+const siblingFrames = [
+    frameTree[0],
+    frameTree[1],
+    { frameId: 17, parentFrameId: 0, documentId: 'helper', documentLifecycle: 'active', url: 'chrome-extension://helper/frame.html' },
+]
+
+function loadSiblingBackground({ onSend, frameData = siblingFrames } = {}) {
+    return loadBackground({
+        frameData,
+        onSend(message, options) {
+            const response = onSend?.(message, options)
+            if (response !== undefined) return response
+            if (message.type === 'PB_FRAME_STATUS_REQUEST' && options.frameId === 17) {
+                return Promise.reject(new Error('No content script in this extension frame'))
+            }
+            return undefined
+        },
+    })
+}
+
+function clearanceMessages(background, type) {
+    return background.messages.filter(({ message }) => message.type === type)
+}
+
+test('individual clearance releases a checked child despite an unavailable sibling', async () => {
+    const background = loadSiblingBackground()
+    const result = await background.aggregate(individualRequest)
+
+    assert.equal(result.clear, false, 'the existing all-frames verdict remains conservative')
+    assert.equal(result.ok, true)
+    assert.equal(result.epoch, 3)
+    assert.equal(result.clearTokens?.length, 1, 'a separate proof should release the checked child')
+    assert.match(result.clearTokens[0], /^[0-9a-f-]{36}$/)
+    const arm = clearanceMessages(background, 'PB_FRAME_CLEARANCE_ARM')
+    const emit = clearanceMessages(background, 'PB_FRAME_CLEARANCE_EMIT')
+    assert.deepEqual(arm, [{
+        tabId: 42,
+        message: { target: 'content', type: 'PB_FRAME_CLEARANCE_ARM', epoch: 3, tokens: result.clearTokens },
+        options: { frameId: 0, documentId: 'main' },
+    }])
+    assert.deepEqual(emit, [{
+        tabId: 42,
+        message: { target: 'content', type: 'PB_FRAME_CLEARANCE_EMIT', token: result.clearTokens[0] },
+        options: { frameId: 2, documentId: 'middle' },
+    }])
+    assert.ok(background.messages.indexOf(arm[0]) < background.messages.indexOf(emit[0]))
+})
+
+test('legacy aggregate requests keep their response shape and never arm individual proofs', async () => {
+    const background = loadSiblingBackground()
+    assert.deepEqual(await background.aggregate({ frameElementCount: 2 }), { ok: true, clear: false, epoch: 3 })
+    assert.equal(clearanceMessages(background, 'PB_FRAME_CLEARANCE_ARM').length, 0)
+    assert.equal(clearanceMessages(background, 'PB_FRAME_CLEARANCE_EMIT').length, 0)
+})
+
+test('an entirely clear aggregate needs no individual bridge handshake', async () => {
+    const background = loadBackground({ frameData: siblingFrames.slice(0, 2) })
+    assert.deepEqual(await background.aggregate({ individualClearance: true }), {
+        ok: true, clear: true, epoch: 3, clearTokens: [],
+    })
+    assert.equal(clearanceMessages(background, 'PB_FRAME_CLEARANCE_ARM').length, 0)
+})
+
+test('unsupported parent owners do not change the old aggregate but permit a checked child proof', async () => {
+    const background = loadSiblingBackground()
+    const result = await background.aggregate({ ...individualRequest, hasUnsupportedFrameOwner: true })
+    assert.equal(result.clear, false)
+    assert.equal(result.clearTokens?.length, 1)
+})
+
+test('same-URL sibling documents get distinct proofs addressed by exact browser identities', async () => {
+    const duplicate = { ...frameTree[1], frameId: 4, documentId: 'same-url-other-document' }
+    const background = loadSiblingBackground({ frameData: [...siblingFrames, duplicate] })
+    const result = await background.aggregate({ ...individualRequest, frameElementCount: 3 })
+    assert.equal(result.clearTokens?.length, 2)
+    assert.equal(new Set(result.clearTokens).size, 2)
+    const emit = clearanceMessages(background, 'PB_FRAME_CLEARANCE_EMIT')
+    assert.deepEqual(emit.map(({ options }) => options), [
+        { frameId: 2, documentId: 'middle' },
+        { frameId: 4, documentId: 'same-url-other-document' },
+    ])
+    assert.deepEqual(emit.map(({ message }) => message.token), result.clearTokens)
+    const next = await background.aggregate({ ...individualRequest, frameElementCount: 3 })
+    assert.equal(next.clearTokens.some(token => result.clearTokens.includes(token)), false,
+        'each request must use fresh single-use tickets')
+})
+
+for (const failure of ['unavailable', 'matching', 'unsupported owner', 'owner count mismatch', 'pending navigation']) {
+    test(`a ${failure} descendant rejects only its own direct-child subtree`, async () => {
+        const other = { frameId: 4, parentFrameId: 0, documentId: 'other', documentLifecycle: 'active', url: 'https://other.example.com/' }
+        const background = loadSiblingBackground({
+            frameData: [...siblingFrames, frameTree[2], other],
+            onSend(message, options) {
+                if (message.type !== 'PB_FRAME_STATUS_REQUEST' || options.frameId !== 9) return undefined
+                if (failure === 'unavailable') return Promise.resolve(null)
+                return Promise.resolve({
+                    allowsUnblur: failure !== 'matching',
+                    frameElementCount: failure === 'owner count mismatch' ? 1 : 0,
+                    hasUnsupportedFrameOwner: failure === 'unsupported owner',
+                })
+            },
+        })
+        if (failure === 'pending navigation') {
+            background.emit('onBeforeNavigate', navigationDetails({ frameId: 9, parentFrameId: 2, documentId: 'child' }))
+            await settle()
+        }
+        const result = await background.aggregate({ ...individualRequest, frameElementCount: 3 })
+        assert.equal(result.clear, false)
+        assert.equal(result.clearTokens?.length, 1)
+        assert.deepEqual(clearanceMessages(background, 'PB_FRAME_CLEARANCE_EMIT').map(({ options }) => options), [
+            { frameId: 4, documentId: 'other' },
+        ])
+    })
+}
+
+for (const stage of ['ARM', 'EMIT']) {
+    for (const failure of ['missing acknowledgement', 'negative acknowledgement', 'rejection']) {
+        test(`${stage} ${failure} never returns a clearance token`, async () => {
+            const background = loadSiblingBackground({
+                onSend(message) {
+                    if (message.type !== `PB_FRAME_CLEARANCE_${stage}`) return undefined
+                    if (failure === 'rejection') return Promise.reject(new Error('Listener unavailable'))
+                    return Promise.resolve(failure === 'negative acknowledgement' ? { ok: false } : undefined)
+                },
+            })
+            assert.deepEqual(await background.aggregate(individualRequest), {
+                ok: true, clear: false, epoch: 3, clearTokens: [],
+            })
+            if (stage === 'ARM') assert.equal(clearanceMessages(background, 'PB_FRAME_CLEARANCE_EMIT').length, 0)
+        })
+    }
+}
+
+for (const change of ['parent document', 'child document', 'sibling topology', 'candidate navigation', 'candidate URL policy']) {
+    test(`${change} during the clearance bridge rejects the stale proof`, async () => {
+        let background
+        background = loadSiblingBackground({
+            onSend(message) {
+                if (message.type === 'PB_URL_CHANGED' && change === 'candidate URL policy') return Promise.resolve(null)
+                if (message.type !== 'PB_FRAME_CLEARANCE_EMIT') return undefined
+                if (change === 'parent document') background.frames[0].documentId = 'replacement-parent'
+                if (change === 'child document') background.frames[1].documentId = 'replacement-child'
+                if (change === 'sibling topology') {
+                    background.frames.push({ frameId: 20, parentFrameId: 0, documentId: 'new-sibling', url: 'https://new.example.com/' })
+                }
+                if (change === 'candidate navigation' || change === 'candidate URL policy') {
+                    background.emit(change === 'candidate navigation' ? 'onBeforeNavigate' : 'onHistoryStateUpdated',
+                        navigationDetails({ frameId: 2, parentFrameId: 0, documentId: 'middle', url: 'https://frame.example.com/changed' }))
+                }
+                return Promise.resolve({ ok: true })
+            },
+        })
+        assert.deepEqual(await background.aggregate(individualRequest), {
+            ok: true, clear: false, epoch: 3, clearTokens: [],
+        })
+    })
+}
+
+test('unconfirmed parent URL policy prevents every individual proof', async () => {
+    const background = loadSiblingBackground({
+        onSend: message => message.type === 'PB_URL_CHANGED' ? Promise.resolve(null) : undefined,
+    })
+    background.emit('onHistoryStateUpdated', navigationDetails())
+    await settle()
+    assert.deepEqual(await background.aggregate(individualRequest), { ok: true, clear: false, epoch: 3, clearTokens: [] })
+    assert.equal(clearanceMessages(background, 'PB_FRAME_CLEARANCE_ARM').length, 0)
 })

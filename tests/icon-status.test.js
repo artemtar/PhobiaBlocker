@@ -2,7 +2,7 @@
  * Icon Status Test Cases
  *
  * Tests that the extension toolbar icon changes color correctly:
- * - All icon variants (idle/processing/detected × 16/48/128px) are preloaded in the
+ * - All icon variants (idle/processing/detected × 16/24/32/48/128px) are preloaded in the
  *   service worker at startup so setIcon can be called synchronously.
  * - The processing icon has a yellow/amber pixel tint.
  * - The detected icon has a red pixel tint.
@@ -106,7 +106,7 @@ describe('Icon Status', () => {
     // ── Icon preloading ───────────────────────────────────────────────────────
 
     describe('icon preloading', () => {
-        it('should preload all nine icon variants in the service worker', async () => {
+        it('should preload all fifteen icon variants in the service worker', async () => {
             const swTarget = await getExtensionServiceWorker(browser)
             assert.ok(swTarget, 'service worker target should be accessible')
             const swWorker = await swTarget.worker()
@@ -117,7 +117,7 @@ describe('Icon Status', () => {
             )
 
             for (const variant of ['idle', 'processing', 'detected']) {
-                for (const size of [16, 48, 128]) {
+                for (const size of [16, 24, 32, 48, 128]) {
                     const key = `${variant}_${size}`
                     assert.ok(keys.includes(key), `missing preloaded icon: ${key}`)
                 }

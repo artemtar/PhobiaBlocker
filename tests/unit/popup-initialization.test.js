@@ -13,12 +13,18 @@ const settle = () => new Promise(resolve => setImmediate(resolve))
 function createElement() {
     const classes = new Set()
     const listeners = new Map()
+    const attributes = new Map()
     return {
         children: [],
         disabled: false,
         hidden: false,
         value: '',
-        textContent: '',
+        textWrites: 0,
+        get textContent() { return this.text ?? '' },
+        set textContent(value) { this.text = value; this.textWrites += 1 },
+        dataset: {},
+        setAttribute(name, value) { attributes.set(name, String(value)) },
+        getAttribute(name) { return attributes.get(name) ?? null },
         style: { setProperty() {} },
         classList: {
             add: value => classes.add(value),
@@ -44,14 +50,17 @@ function createElement() {
 
 // Run production policy/storage/UI/popup scripts. Only the browser boundary is
 // faked, including callback-scoped runtime.lastError and delayed storage reads.
-function createPopup({ failStatusRead = false, deferWrites = false } = {}) {
+function createPopup({ failStatusRead = false, deferWrites = false, url = 'https://example.com/', initialSettings = {} } = {}) {
     const elements = new Map()
     for (const [tag, id] of popupHtml.matchAll(/<[^>]*\bid="([^"]+)"[^>]*>/g)) {
         const element = createElement()
         element.disabled = /\bdisabled\b/.test(tag)
         elements.set(id, element)
     }
-    const persisted = { targetWords: [...savedWords] }
+    for (const id of ['mode-smart', 'mode-always', 'mode-off', 'preview-toggle', 'cover-toggle', 'site-rule-select']) {
+        if (!elements.has(id)) elements.set(id, createElement())
+    }
+    const persisted = { targetWords: [...savedWords], ...clone(initialSettings) }
     const writes = []
     const changeListeners = []
     const pendingWrites = []
@@ -83,7 +92,7 @@ function createPopup({ failStatusRead = false, deferWrites = false } = {}) {
         chrome: {
             runtime,
             tabs: {
-                query(query, callback) { callback([{ id: 1, url: 'https://example.com/' }]) },
+                query(query, callback) { callback([{ id: 1, url }]) },
                 sendMessage(...args) { args.at(-1)({ words: [] }) },
             },
             storage: {
@@ -126,6 +135,7 @@ function createPopup({ failStatusRead = false, deferWrites = false } = {}) {
         elements,
         persisted,
         writes,
+        reportAnalysis: response => context.renderDetectedWords(response),
         addWord: word => context.addTag(word),
         removeWord: index => context.removeTag(index),
         async finishInitialRead(error) {
@@ -270,7 +280,7 @@ test('overlapping popup refreshes retain unrelated keys from the earlier respons
     await popup.change({ phobiaBlockerEnabled: true })
     await popup.finishRefreshRead(1)
     await popup.finishRefreshRead(0)
-    assert.equal(popup.elements.get('enabled-switch').checked, true)
+    assert.equal(popup.elements.get('mode-smart').getAttribute('aria-pressed'), 'true')
     await popup.addWord('snake')
     assert.deepEqual(popup.persisted.targetWords, ['spider', 'wasp', 'snake'])
 })
@@ -283,8 +293,8 @@ test('an older site-status response cannot replace a newer protection status', a
     await popup.change({ phobiaBlockerEnabled: true })
     await popup.finishStatusRead(1)
     await popup.finishStatusRead(0)
-    assert.equal(popup.elements.get('site-status-bar').textContent, 'Protection active')
-    assert.equal(popup.elements.get('enabled-switch').checked, true)
+    assert.equal(popup.elements.get('site-status-title').textContent, 'Automatic protection on')
+    assert.equal(popup.elements.get('mode-smart').getAttribute('aria-pressed'), 'true')
     assert.equal(popup.persisted.phobiaBlockerEnabled, true)
 })
 
@@ -296,7 +306,7 @@ test('an older site-status read failure cannot replace a newer successful status
     await popup.change({ phobiaBlockerEnabled: true })
     await popup.finishStatusRead(1)
     await popup.finishStatusRead(0, 'Status read unavailable')
-    assert.equal(popup.elements.get('site-status-bar').textContent, 'Protection active')
+    assert.equal(popup.elements.get('site-status-title').textContent, 'Automatic protection on')
 })
 
 test('out-of-order site-rule status reads retain the newer rule removal', async () => {
@@ -307,7 +317,7 @@ test('out-of-order site-rule status reads retain the newer rule removal', async 
     await popup.change({ whitelistedSites: [] })
     await popup.finishStatusRead(1)
     await popup.finishStatusRead(0)
-    assert.equal(popup.elements.get('site-status-bar').textContent, 'Protection active')
+    assert.equal(popup.elements.get('site-status-title').textContent, 'Automatic protection on')
 })
 
 test('a newer setting change invalidates old status reads before its refresh finishes', async () => {
@@ -318,30 +328,28 @@ test('a newer setting change invalidates old status reads before its refresh fin
     popup.deferRefreshReads()
     await popup.change({ phobiaBlockerEnabled: true })
     await popup.finishStatusRead(0)
-    assert.equal(popup.elements.get('site-status-bar').textContent, 'Protection active')
+    assert.equal(popup.elements.get('site-status-title').textContent, 'Automatic protection on')
     await popup.finishRefreshRead()
     await popup.finishStatusRead()
-    assert.equal(popup.elements.get('site-status-bar').textContent, 'Protection active')
+    assert.equal(popup.elements.get('site-status-title').textContent, 'Automatic protection on')
 })
 
-test('status reads cannot reset the saved slider value used after a failed write', async () => {
+test('status reads cannot reset the saved preference used after a failed write', async () => {
     const popup = createPopup({ deferWrites: true })
     await popup.finishInitialRead()
     popup.deferStatusReads()
     await popup.change({ phobiaBlockerEnabled: false })
-    const slider = popup.elements.get('blurRange')
-    slider.value = 75
-    slider.dispatch('change')
+    const preview = popup.elements.get('preview-toggle')
+    preview.dispatch('click')
     popup.finishWrite()
     await settle()
     await popup.finishStatusRead()
 
-    slider.value = 25
-    slider.dispatch('change')
+    preview.dispatch('click')
     popup.finishWrite('Write unavailable')
     await settle()
-    assert.equal(slider.value, 75)
-    assert.equal(popup.persisted.blurValueAmount, 75)
+    assert.equal(preview.getAttribute('aria-pressed'), 'false')
+    assert.equal(popup.persisted.previewEnabled, false)
 })
 
 test('word add/remove during a refresh cannot overwrite remote words or discard input', async () => {
@@ -404,4 +412,135 @@ test('a newer successful word refresh releases edits despite an older pending re
     assertWordControlsDisabled(popup, false)
     await popup.addWord('snake')
     assert.deepEqual(popup.persisted.targetWords, ['spider', 'wasp', 'snake'])
+})
+
+test('mode tiles save both flags together and keep the selected policy unambiguous', async () => {
+    const popup = createPopup()
+    await popup.finishInitialRead()
+    for (const [mode, expected] of [
+        ['always', { phobiaBlockerEnabled: true, blurIsAlwaysOn: true }],
+        ['off', { phobiaBlockerEnabled: false, blurIsAlwaysOn: false }],
+        ['smart', { phobiaBlockerEnabled: true, blurIsAlwaysOn: false }],
+    ]) {
+        popup.elements.get(`mode-${mode}`).dispatch('click')
+        await settle()
+        assert.deepEqual(popup.writes.at(-1), expected)
+        assert.equal(popup.elements.get(`mode-${mode}`).getAttribute('aria-pressed'), 'true')
+    }
+})
+
+test('cover and hover rows persist independently and failed writes retain the saved choice', async () => {
+    const popup = createPopup({ deferWrites: true })
+    await popup.finishInitialRead()
+    popup.elements.get('preview-toggle').dispatch('click')
+    assert.deepEqual(popup.writes, [{ previewEnabled: false }])
+    assert.equal(popup.elements.get('preview-toggle').disabled, true)
+    popup.elements.get('preview-toggle').dispatch('click')
+    assert.equal(popup.writes.length, 1)
+    popup.finishWrite('Storage unavailable')
+    await settle()
+    assert.equal(popup.elements.get('preview-toggle').getAttribute('aria-pressed'), 'true')
+    popup.elements.get('cover-toggle').dispatch('click')
+    assert.deepEqual(popup.writes.at(-1), { wordCoverEnabled: false })
+    popup.finishWrite()
+    await settle()
+    assert.equal(popup.elements.get('cover-toggle').getAttribute('aria-pressed'), 'false')
+    assert.equal(popup.elements.get('preview-toggle').getAttribute('aria-pressed'), 'true')
+})
+
+test('a pending or failed preference refresh blocks stale toggle writes', async () => {
+    const popup = createPopup()
+    await popup.finishInitialRead()
+    popup.deferRefreshReads()
+    await popup.change({ previewEnabled: false })
+    popup.elements.get('preview-toggle').dispatch('click')
+    assert.deepEqual(popup.writes, [])
+    assert.equal(popup.elements.get('preview-toggle').disabled, true)
+    await popup.finishRefreshRead(0, 'Storage unavailable')
+    popup.elements.get('preview-toggle').dispatch('click')
+    assert.deepEqual(popup.writes, [])
+    await popup.change({ previewEnabled: false })
+    await popup.finishRefreshRead()
+    popup.elements.get('preview-toggle').dispatch('click')
+    await settle()
+    assert.deepEqual(popup.writes.at(-1), { previewEnabled: true })
+})
+
+test('domain rule edits retain unrelated and inherited rules and respect always-blur precedence', async () => {
+    const popup = createPopup({
+        url: 'https://news.example.com/article',
+        initialSettings: { blacklistedSites: ['example.com', 'photos.test'], whitelistedSites: ['safe.test'] },
+    })
+    await popup.finishInitialRead()
+    const select = popup.elements.get('site-rule-select')
+    select.value = 'off'
+    select.dispatch('change')
+    await settle()
+    assert.deepEqual(popup.persisted.blacklistedSites, ['example.com', 'photos.test'])
+    assert.deepEqual(popup.persisted.whitelistedSites, ['safe.test', 'news.example.com'])
+    assert.equal(popup.elements.get('site-status-title').textContent, 'Always blur is on')
+    select.value = 'default'
+    select.dispatch('change')
+    await settle()
+    assert.deepEqual(popup.persisted.whitelistedSites, ['safe.test'])
+    assert.deepEqual(popup.persisted.blacklistedSites, ['example.com', 'photos.test'])
+})
+
+test('unsupported pages disable page actions and site rules while keeping global preferences editable', async () => {
+    const popup = createPopup({ url: 'chrome://extensions/' })
+    await popup.finishInitialRead()
+    assert.equal(popup.elements.get('site-rule-select').disabled, true)
+    assert.equal(popup.elements.get('blurBtn').disabled, true)
+    assert.equal(popup.elements.get('unblurBtn').disabled, true)
+    assert.equal(popup.elements.get('preview-toggle').disabled, false)
+    popup.elements.get('preview-toggle').dispatch('click')
+    await settle()
+    assert.deepEqual(popup.writes.at(-1), { previewEnabled: false })
+})
+
+test('unchanged analysis polling does not rewrite the accessible live status', async () => {
+    const popup = createPopup()
+    await popup.finishInitialRead()
+    const title = popup.elements.get('site-status-title')
+    const reason = popup.elements.get('site-status-reason')
+    const before = [title.textWrites, reason.textWrites]
+    popup.reportAnalysis({ words: [] })
+    popup.reportAnalysis({ words: [] })
+    assert.deepEqual([title.textWrites, reason.textWrites], before)
+    popup.reportAnalysis({ words: [{ word: 'spider' }] })
+    assert.equal(reason.textWrites, before[1] + 1)
+})
+
+test('recovered popup refresh clears only its stale error', async () => {
+    const popup = createPopup()
+    await popup.finishInitialRead()
+    popup.deferRefreshReads()
+    await popup.change({ previewEnabled: false })
+    await popup.finishRefreshRead(0, 'Storage unavailable')
+    assert.equal(popup.elements.get('word-error').hidden, false)
+    await popup.change({ previewEnabled: true })
+    await popup.finishRefreshRead()
+    assert.equal(popup.elements.get('word-error').hidden, true)
+
+    await popup.change({ previewEnabled: false })
+    await popup.finishRefreshRead(0, 'Storage unavailable')
+    await popup.addWord('!')
+    assert.match(popup.elements.get('word-error').textContent, /Use at least three letters/)
+    await popup.change({ previewEnabled: true })
+    await popup.finishRefreshRead()
+    assert.equal(popup.elements.get('word-error').textContent, 'Use at least three letters.')
+    assert.equal(popup.elements.get('word-error').hidden, false)
+})
+
+test('an unrelated save keeps the recovery warning while failed keys remain locked', async () => {
+    const popup = createPopup()
+    await popup.finishInitialRead()
+    popup.deferRefreshReads()
+    await popup.change({ targetWords: ['wasp'] })
+    await popup.finishRefreshRead(0, 'Storage unavailable')
+    popup.elements.get('preview-toggle').dispatch('click')
+    await settle()
+    assertWordControlsDisabled(popup, true)
+    assert.equal(popup.elements.get('word-error').hidden, false)
+    assert.match(popup.elements.get('word-error').textContent, /remain locked/)
 })

@@ -1,4 +1,4 @@
-// Settings Page Logic - PhobiaBlocker
+// Settings Page Logic - PhobiaBlur
 
 const settingsPolicy = globalThis.PhobiaBlockerPolicy
 const settingsStorage = globalThis.PhobiaBlockerStorage
@@ -10,37 +10,52 @@ if (!settingsPolicy || !settingsStorage || !settingsUi) {
 
 const SETTINGS_KEYS = settingsPolicy.STORAGE_KEYS
 let settingsState = {}
-let whitelistedSites = []
-let blacklistedSites = []
-let siteListWritePending = false
 let settingsLoaded = false
+let settingsLoading = false
+let settingsLoadGeneration = 0
+let settingsErrorSource = null
 const settingsReader = settingsUi.createRevisionedReader(settingsStorage)
-const siteListRefreshRequired = new Set()
+const settingsRefreshRequired = new Set()
+const settingsWritesPending = new Set()
+const settingsKeyRevisions = new Map()
+const debugSettings = settingsPolicy.createDebugLogger('settings', () => settingsState.debugMode === true)
+const MODE_KEYS = [SETTINGS_KEYS.enabled, SETTINGS_KEYS.alwaysBlur]
+const CHECKBOX_CONTROLS = Object.freeze({
+    [SETTINGS_KEYS.wordCover]: 'word-cover-switch',
+    [SETTINGS_KEYS.debugMode]: 'debug-switch',
+    [SETTINGS_KEYS.previewEnabled]: 'preview-switch',
+    [SETTINGS_KEYS.keepCrossOriginIframesBlurred]: 'cross-origin-iframe-switch',
+})
+const SLIDER_CONTROLS = Object.freeze({
+    [SETTINGS_KEYS.blurAmount]: 'blur-strength-slider',
+    [SETTINGS_KEYS.previewStrength]: 'preview-strength-slider',
+})
+const SETTINGS_SECTIONS = Object.freeze({
+    protection: 'Protection & preview',
+    words: 'Trigger words',
+    'site-rules': 'Site rules',
+    shortcuts: 'Keyboard shortcuts',
+    help: 'Help & diagnostics',
+})
 
-// One renderer per stored key drives both the initial paint and live updates.
+// Each key uses the same renderer for initial load, writes and live refreshes.
 const SETTINGS_RENDERERS = Object.freeze({
-    [SETTINGS_KEYS.debugMode]: (value) => {
-        document.getElementById('debug-switch').checked = value
-    },
-    [SETTINGS_KEYS.previewEnabled]: (value) => {
+    [SETTINGS_KEYS.enabled]: renderProtectionMode,
+    [SETTINGS_KEYS.alwaysBlur]: renderProtectionMode,
+    [SETTINGS_KEYS.wordCover]: value => { document.getElementById('word-cover-switch').checked = value },
+    [SETTINGS_KEYS.debugMode]: value => { document.getElementById('debug-switch').checked = value },
+    [SETTINGS_KEYS.previewEnabled]: value => {
         document.getElementById('preview-switch').checked = value
-        document.getElementById('preview-strength-item').style.display = value ? '' : 'none'
+        document.getElementById('preview-strength-item').hidden = !value
     },
-    [SETTINGS_KEYS.previewStrength]: (value) => {
-        document.getElementById('preview-strength-slider').value = value
-        updatePreviewBlurDemo(value)
-    },
-    [SETTINGS_KEYS.keepCrossOriginIframesBlurred]: (value) => {
+    [SETTINGS_KEYS.blurAmount]: value => updateBlurDemo(SETTINGS_KEYS.blurAmount, value),
+    [SETTINGS_KEYS.previewStrength]: value => updateBlurDemo(SETTINGS_KEYS.previewStrength, value),
+    [SETTINGS_KEYS.keepCrossOriginIframesBlurred]: value => {
         document.getElementById('cross-origin-iframe-switch').checked = value
     },
-    [SETTINGS_KEYS.whitelist]: (value) => {
-        whitelistedSites = [...value]
-        renderSiteList('whitelist')
-    },
-    [SETTINGS_KEYS.blacklist]: (value) => {
-        blacklistedSites = [...value]
-        renderSiteList('blacklist')
-    },
+    [SETTINGS_KEYS.targetWords]: renderTargetWords,
+    [SETTINGS_KEYS.whitelist]: () => renderSiteList('whitelist'),
+    [SETTINGS_KEYS.blacklist]: () => renderSiteList('blacklist'),
 })
 const SETTINGS_PAGE_KEYS = Object.keys(SETTINGS_RENDERERS)
 
@@ -49,161 +64,200 @@ document.addEventListener('DOMContentLoaded', () => {
 })
 
 async function initializeSettingsPage() {
-    setSettingsControlsDisabled(true)
     initializeNavigation()
     initializeEventListeners()
     loadKeyboardShortcuts()
     displayVersion()
+    await loadSettings()
+}
 
+async function loadSettings() {
+    if (settingsLoading || settingsWritesPending.size > 0) return
+    settingsLoading = true
+    settingsLoaded = false
+    settingsLoadGeneration += 1
+    clearSettingsError(true)
+    updateSettingsControls()
     try {
-        settingsState = await settingsReader.loadAll(SETTINGS_PAGE_KEYS)
+        const values = await settingsReader.loadAll(SETTINGS_PAGE_KEYS)
+        settingsRefreshRequired.clear()
         settingsLoaded = true
-        renderSettingsState()
-        setSettingsControlsDisabled(false)
+        applySettings(values)
+        debugSettings('settings.loaded', () => ({ keys: SETTINGS_PAGE_KEYS }))
     } catch (error) {
-        showSettingsError('Could not read settings. Protection will remain in its fail-safe state.')
-        console.error('PhobiaBlocker: settings read failed', error)
-        setSettingsControlsDisabled(true)
+        showSettingsError('Could not read settings. Editing is paused. Retry loading to continue.')
+        console.error('PhobiaBlur: settings read failed', error)
+    } finally {
+        settingsLoading = false
+        updateSettingsControls()
     }
 }
 
-function showSettingsError(message) {
-    const errorElement = document.getElementById('settings-error')
-    if (!errorElement) return
-    errorElement.textContent = message
-    errorElement.hidden = false
+function showSettingsError(message, source = 'action') {
+    settingsErrorSource = source
+    const element = document.getElementById('settings-error')
+    element.textContent = message
+    element.hidden = false
+    updateSaveStatus()
 }
 
-function clearSettingsError() {
-    const errorElement = document.getElementById('settings-error')
-    if (!errorElement) return
-    errorElement.textContent = ''
-    errorElement.hidden = true
+function clearSettingsError(force = false) {
+    // A successful unrelated edit must not hide a failed refresh warning.
+    if (!force && settingsRefreshRequired.size > 0) return
+    settingsErrorSource = null
+    const element = document.getElementById('settings-error')
+    element.textContent = ''
+    element.hidden = true
+    updateSaveStatus()
 }
 
-function setSettingsControlsDisabled(disabled) {
-    document.querySelectorAll('input, button').forEach(element => {
-        if (element.id === 'configure-shortcuts-btn') return
-        element.disabled = disabled
+function updateSaveStatus() {
+    document.getElementById('settings-save-status').textContent = !settingsLoaded
+        ? (settingsLoading ? 'Loading…' : 'Unavailable')
+        : settingsWritesPending.size > 0 ? 'Saving…'
+            : !document.getElementById('settings-error').hidden ? 'Needs attention'
+                : settingsRefreshRequired.size > 0 ? 'Updating…' : 'Saved'
+}
+
+function canEditSettings(keys) {
+    return settingsLoaded && keys.every(key => !settingsRefreshRequired.has(key) && !settingsWritesPending.has(key))
+}
+
+function siteWritePending() {
+    return settingsWritesPending.has(SETTINGS_KEYS.whitelist) || settingsWritesPending.has(SETTINGS_KEYS.blacklist)
+}
+
+function updateSettingsControls() {
+    for (const [key, id] of Object.entries({ ...CHECKBOX_CONTROLS, ...SLIDER_CONTROLS })) {
+        document.getElementById(id).disabled = !canEditSettings([key])
+    }
+    document.querySelectorAll('[data-mode]').forEach(button => { button.disabled = !canEditSettings(MODE_KEYS) })
+    const selectedList = getSiteListConfig(document.getElementById('site-rule-type').value)
+    const siteDisabled = siteWritePending() || !canEditSettings([selectedList.storageKey])
+    document.getElementById('site-rule-input').disabled = siteDisabled
+    document.getElementById('add-site-rule-btn').disabled = siteDisabled
+    document.getElementById('site-rule-type').disabled = !settingsLoaded || siteWritePending()
+    renderSiteList('whitelist')
+    renderSiteList('blacklist')
+    document.getElementById('site-rules-empty').hidden = !settingsLoaded ||
+        (settingsState[SETTINGS_KEYS.whitelist]?.length || 0) + (settingsState[SETTINGS_KEYS.blacklist]?.length || 0) > 0
+    renderTargetWords()
+    const retry = document.getElementById('retry-settings-btn')
+    retry.hidden = settingsLoading || (settingsLoaded && settingsRefreshRequired.size === 0)
+    retry.disabled = settingsLoading || settingsWritesPending.size > 0
+    updateSaveStatus()
+}
+
+function applySettings(values) {
+    Object.assign(settingsState, values)
+    Object.entries(values).forEach(([key, value]) => SETTINGS_RENDERERS[key](value))
+    updateSettingsControls()
+}
+
+function renderProtectionMode() {
+    const mode = settingsState[SETTINGS_KEYS.enabled] === false ? 'off'
+        : settingsState[SETTINGS_KEYS.alwaysBlur] ? 'always' : 'smart'
+    document.querySelectorAll('[data-mode]').forEach(button => {
+        button.setAttribute('aria-pressed', String(button.dataset.mode === mode))
     })
+    document.getElementById('default-mode-note').textContent = {
+        smart: 'Blur media when page text matches your trigger words. Site rules override this choice.',
+        always: 'Apply your blur setting even without matching words. Site rules override this choice.',
+        off: 'Site rules can still keep media blurred.',
+    }[mode]
 }
 
-function renderSettingsState() {
-    SETTINGS_PAGE_KEYS.forEach(key => SETTINGS_RENDERERS[key](settingsState[key]))
+function updateBlurDemo(key, value) {
+    const preview = key === SETTINGS_KEYS.previewStrength
+    const slider = document.getElementById(SLIDER_CONTROLS[key])
+    slider.value = value
+    settingsUi.setSliderProgress(slider, value)
+    document.getElementById(preview ? 'preview-strength-value' : 'blur-strength-value').textContent =
+        preview ? `${value} px` : `${value} / 100`
+    document.getElementById(preview ? 'preview-blur-demo' : 'blur-demo').style.filter =
+        `blur(${preview ? value : settingsPolicy.computeBlurPixels(value)}px)`
 }
 
-function updatePreviewBlurDemo(strength) {
-    const demo = document.getElementById('preview-blur-demo')
-    if (demo) demo.style.filter = `blur(${strength}px)`
-    settingsUi.setSliderProgress(document.getElementById('preview-strength-slider'), strength)
-}
-
-async function persistCheckbox(element, storageKey) {
-    const previous = settingsState[storageKey]
-    const next = element.checked
+async function persistSettings(values) {
+    const keys = Object.keys(values)
+    if (!canEditSettings(keys)) return false
+    const revisions = new Map(keys.map(key => [key, settingsKeyRevisions.get(key) || 0]))
     clearSettingsError()
-    element.disabled = true
-
+    keys.forEach(key => settingsWritesPending.add(key))
+    updateSettingsControls()
     try {
-        const saved = await settingsStorage.set({ [storageKey]: next })
-        settingsState[storageKey] = saved[storageKey]
-        element.checked = saved[storageKey]
+        const saved = await settingsStorage.set(values)
+        // A newer storage change owns its key, even if its read completed
+        // before this write callback. Never paint an older write over it.
+        const current = Object.fromEntries(keys
+            .filter(key => (settingsKeyRevisions.get(key) || 0) === revisions.get(key))
+            .map(key => [key, saved[key]]))
+        applySettings(current)
+        debugSettings('settings.saved', () => ({ keys }))
         return true
     } catch (error) {
-        element.checked = previous
-        showSettingsError('Could not save this setting. Your previous setting is still active.')
-        console.error(`PhobiaBlocker: failed to save ${storageKey}`, error)
+        keys.forEach(key => SETTINGS_RENDERERS[key](settingsState[key]))
+        showSettingsError('Could not save this change. Your previous settings are still active.')
+        console.error('PhobiaBlur: settings write failed', error)
         return false
     } finally {
-        element.disabled = false
+        keys.forEach(key => settingsWritesPending.delete(key))
+        updateSettingsControls()
     }
 }
 
 function initializeEventListeners() {
-    document.getElementById('debug-switch').addEventListener('change', event => {
-        void persistCheckbox(event.target, SETTINGS_KEYS.debugMode)
-    })
-
-    document.getElementById('preview-switch').addEventListener('change', event => {
-        const previewStrengthItem = document.getElementById('preview-strength-item')
-        const previousDisplay = previewStrengthItem.style.display
-        previewStrengthItem.style.display = event.target.checked ? '' : 'none'
-        void persistCheckbox(event.target, SETTINGS_KEYS.previewEnabled).then(saved => {
-            if (!saved) previewStrengthItem.style.display = previousDisplay
+    for (const [key, id] of Object.entries(CHECKBOX_CONTROLS)) {
+        document.getElementById(id).addEventListener('change', event => {
+            if (!canEditSettings([key])) return
+            if (key === SETTINGS_KEYS.previewEnabled) {
+                document.getElementById('preview-strength-item').hidden = !event.target.checked
+            }
+            void persistSettings({ [key]: event.target.checked })
+        })
+    }
+    for (const [key, id] of Object.entries(SLIDER_CONTROLS)) {
+        const slider = document.getElementById(id)
+        slider.addEventListener('input', () => {
+            if (canEditSettings([key])) updateBlurDemo(key, Number(slider.value))
+        })
+        slider.addEventListener('change', () => void persistSettings({ [key]: Number(slider.value) }))
+    }
+    document.querySelectorAll('[data-mode]').forEach(button => {
+        button.addEventListener('click', () => {
+            void persistSettings({
+                [SETTINGS_KEYS.enabled]: button.dataset.mode !== 'off',
+                [SETTINGS_KEYS.alwaysBlur]: button.dataset.mode === 'always',
+            })
         })
     })
-
-    document.getElementById('preview-strength-slider').addEventListener('input', event => {
-        updatePreviewBlurDemo(parseInt(event.target.value, 10))
-    })
-
-    document.getElementById('preview-strength-slider').addEventListener('change', event => {
-        void persistPreviewStrength(event.target)
-    })
-
-    document.getElementById('cross-origin-iframe-switch').addEventListener('change', event => {
-        void persistCheckbox(event.target, SETTINGS_KEYS.keepCrossOriginIframesBlurred)
-    })
-
     document.getElementById('configure-shortcuts-btn').addEventListener('click', () => {
         chrome.tabs.create({ url: 'chrome://extensions/shortcuts' })
     })
-
-    document.getElementById('add-whitelist-btn').addEventListener('click', () => {
-        void addToSiteList('whitelist')
+    document.getElementById('retry-settings-btn').addEventListener('click', () => void loadSettings())
+    document.getElementById('site-rule-type').addEventListener('change', updateSettingsControls)
+    document.getElementById('add-site-rule-btn').addEventListener('click', () => {
+        void addToSiteList(document.getElementById('site-rule-type').value)
     })
-    document.getElementById('whitelist-input').addEventListener('keydown', event => {
-        if (event.key === 'Enter') void addToSiteList('whitelist')
+    document.getElementById('site-rule-input').addEventListener('keydown', event => {
+        if (event.key !== 'Enter') return
+        event.preventDefault()
+        void addToSiteList(document.getElementById('site-rule-type').value)
     })
-
-    document.getElementById('add-blacklist-btn').addEventListener('click', () => {
-        void addToSiteList('blacklist')
+    document.getElementById('add-word-btn').addEventListener('click', () => void addTargetWord())
+    document.getElementById('word-input').addEventListener('keydown', event => {
+        if (event.key !== 'Enter') return
+        event.preventDefault()
+        void addTargetWord()
     })
-    document.getElementById('blacklist-input').addEventListener('keydown', event => {
-        if (event.key === 'Enter') void addToSiteList('blacklist')
-    })
-}
-
-async function persistPreviewStrength(slider) {
-    const previous = settingsState.previewBlurStrength
-    const next = parseInt(slider.value, 10)
-    clearSettingsError()
-    slider.disabled = true
-
-    try {
-        const saved = await settingsStorage.set({ previewBlurStrength: next })
-        settingsState.previewBlurStrength = saved.previewBlurStrength
-        slider.value = saved.previewBlurStrength
-        updatePreviewBlurDemo(saved.previewBlurStrength)
-    } catch (error) {
-        slider.value = previous
-        updatePreviewBlurDemo(previous)
-        showSettingsError('Could not save the preview strength. Your previous setting is still active.')
-        console.error('PhobiaBlocker: failed to save preview strength', error)
-    } finally {
-        slider.disabled = false
-    }
 }
 
 function getSiteListConfig(listType) {
-    if (listType === 'blacklist') {
-        return {
-            storageKey: SETTINGS_KEYS.blacklist,
-            input: document.getElementById('blacklist-input'),
-            button: document.getElementById('add-blacklist-btn'),
-            list: blacklistedSites,
-            setList: value => { blacklistedSites = value },
-            label: 'blacklist',
-        }
-    }
-
+    const storageKey = listType === 'blacklist' ? SETTINGS_KEYS.blacklist : SETTINGS_KEYS.whitelist
     return {
-        storageKey: SETTINGS_KEYS.whitelist,
-        input: document.getElementById('whitelist-input'),
-        button: document.getElementById('add-whitelist-btn'),
-        list: whitelistedSites,
-        setList: value => { whitelistedSites = value },
-        label: 'whitelist',
+        storageKey,
+        list: settingsState[storageKey] || [],
+        label: listType === 'blacklist' ? 'Always blur media' : 'Pause automatic protection',
     }
 }
 
@@ -213,175 +267,173 @@ function normalizedSiteRule(rule) {
 }
 
 async function addToSiteList(listType) {
-    if (!settingsLoaded || siteListWritePending) return
     const config = getSiteListConfig(listType)
-    if (siteListRefreshRequired.has(config.storageKey)) return
-    const parsed = settingsPolicy.parseSiteRule(config.input.value)
+    if (siteWritePending() || !canEditSettings([config.storageKey])) return
+    const input = document.getElementById('site-rule-input')
+    const parsed = settingsPolicy.parseSiteRule(input.value)
     clearSettingsError()
-
     if (!parsed.valid) {
         showSettingsError(parsed.reason)
         return
     }
     if (config.list.some(rule => normalizedSiteRule(rule) === parsed.normalized)) {
-        showSettingsError(`This site is already in the ${config.label}.`)
+        showSettingsError('This site rule is already saved.')
         return
     }
-
-    const candidate = [...config.list, parsed.normalized]
-    siteListWritePending = true
-    renderSiteLists()
-    try {
-        await settingsStorage.set({ [config.storageKey]: candidate })
-        config.setList(candidate)
-        config.input.value = ''
-        renderSiteList(listType)
-    } catch (error) {
-        showSettingsError(`Could not save the ${config.label}. Nothing was changed.`)
-        console.error(`PhobiaBlocker: failed to save ${config.label}`, error)
-    } finally {
-        siteListWritePending = false
-        renderSiteLists()
+    if (await persistSettings({ [config.storageKey]: [...config.list, parsed.normalized] })) {
+        input.value = ''
+        input.focus()
     }
 }
 
 async function removeSiteFromList(index, listType) {
-    if (!settingsLoaded || siteListWritePending) return
     const config = getSiteListConfig(listType)
-    if (siteListRefreshRequired.has(config.storageKey)) return
+    if (siteWritePending() || !canEditSettings([config.storageKey])) return
     const candidate = config.list.filter((site, siteIndex) => siteIndex !== index)
-    clearSettingsError()
-    siteListWritePending = true
-    renderSiteLists()
-
-    try {
-        await settingsStorage.set({ [config.storageKey]: candidate })
-        config.setList(candidate)
-        renderSiteList(listType)
-    } catch (error) {
-        showSettingsError(`Could not update the ${config.label}. Nothing was changed.`)
-        console.error(`PhobiaBlocker: failed to update ${config.label}`, error)
-    } finally {
-        siteListWritePending = false
-        renderSiteLists()
+    if (await persistSettings({ [config.storageKey]: candidate })) {
+        document.getElementById('site-rule-input').focus()
     }
 }
 
 function renderSiteList(listType) {
     const config = getSiteListConfig(listType)
-    const disabled = !settingsLoaded || siteListWritePending || siteListRefreshRequired.has(config.storageKey)
-    config.button.disabled = disabled
-    config.input.disabled = disabled
     const container = document.getElementById(`${listType}-container`)
     container.innerHTML = ''
-
     config.list.forEach((site, index) => {
-        const item = document.createElement('div')
-        item.className = 'site-item'
-        item.textContent = site
-
-        item.appendChild(settingsUi.createRemoveButton({
+        const row = document.createElement('div')
+        row.className = 'site-rule'
+        const name = document.createElement('span')
+        name.className = 'site-rule-name'
+        name.textContent = site
+        const mode = document.createElement('span')
+        mode.className = 'site-rule-mode'
+        mode.textContent = config.label
+        row.append(name, mode, settingsUi.createRemoveButton({
             className: 'site-item-remove',
-            label: site,
-            disabled,
+            label: `${site} (${config.label})`,
+            disabled: siteWritePending() || !canEditSettings([config.storageKey]),
             onClick: () => void removeSiteFromList(index, listType),
         }))
-        container.appendChild(item)
+        container.appendChild(row)
     })
 }
 
-function renderSiteLists() {
-    renderSiteList('whitelist')
-    renderSiteList('blacklist')
+function showWordError(message) {
+    const element = document.getElementById('word-error')
+    element.textContent = message
+    element.hidden = !message
+}
+
+function renderTargetWords() {
+    const words = settingsState[SETTINGS_KEYS.targetWords] || []
+    const disabled = !canEditSettings([SETTINGS_KEYS.targetWords])
+    document.getElementById('word-input').disabled = disabled
+    document.getElementById('add-word-btn').disabled = disabled
+    document.getElementById('word-count').textContent = settingsLoaded ? `${words.length} / 20` : '— / 20'
+    const list = document.getElementById('word-list')
+    list.innerHTML = ''
+    words.forEach((word, index) => {
+        const validation = settingsPolicy.validateTargetWord(word)
+        const tag = document.createElement('span')
+        tag.className = validation.valid ? 'tag' : 'tag tag-invalid'
+        tag.title = validation.valid ? '' : `Invalid trigger: ${validation.reason}`
+        tag.appendChild(document.createTextNode(String(word)))
+        tag.appendChild(settingsUi.createRemoveButton({
+            className: 'tag-remove',
+            label: word,
+            disabled,
+            onClick: () => void removeTargetWord(index),
+        }))
+        list.appendChild(tag)
+    })
+    if (settingsLoaded && words.length === 0) list.textContent = 'No trigger words saved.'
+}
+
+async function addTargetWord() {
+    if (!canEditSettings([SETTINGS_KEYS.targetWords])) return
+    showWordError('')
+    const input = document.getElementById('word-input')
+    const validation = settingsPolicy.validateTargetWord(input.value)
+    const words = settingsState[SETTINGS_KEYS.targetWords]
+    if (!validation.valid) return showWordError(validation.reason)
+    if (words.length >= 20) return showWordError('You can store up to 20 trigger words.')
+    if (words.some(word => settingsPolicy.validateTargetWord(word).normalized === validation.normalized)) {
+        return showWordError('That trigger word is already in your list.')
+    }
+    if (await persistSettings({ [SETTINGS_KEYS.targetWords]: [...words, validation.normalized] })) {
+        input.value = ''
+        input.focus()
+    }
+}
+
+async function removeTargetWord(index) {
+    if (!canEditSettings([SETTINGS_KEYS.targetWords])) return
+    showWordError('')
+    const words = settingsState[SETTINGS_KEYS.targetWords].filter((word, wordIndex) => wordIndex !== index)
+    if (await persistSettings({ [SETTINGS_KEYS.targetWords]: words })) document.getElementById('word-input').focus()
 }
 
 function initializeNavigation() {
-    const navLinks = document.querySelectorAll('.nav-link')
-    const sections = document.querySelectorAll('.settings-section')
-
-    navLinks.forEach(link => {
+    const showSection = (hash, focus = false) => {
+        const aliases = { 'hover-preview': 'protection', about: 'help', debug: 'help' }
+        const requested = hash.replace(/^#/, '')
+        const section = aliases[requested] || requested
+        const selected = Object.hasOwn(SETTINGS_SECTIONS, section) ? section : 'site-rules'
+        for (const name of Object.keys(SETTINGS_SECTIONS)) document.getElementById(name).hidden = name !== selected
+        document.getElementById('settings-title').textContent = SETTINGS_SECTIONS[selected]
+        document.querySelectorAll('.nav-link').forEach(link => {
+            const active = link.getAttribute('href') === `#${selected}`
+            link.classList.toggle('active', active)
+            if (active) link.setAttribute('aria-current', 'page')
+            else link.removeAttribute('aria-current')
+        })
+        if (focus) document.getElementById('settings-title').focus()
+    }
+    document.querySelectorAll('.nav-link').forEach(link => {
         link.addEventListener('click', event => {
             event.preventDefault()
-            const targetSection = document.getElementById(link.getAttribute('href').substring(1))
-            if (!targetSection) return
-            targetSection.scrollIntoView({ behavior: 'smooth', block: 'start' })
-            updateActiveNavLink(link)
+            const hash = link.getAttribute('href')
+            window.location.hash = hash
+            showSection(hash, true)
         })
     })
-
-    const observer = new IntersectionObserver(entries => {
-        entries.forEach(entry => {
-            if (!entry.isIntersecting) return
-            const matchingLink = document.querySelector(`.nav-link[href="#${entry.target.id}"]`)
-            if (matchingLink) updateActiveNavLink(matchingLink)
-        })
-    }, {
-        root: null,
-        rootMargin: '-100px 0px -80% 0px',
-        threshold: 0,
-    })
-
-    sections.forEach(section => observer.observe(section))
-    if (!window.location.hash) return
-    const targetLink = document.querySelector(`.nav-link[href="${window.location.hash}"]`)
-    if (targetLink) setTimeout(() => targetLink.click(), 100)
-}
-
-function updateActiveNavLink(activeLink) {
-    document.querySelectorAll('.nav-link').forEach(link => link.classList.remove('active'))
-    activeLink.classList.add('active')
+    window.addEventListener('hashchange', () => showSection(window.location.hash))
+    showSection(window.location.hash)
 }
 
 function displayVersion() {
-    const versionSpan = document.getElementById('version-number')
-    if (versionSpan) versionSpan.textContent = chrome.runtime.getManifest().version
+    document.getElementById('version-number').textContent = chrome.runtime.getManifest().version
 }
 
 function formatShortcutText(shortcut) {
-    if (!shortcut) return ''
-    return shortcut
-        .replace(/⌘/g, 'Command+')
-        .replace(/⌥/g, 'Alt+')
-        .replace(/⇧/g, 'Shift+')
-        .replace(/⌃/g, 'Ctrl+')
-        .replace(/\+$/, '')
+    return shortcut.replace(/⌘/g, 'Command+').replace(/⌥/g, 'Alt+')
+        .replace(/⇧/g, 'Shift+').replace(/⌃/g, 'Ctrl+').replace(/\+$/, '')
 }
 
 function loadKeyboardShortcuts() {
     chrome.commands.getAll(commands => {
-        const shortcutsList = document.getElementById('shortcuts-list')
-        shortcutsList.innerHTML = ''
-
+        const list = document.getElementById('shortcuts-list')
+        list.innerHTML = ''
         if (commands.length === 0) {
-            shortcutsList.innerHTML = '<div class="shortcut-item"><span class="shortcut-label">No shortcuts configured</span></div>'
+            list.textContent = 'No shortcuts configured.'
             return
         }
-
-        const commandLabels = {
-            '_execute_action': 'Open PhobiaBlocker Popup',
-            'blur-all': 'Blur All Visual Content',
-            'unblur-all': 'Unblur All Visual Content',
-            'toggle-word-cover': 'Toggle Target Word Covers',
+        const labels = {
+            '_execute_action': 'Open PhobiaBlur popup',
+            'blur-all': 'Blur media on the current page',
+            'unblur-all': 'Reveal current content',
+            'toggle-word-cover': 'Toggle saved word-cover preference',
         }
-
         commands.forEach(command => {
-            const item = document.createElement('div')
-            item.className = 'shortcut-item'
-
+            const row = document.createElement('div')
+            row.className = 'shortcut-item'
             const label = document.createElement('span')
-            label.className = 'shortcut-label'
-            label.textContent = commandLabels[command.name] || command.description || command.name
-
-            const keys = document.createElement('span')
-            keys.className = 'shortcut-keys'
+            label.textContent = labels[command.name] || command.description || command.name
+            const keys = document.createElement(command.shortcut ? 'kbd' : 'span')
+            keys.className = command.shortcut ? 'shortcut-keys' : 'setting-description'
             keys.textContent = command.shortcut ? formatShortcutText(command.shortcut) : 'Not set'
-            if (!command.shortcut) {
-                keys.style.opacity = '0.5'
-                keys.style.fontStyle = 'italic'
-            }
-
-            item.append(label, keys)
-            shortcutsList.appendChild(item)
+            row.append(label, keys)
+            list.appendChild(row)
         })
     })
 }
@@ -390,32 +442,26 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
     if (namespace !== 'sync') return
     const changedKeys = SETTINGS_PAGE_KEYS.filter(key => changes[key])
     if (changedKeys.length === 0) return
+    changedKeys.forEach(key => settingsKeyRevisions.set(key, (settingsKeyRevisions.get(key) || 0) + 1))
     if (!settingsLoaded) {
-        // Initialization must retry its complete read before enabling list edits.
         settingsReader.invalidate()
         return
     }
-    for (const listType of ['whitelist', 'blacklist']) {
-        const { storageKey } = getSiteListConfig(listType)
-        if (!changedKeys.includes(storageKey)) continue
-        // Keep edits blocked after failures as well: the displayed list may
-        // already be obsolete until a current read succeeds.
-        siteListRefreshRequired.add(storageKey)
-        renderSiteList(listType)
-    }
-
-    // Read back through storage so defaults, validation and legacy value
-    // normalisation follow the same path as the initial load.
-    void settingsReader.refresh(changedKeys, (values) => {
-        for (const [key, value] of Object.entries(values)) {
-            siteListRefreshRequired.delete(key)
-            settingsState[key] = value
-            SETTINGS_RENDERERS[key](value)
-        }
-    }, (error) => {
-        showSettingsError(siteListRefreshRequired.size > 0
-            ? 'Could not refresh site lists. Affected lists stay locked. Reload this page to retry.'
-            : 'Could not refresh settings from storage. The previous values remain displayed.')
-        console.error('PhobiaBlocker: settings storage refresh failed', error)
+    changedKeys.forEach(key => settingsRefreshRequired.add(key))
+    updateSettingsControls()
+    const loadGeneration = settingsLoadGeneration
+    // Read defaults and legacy values through storage, and leave failed keys
+    // locked until a current read succeeds or the user retries loading.
+    void settingsReader.refresh(changedKeys, values => {
+        if (loadGeneration !== settingsLoadGeneration) return
+        Object.keys(values).forEach(key => settingsRefreshRequired.delete(key))
+        if (settingsRefreshRequired.size === 0 && settingsErrorSource === 'refresh') clearSettingsError()
+        applySettings(values)
+        debugSettings('settings.refreshed', () => ({ keys: Object.keys(values) }))
+    }, error => {
+        if (loadGeneration !== settingsLoadGeneration) return
+        showSettingsError('Could not refresh settings. Affected controls stay locked. Retry loading to continue.', 'refresh')
+        updateSettingsControls()
+        console.error('PhobiaBlur: settings storage refresh failed', error)
     })
 })

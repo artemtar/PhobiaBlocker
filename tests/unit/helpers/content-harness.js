@@ -59,8 +59,35 @@ class Node {
     }
     get parentElement() { return this.parentNode?.nodeType === 1 ? this.parentNode : null }
     set parentElement(value) { this.parentNode = value }
+    get children() { return this.childNodes.filter(child => child.nodeType === 1) }
+    get firstElementChild() { return this.children[0] || null }
+    get nextSibling() {
+        const siblings = this.parentNode?.childNodes || []
+        return siblings[siblings.indexOf(this) + 1] || null
+    }
+    get nextElementSibling() {
+        for (let next = this.nextSibling; next; next = next.nextSibling) {
+            if (next.nodeType === 1) return next
+        }
+        return null
+    }
+    getRootNode() {
+        let root = this
+        while (root.parentNode) root = root.parentNode
+        return root
+    }
+    get ownerDocument() {
+        const root = this.getRootNode()
+        return root.nodeType === 9 ? root : root.host?.ownerDocument || null
+    }
+    contains(node) {
+        for (let current = node; current; current = current.parentNode) {
+            if (current === this) return true
+        }
+        return false
+    }
     get isConnected() {
-        for (let current = this; current; current = current.parentNode) {
+        for (let current = this; current; current = current.parentNode || current.host) {
             if (current.nodeType === 9) return true
         }
         return false
@@ -117,6 +144,18 @@ class DocumentFragment extends Node {
     constructor() { super(11) }
 }
 
+class ShadowRoot extends DocumentFragment {
+    constructor(host) {
+        super()
+        Object.assign(this, eventTarget())
+        this.host = host
+        this.adoptedStyleSheets = []
+        this.styleSheets = []
+    }
+    querySelectorAll(selector) { return Element.prototype.querySelectorAll.call(this, selector) }
+    querySelector(selector) { return this.querySelectorAll(selector)[0] || null }
+}
+
 class Element extends Node {
     constructor(tagName = 'DIV') {
         super(1)
@@ -133,6 +172,18 @@ class Element extends Node {
             [Symbol.iterator]: () => classes.values(),
         }
     }
+    get localName() { return this.tagName.toLowerCase() }
+    attachShadow() {
+        if (this.shadowRoot) throw new Error('Shadow root already attached')
+        this.shadowRoot = new ShadowRoot(this)
+        return this.shadowRoot
+    }
+    get isContentEditable() {
+        const value = this.getAttribute('contenteditable')?.toLowerCase()
+        if (value === '' || value === 'true' || value === 'plaintext-only') return true
+        if (value === 'false') return false
+        return this.parentElement?.isContentEditable || false
+    }
     get className() { return [...this.classList].join(' ') }
     set className(value) {
         this.classList.remove(...[...this.classList])
@@ -143,15 +194,31 @@ class Element extends Node {
         if (name === 'class') return this.className
         return this.attributes.get(name) ?? null
     }
-    setAttribute(name, value) { this.attributes.set(name, value) }
-    removeAttribute(name) { this.attributes.delete(name) }
-    hasAttribute(name) { return this.attributes.has(name) }
+    setAttribute(name, value) {
+        if (name === 'class') this.className = value
+        else if (name === 'style') this.style.cssText = value
+        else this.attributes.set(name, String(value))
+    }
+    removeAttribute(name) {
+        if (name === 'class') this.className = ''
+        else if (name === 'style') this.style.cssText = ''
+        else this.attributes.delete(name)
+    }
+    hasAttribute(name) {
+        if (name === 'class') return this.className !== ''
+        if (name === 'style') return this.style.cssText !== ''
+        return this.attributes.has(name)
+    }
     toggleAttribute(name, enabled) { enabled ? this.setAttribute(name, '') : this.removeAttribute(name) }
     matches(selector) {
         return selector.split(',').some(part => {
             const name = part.trim()
             if (name === '*') return true
             if (name.startsWith('.')) return this.classList.contains(name.slice(1))
+            const attribute = name.match(/^\[([^=\]]+)(?:="([^"]*)")?\]$/)
+            if (attribute) return attribute[2] === undefined
+                ? this.hasAttribute(attribute[1])
+                : this.getAttribute(attribute[1]) === attribute[2]
             return name === this.tagName.toLowerCase()
         })
     }
@@ -180,29 +247,62 @@ class HTMLSourceElement extends Element {}
 class HTMLLinkElement extends Element {}
 class HTMLStyleElement extends Element {}
 
+// Manifest order of the content scripts the harness can execute. storage.js is
+// replaced by the fake PhobiaBlockerStorage; the rest run unchanged.
+const CONTENT_SCRIPTS = ['shared-policy.js', 'frame-clearance.js', 'page-text-index.js', 'editor-frames.js', 'js.js']
+const EARLY_BLUR_SCRIPT = 'early-blur.js'
+
+function contentScriptOrder(includeEarlyBlur) {
+    if (!includeEarlyBlur) return CONTENT_SCRIPTS
+    const index = CONTENT_SCRIPTS.indexOf('page-text-index.js') + 1
+    return [...CONTENT_SCRIPTS.slice(0, index), EARLY_BLUR_SCRIPT, ...CONTENT_SCRIPTS.slice(index)]
+}
+
 // Only browser boundaries are doubled. The complete policy, index and content
 // scripts execute unchanged; real-browser checks cover layout and observers.
-function createContentHarness() {
+//
+// Options:
+// - earlyBlur: also run early-blur.js before js.js, as the manifest does.
+// - getWithDefaults: the storage read installed before any script runs, so a
+//   test can defer or fail the very first settings read.
+function createContentHarness({ earlyBlur = false, getWithDefaults = null } = {}) {
     const html = new Element('HTML')
     const body = html.appendChild(new Element('BODY'))
     const document = {
-        ...eventTarget(), nodeType: 9, documentElement: html, body,
+        ...eventTarget(), nodeType: 9, documentElement: html, body, childNodes: [html], children: [html],
+        parentNode: null, firstChild: html, firstElementChild: html, isConnected: true,
         readyState: 'loading', title: '', styleSheets: [],
+        contains(node) { return Node.prototype.contains.call(this, node) },
+        getRootNode() { return this },
         createElement: tag => new Element(tag),
         createTextNode: value => new TextNode(value),
         createDocumentFragment: () => new DocumentFragment(),
         querySelectorAll: selector => [html, ...html.querySelectorAll('*')].filter(node => node.matches(selector)),
         querySelector(selector) { return this.querySelectorAll(selector)[0] || null },
-        createTreeWalker(root) {
-            const nodes = []
-            const visit = node => {
-                for (const child of node.childNodes || []) {
-                    if (child.nodeType === 3) nodes.push(child)
-                    else visit(child)
-                }
+        createTreeWalker(root, whatToShow = 0xffffffff) {
+            let current = root
+            return {
+                get currentNode() { return current },
+                set currentNode(node) { current = node },
+                nextNode() {
+                    let candidate = current
+                    while (candidate) {
+                        if (candidate.childNodes?.length) candidate = candidate.childNodes[0]
+                        else {
+                            while (candidate !== root && candidate && !candidate.nextSibling) {
+                                candidate = candidate.parentNode
+                            }
+                            if (!candidate || candidate === root) return null
+                            candidate = candidate.nextSibling
+                        }
+                        if (whatToShow & (1 << (candidate.nodeType - 1))) {
+                            current = candidate
+                            return current
+                        }
+                    }
+                    return null
+                },
             }
-            visit(root)
-            return { nextNode: () => nodes.shift() || null }
         },
     }
     html.parentNode = document
@@ -213,18 +313,25 @@ function createContentHarness() {
     const observers = []
     const messages = []
     let nextTimer = 0
-    const storage = { getWithDefaults: async () => ({ ...context.PhobiaBlockerPolicy.DEFAULTS }) }
+    const storage = {
+        getWithDefaults: getWithDefaults || (async () => ({ ...context.PhobiaBlockerPolicy.DEFAULTS })),
+    }
     const context = vm.createContext({
         console, URL, document, window,
         location: { href: 'https://example.com/safe', origin: 'https://example.com' },
         Element, HTMLImageElement, HTMLVideoElement, HTMLIFrameElement,
         HTMLPictureElement, HTMLSourceElement, HTMLLinkElement, HTMLStyleElement,
-        Node: { ELEMENT_NODE: 1, TEXT_NODE: 3, DOCUMENT_NODE: 9 },
-        NodeFilter: { SHOW_TEXT: 4 },
+        Node: { ELEMENT_NODE: 1, TEXT_NODE: 3, DOCUMENT_NODE: 9, DOCUMENT_FRAGMENT_NODE: 11 },
+        NodeFilter: { SHOW_ELEMENT: 1, SHOW_TEXT: 4 },
         MutationObserver: class {
-            constructor(callback) { this.callback = callback; observers.push(this) }
-            observe(target, options) { this.target = target; this.options = options }
-            disconnect() {}
+            constructor(callback) { this.callback = callback; this.targets = new Set(); observers.push(this) }
+            observe(target, options) { this.target = target; this.options = options; this.targets.add(target) }
+            disconnect() { this.targets.clear() }
+            takeRecords() { return [] }
+        },
+        CSSStyleSheet: class {
+            constructor() { this.cssRules = [] }
+            replaceSync(cssText) { this.cssRules = [{ cssText }] }
         },
         Event: class { constructor(type) { this.type = type } },
         performance: { now: () => 100 }, queueMicrotask,
@@ -246,7 +353,7 @@ function createContentHarness() {
             storage: { onChanged: { addListener() {} } },
         },
     })
-    for (const file of ['shared-policy.js', 'page-text-index.js', 'js.js']) {
+    for (const file of contentScriptOrder(earlyBlur)) {
         vm.runInContext(fs.readFileSync(path.join(repoRoot, 'js', file), 'utf8'), context, { filename: file })
     }
     const api = vm.runInContext('({controller, readAndApplySettings, Policy})', context)
@@ -254,6 +361,13 @@ function createContentHarness() {
         ...api, context, document, body, html, window, timers, intervals, observers, messages, storage,
         image() { return body.appendChild(new HTMLImageElement()) },
         text(value) { return body.appendChild(new TextNode(value)) },
+        // Delivers records to every connected observer of the document, the way
+        // the browser would after the corresponding DOM change.
+        dispatchMutations(records) {
+            observers.filter(observer => observer.targets.has(document)).forEach(observer => observer.callback(records))
+        },
+        // Lets pending promise chains (settings reads, applyProtectionMode) settle.
+        settle() { return new Promise(resolve => setImmediate(resolve)) },
         async runTimers(delay) {
             for (const [id, timer] of [...timers]) {
                 if (timer.delay !== delay) continue

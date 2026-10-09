@@ -1,0 +1,128 @@
+name: Release to Chrome Web Store
+
+# Supply-chain layout: the ZIP is produced by the `package` job from a pristine
+# checkout using only the runner's Node, bash and zip. No npm package is ever
+# installed or executed in that job, so the third-party lint/test toolchain in
+# `validate` cannot influence the uploaded artifact; it only gates the upload.
+#
+# TODO(security): pin every `uses:` below to a full commit SHA with a version
+# comment (for example `actions/checkout@<sha> # v4.2.2`) and enable Dependabot
+# for github-actions. The SHAs could not be resolved when this file was last
+# edited (no network access), so the mutable tags remain for now.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'New version (X.Y.Z, greater than the source and store versions)'
+        required: true
+        type: string
+      submit_for_review:
+        description: 'Submit for review and publish automatically after approval'
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chrome-web-store-release
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate source
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Require the default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "::error::Run this release workflow from the repository's default branch."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install validation dependencies
+        # `npm ci` installs exactly the committed package-lock.json and fails if
+        # it is missing or out of sync with package.json. Generate the lockfile
+        # against the public registry and commit it:
+        #   npm install --package-lock-only --ignore-scripts --registry=https://registry.npmjs.org
+        # Skipping install scripts avoids Puppeteer's unused browser download.
+        run: npm ci --ignore-scripts
+      - name: Validate source
+        run: |
+          npm run test:unit
+          npm run lint
+          bash -n pack.sh pack-dev.sh
+          git diff --check
+
+  package:
+    name: Package from a pristine checkout
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Require the default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "::error::Run this release workflow from the repository's default branch."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare versioned release
+        # Runs on the runner's preinstalled Node with built-in modules only;
+        # the checkout is untouched by any dependency installation.
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: node scripts/prepare-store-release.cjs "$RELEASE_VERSION"
+      - name: Retain the verified ZIP and version records
+        uses: actions/upload-artifact@v4
+        with:
+          name: chrome-web-store-release
+          path: build/store-release/
+          if-no-files-found: error
+          retention-days: 30
+
+  upload:
+    name: Upload to Chrome Web Store
+    needs: [validate, package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: chrome-web-store
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: chrome-web-store-release
+          path: build/store-release
+      - name: Upload verified package
+        # Uses the runner's preinstalled Node so no additional action runs
+        # with the publisher credentials in scope.
+        env:
+          CWS_EXTENSION_ID: ${{ vars.CWS_EXTENSION_ID }}
+          CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
+          CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+          CWS_CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+          CWS_REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+          CWS_SUBMIT_FOR_REVIEW: ${{ inputs.submit_for_review }}
+        run: node scripts/upload-webstore.cjs build/store-release
+      - name: Retain store response summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: chrome-web-store-result
+          path: build/store-release/store-result.json
+          if-no-files-found: error
+          retention-days: 30

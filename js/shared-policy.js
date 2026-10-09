@@ -61,6 +61,9 @@
         aggregateInvalidated: 'PB_FRAME_AGGREGATE_INVALIDATED',
         statusRequest: 'PB_FRAME_STATUS_REQUEST',
         statusChanged: 'PB_FRAME_STATUS_CHANGED',
+        clearanceArm: 'PB_FRAME_CLEARANCE_ARM',
+        clearanceEmit: 'PB_FRAME_CLEARANCE_EMIT',
+        clearanceLink: 'PB_FRAME_CLEARANCE_LINK',
     })
 
     // Root-level CSS custom properties both content scripts write. The legacy
@@ -102,8 +105,29 @@
     }
 
     function computeBlurPixels(value) {
-        const sliderValue = typeof value === 'number' ? value : DEFAULTS.blurValueAmount
-        return Math.pow(sliderValue * 0.09, 1.8) * 2
+        const sliderValue = Number.isFinite(value) ? value : DEFAULTS.blurValueAmount
+        const boundedValue = Math.min(100, Math.max(0, sliderValue))
+        // Keep fine control through the middle (~9px at 50), with 100px at the top.
+        return Math.pow(101, boundedValue / 100) - 1
+    }
+
+    // Slider values saved before 1.3.1 drove a steeper curve (50 gave 30px).
+    // Map one onto the current curve so an update leaves the rendered blur
+    // unchanged. The maximum stays the maximum: a user at the top asked for
+    // the strongest blur available, never a weaker one.
+    const LEGACY_BLUR_SCALE = 0.09
+    const LEGACY_BLUR_EXPONENT = 1.8
+    const LEGACY_BLUR_MULTIPLIER = 2
+    const CONVERTED_SLIDER_DECIMALS = 10
+
+    function convertLegacyBlurSliderValue(value) {
+        const sliderValue = Number.isFinite(value) ? value : DEFAULTS.blurValueAmount
+        const boundedValue = Math.min(100, Math.max(0, sliderValue))
+        if (boundedValue >= 100) return 100
+        const legacyPixels = Math.pow(boundedValue * LEGACY_BLUR_SCALE, LEGACY_BLUR_EXPONENT) * LEGACY_BLUR_MULTIPLIER
+        const currentValue = 100 * Math.log(legacyPixels + 1) / Math.log(101)
+        const rounded = Math.round(currentValue * CONVERTED_SLIDER_DECIMALS) / CONVERTED_SLIDER_DECIMALS
+        return Math.min(100, Math.max(0, rounded))
     }
 
     // With previews off the preview strength falls back to the full blur, so
@@ -116,6 +140,15 @@
 
     function isTopFrameContext() {
         try { return window.top === window } catch (_) { return false }
+    }
+
+    function createDebugLogger(context, isEnabled) {
+        // Callers supply only counts, flags and fixed labels. Build summaries
+        // lazily so disabled diagnostics do not walk the page or media registry.
+        return (event, getDetails = () => ({})) => {
+            if (isEnabled() !== true) return
+            console.debug?.(`[PhobiaBlur:${context}] ${event}`, getDetails())
+        }
     }
 
     function withTimeout(promise, timeoutMs, label) {
@@ -275,8 +308,10 @@
         isStringArray,
         isValidStoredValue,
         computeBlurPixels,
+        convertLegacyBlurSliderValue,
         previewBlurCssValue,
         isTopFrameContext,
+        createDebugLogger,
         withTimeout,
         normalizeAnalysisResult,
         validateTargetWord,

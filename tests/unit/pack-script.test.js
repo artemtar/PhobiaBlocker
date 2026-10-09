@@ -92,13 +92,23 @@ test('every file the extension references exists in the repository', () => {
     }
 })
 
+test('the lint script covers every hand-written script the extension loads', () => {
+    const lintScript = JSON.parse(read('package.json')).scripts.lint
+    const linted = new Set(lintScript.split(/\s+/).filter(argument => argument.endsWith('.js')))
+    const bundledLibraries = new Set(['js/compromise.min.js'])
+
+    const unlinted = referenced.filter(file => file.endsWith('.js') && !bundledLibraries.has(file) && !linted.has(file))
+
+    assert.deepEqual(unlinted, [], 'every shipped script must be part of the lint gate')
+})
+
 test('pack.sh uses an explicit version when one is provided', () => {
     const dir = createFixture(referenced)
     try {
         runPack(dir, '2.3.4')
         const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'))
         assert.equal(manifest.version, '2.3.4')
-        assert.ok(fs.existsSync(path.join(dir, 'phobiablocker-v2.3.4.zip')))
+        assert.ok(fs.existsSync(path.join(dir, 'phobiablur-v2.3.4.zip')))
     } finally {
         fs.rmSync(dir, { recursive: true, force: true })
     }
@@ -108,7 +118,7 @@ test('pack.sh packages every referenced file and whole asset folders, never loca
     const dir = createFixture(referenced)
     try {
         runPack(dir)
-        const entries = new Set(listZipEntries(path.join(dir, 'phobiablocker-v0.1.1.zip')))
+        const entries = new Set(listZipEntries(path.join(dir, 'phobiablur-v0.1.1.zip')))
         const missing = referenced.filter(file => !entries.has(file))
         assert.deepEqual(missing, [], 'the zip must contain every file the extension loads')
         for (const bundled of ['css/dev-only.css', 'js/dev-only.js', 'icons/main.png']) {
