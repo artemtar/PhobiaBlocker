@@ -44,6 +44,9 @@ const STYLESHEET_POLL_INTERVAL_MS = 2000
 const SHADOW_DISCOVERY_NODE_BUDGET = 250
 const SHADOW_DISCOVERY_TIME_BUDGET_MS = 4
 const SHADOW_DISCOVERY_YIELD_MS = 16
+// Custom-element hosts still waiting for a declarative shadow root while the
+// document is parsed. Bounded; anything dropped is found by the discovery poll.
+const MAX_PENDING_SHADOW_HOSTS = 256
 // Coalesce analysis across a burst of mutations instead of re-analysing the
 // whole page once per batch.
 const ANALYSIS_DEBOUNCE_MS = 200
@@ -920,6 +923,8 @@ class Controller {
         // until then the user's settings are unknown and the page stays in
         // the stylesheet's fail-closed state with early-blur covering words.
         this._discoverShadowRoots(document)
+        this._pendingShadowHosts = new Set()
+        document.addEventListener('readystatechange', () => this._finishPendingShadowHosts())
         this._startupObserverInit()
     }
 
@@ -988,19 +993,81 @@ class Controller {
     // The parser creates a declarative shadow root without attachShadow, so no
     // notification arrives. A host whose insertion record is delivered before
     // its template is parsed has no root yet; look again once the parser has
-    // had a chance to continue, in this task's microtasks and in the next task.
-    _scheduleLateShadowRootCheck(elements, { initialize }) {
-        const hosts = elements.filter(element => this._mayGainDeclarativeShadowRoot(element))
+    // had a chance to continue: in this task's microtasks, in the next task
+    // and, while the document is still being parsed, at every later mutation
+    // batch and when parsing ends. The template itself never enters the DOM,
+    // so a root created by a later network chunk produces no record of its own.
+    // `openElements` are the ones the parser still had open when the batch was
+    // delivered; they are watched whatever their tag name, because a plain
+    // <div> host has nothing but its position to announce the template.
+    _scheduleLateShadowRootCheck(elements, openElements = []) {
+        const hosts = [...new Set([
+            ...elements.filter(element => this._mayGainDeclarativeShadowRoot(element)),
+            ...openElements.filter(element => !element.shadowRoot),
+        ])]
         if (hosts.length === 0) return
-        const check = () => hosts.forEach(host => this._adoptLateShadowRoot(host, initialize))
+        if (document.readyState === 'loading') hosts.forEach(host => this._rememberPendingShadowHost(host))
+        const check = () => hosts.forEach(host => this._adoptLateShadowRoot(host))
         queueMicrotask(check)
         setTimeout(check, 0)
     }
 
-    _adoptLateShadowRoot(host, initialize) {
+    // The parser inserts nodes in tree order, so the last node of a batch is
+    // where it yielded: that node (or the element holding a trailing text or
+    // comment node) and its ancestors are the elements still open, and any of
+    // them can gain a declarative root from the next chunk. Everything before
+    // them is closed and cannot. O(depth) per batch; callers bound the pending set.
+    _openParserElements(childLists) {
+        const last = this._lastInsertedNode(childLists)
+        const chain = []
+        let node = last instanceof Element ? last : last?.parentNode
+        for (; node instanceof Element; node = node.parentNode) chain.push(node)
+        return chain
+    }
+
+    _lastInsertedNode(childLists) {
+        for (let index = childLists.length - 1; index >= 0; index--) {
+            const addedNodes = childLists[index].addedNodes
+            if (addedNodes.length > 0) return addedNodes[addedNodes.length - 1]
+        }
+        return null
+    }
+
+    _rememberPendingShadowHost(host) {
+        this._pendingShadowHosts.add(host)
+        // The oldest hosts are the ones the parser has most likely passed.
+        for (const oldest of this._pendingShadowHosts) {
+            if (this._pendingShadowHosts.size <= MAX_PENDING_SHADOW_HOSTS) break
+            this._pendingShadowHosts.delete(oldest)
+        }
+    }
+
+    _recheckPendingShadowHosts() {
+        this._pendingShadowHosts.forEach(host => this._adoptLateShadowRoot(host))
+    }
+
+    // Once parsing has ended a host without a root will not get a declarative
+    // one; roots attached later are notified by the main-world shim.
+    _finishPendingShadowHosts() {
+        if (document.readyState === 'loading') return
+        this._recheckPendingShadowHosts()
+        this._pendingShadowHosts.clear()
+    }
+
+    // Whether the root is initialised is decided now, not when the check was
+    // scheduled: settings may have arrived in between, and applyProtectionMode
+    // indexed the page without this root. Before settings the root only adopts
+    // the protection sheet; the first application indexes it with the page.
+    _adoptLateShadowRoot(host) {
+        if (!host.isConnected) {
+            this._pendingShadowHosts.delete(host)
+            return
+        }
         const root = host.shadowRoot
-        if (!root || !host.isConnected || this._shadowRoots.has(root)) return
-        if (this._discoverShadowRoots(root) && initialize) this._initializeShadowRoot(root)
+        if (!root) return
+        this._pendingShadowHosts.delete(host)
+        if (this._shadowRoots.has(root)) return
+        if (this._discoverShadowRoots(root) && this.protectionApplied) this._initializeShadowRoot(root)
     }
 
     _registerShadowRoot(root) {
@@ -2484,14 +2551,31 @@ class Controller {
 
     _handleStartupMutations(mutations) {
         if (this.protectionApplied) return
-        const candidates = mutations.flatMap((mutation) => (
-            mutation.type === 'childList' ? [mutation.target, ...mutation.addedNodes] : []
-        ))
-        const connected = candidates.filter(node => node instanceof Element && node.isConnected)
-        connected.forEach(node => this._discoverShadowRoots(node))
-        // Settings are still unknown, so a late declarative root only adopts
-        // the protection sheet; applyProtectionMode indexes it with the page.
-        this._scheduleLateShadowRootCheck(connected, { initialize: false })
+        this._recheckPendingShadowHosts()
+        // Until settings arrive the adopted sheet is the only protection inside
+        // a root (media and covers are not projected against unknown settings),
+        // so a component that replaced adoptedStyleSheets before rendering must
+        // get the sheet back with the first content it renders.
+        mutations.forEach(mutation => this._ensureShadowStylesForTarget(mutation.target))
+        const childLists = mutations.filter(mutation => mutation.type === 'childList')
+        // The parser reports every insertion against its parent, usually <body>.
+        // Walking that target per record would cost a whole-page query each
+        // time; like _handleMutations, look at it only when it hosts a root
+        // that is not registered yet.
+        const hosts = childLists.map(mutation => mutation.target)
+            .filter(target => target instanceof Element && target.shadowRoot &&
+                !this._shadowRoots.has(target.shadowRoot))
+        const added = childLists.flatMap(mutation => [...mutation.addedNodes])
+            .filter(node => node instanceof Element && node.isConnected)
+        const walkRoots = [...hosts, ...PageTextIndex.minimalRoots(added)].filter(node => node.isConnected)
+        walkRoots.forEach(node => this._discoverShadowRoots(node))
+        // Every inserted element, not only the outermost, may be a custom host
+        // whose template is still to come; while the parser is running, so may
+        // any plain element it left open at the end of this batch.
+        const openElements = document.readyState === 'loading'
+            ? this._openParserElements(childLists).filter(node => node.isConnected)
+            : []
+        this._scheduleLateShadowRootCheck(added, openElements)
     }
 
     _handleMutations(mutations) {
@@ -2501,6 +2585,9 @@ class Controller {
             void this.applyProtectionMode(Policy.resolveProtectionMode(this.settings, location.href), this.settings)
             return
         }
+        // Any batch means the parser (or a script) moved on; a declarative root
+        // created since the last look leaves no record of its own.
+        this._recheckPendingShadowHosts()
         const records = mutations.filter((mutation) => {
             // Editors often write the same class/style string on every key.
             // MutationObserver still reports it, but nothing needs rescanning.
@@ -2611,7 +2698,7 @@ class Controller {
         PageTextIndex.minimalRoots(backgroundSubtrees).forEach(element => {
             if (element.isConnected) this._scanBackgrounds(element).nodes.forEach(visual => touched.add(visual))
         })
-        this._scheduleLateShadowRootCheck(addedSubtrees.filter(element => element.isConnected), { initialize: true })
+        this._scheduleLateShadowRootCheck(addedSubtrees.filter(element => element.isConnected))
         if (elementsChanged) {
             this._pruneShadowRoots()
             this._registry.prune()

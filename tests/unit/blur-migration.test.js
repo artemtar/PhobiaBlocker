@@ -44,9 +44,16 @@ const fullyStoredSettings = Object.freeze({
     supportedWordsCollapsed: false,
 })
 
-function loadBackground({ stored = fullyStoredSettings, readError = null } = {}) {
+function loadBackground({
+    stored = fullyStoredSettings,
+    readError = null,
+    local = {},
+    localReadError = null,
+} = {}) {
     const writes = []
+    const localWrites = []
     const errors = []
+    const localValues = clone(local)
     const runtime = {
         lastError: null,
         onInstalled: browserEvent(),
@@ -81,6 +88,27 @@ function loadBackground({ stored = fullyStoredSettings, readError = null } = {})
                     callback()
                 },
             },
+            local: {
+                get(keys, callback) {
+                    if (localReadError) {
+                        runtime.lastError = { message: localReadError }
+                        callback(undefined)
+                        runtime.lastError = null
+                        return
+                    }
+                    const names = Array.isArray(keys) ? keys : [keys]
+                    const values = {}
+                    for (const name of names) {
+                        if (localValues[name] !== undefined) values[name] = clone(localValues[name])
+                    }
+                    callback(values)
+                },
+                set(values, callback) {
+                    localWrites.push(clone(values))
+                    Object.assign(localValues, clone(values))
+                    callback()
+                },
+            },
         },
         tabs: { onRemoved: browserEvent(), sendMessage: () => Promise.resolve({ ok: true }) },
         contextMenus: {
@@ -110,6 +138,7 @@ function loadBackground({ stored = fullyStoredSettings, readError = null } = {})
 
     return {
         writes,
+        localWrites,
         errors,
         policy: context.PhobiaBlockerPolicy,
         async install(details) {
@@ -212,4 +241,47 @@ test('an unreadable stored slider value logs and is left for the fail-closed rea
     await background.install({ reason: 'update', previousVersion: '1.3.0' })
     assert.deepEqual(background.writes, [])
     assert.equal(background.errors.length, 1)
+})
+
+test('a repeated legacy update event converts the stored slider value only once', async () => {
+    const background = loadBackground()
+    await background.install({ reason: 'update', previousVersion: '1.3.0' })
+    await background.install({ reason: 'update', previousVersion: '1.3.0' })
+
+    const writes = blurWrites(background)
+    assert.equal(writes.length, 1, 'the second event must not convert the already converted value')
+    const pixels = background.policy.computeBlurPixels(writes[0].blurValueAmount)
+    assert.ok(Math.abs(pixels - 30) <= PIXEL_TOLERANCE, `migrated value renders ${pixels}px`)
+    assert.deepEqual(background.errors, [])
+})
+
+test('the migration marker lives in local storage, never in the synced settings', async () => {
+    const background = loadBackground()
+    await background.install({ reason: 'update', previousVersion: '1.3.0' })
+
+    assert.equal(background.localWrites.length, 1, 'one local marker write')
+    assert.deepEqual(blurWrites(background), background.writes, 'sync storage only receives the slider value')
+})
+
+test('a marker left by an earlier service worker blocks the conversion on a fresh worker', async () => {
+    const first = loadBackground()
+    await first.install({ reason: 'update', previousVersion: '1.3.0' })
+    const marker = first.localWrites[0]
+
+    const second = loadBackground({ local: marker })
+    await second.install({ reason: 'update', previousVersion: '1.3.0' })
+    assert.deepEqual(second.writes, [])
+    assert.deepEqual(second.errors, [])
+})
+
+test('a failed marker read logs and still converts so the blur never weakens silently', async () => {
+    const background = loadBackground({ localReadError: 'Local storage unavailable' })
+    await background.install({ reason: 'update', previousVersion: '1.3.0' })
+
+    const writes = blurWrites(background)
+    assert.equal(writes.length, 1)
+    const pixels = background.policy.computeBlurPixels(writes[0].blurValueAmount)
+    assert.ok(Math.abs(pixels - 30) <= PIXEL_TOLERANCE, `migrated value renders ${pixels}px`)
+    assert.equal(background.errors.length, 1)
+    assert.match(String(background.errors[0][0]), /marker/i)
 })

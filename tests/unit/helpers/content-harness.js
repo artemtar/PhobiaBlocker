@@ -140,6 +140,13 @@ class TextNode extends Node {
     }
 }
 
+class CommentNode extends Node {
+    constructor(value) {
+        super(8)
+        this.nodeValue = value
+    }
+}
+
 class DocumentFragment extends Node {
     constructor() { super(11) }
 }
@@ -276,6 +283,7 @@ function createContentHarness({ earlyBlur = false, getWithDefaults = null } = {}
         getRootNode() { return this },
         createElement: tag => new Element(tag),
         createTextNode: value => new TextNode(value),
+        createComment: value => new CommentNode(value),
         createDocumentFragment: () => new DocumentFragment(),
         querySelectorAll: selector => [html, ...html.querySelectorAll('*')].filter(node => node.matches(selector)),
         querySelector(selector) { return this.querySelectorAll(selector)[0] || null },
@@ -321,7 +329,7 @@ function createContentHarness({ earlyBlur = false, getWithDefaults = null } = {}
         location: { href: 'https://example.com/safe', origin: 'https://example.com' },
         Element, HTMLImageElement, HTMLVideoElement, HTMLIFrameElement,
         HTMLPictureElement, HTMLSourceElement, HTMLLinkElement, HTMLStyleElement,
-        Node: { ELEMENT_NODE: 1, TEXT_NODE: 3, DOCUMENT_NODE: 9, DOCUMENT_FRAGMENT_NODE: 11 },
+        Node: { ELEMENT_NODE: 1, TEXT_NODE: 3, COMMENT_NODE: 8, DOCUMENT_NODE: 9, DOCUMENT_FRAGMENT_NODE: 11 },
         NodeFilter: { SHOW_ELEMENT: 1, SHOW_TEXT: 4 },
         MutationObserver: class {
             constructor(callback) { this.callback = callback; this.targets = new Set(); observers.push(this) }
@@ -361,10 +369,11 @@ function createContentHarness({ earlyBlur = false, getWithDefaults = null } = {}
         ...api, context, document, body, html, window, timers, intervals, observers, messages, storage,
         image() { return body.appendChild(new HTMLImageElement()) },
         text(value) { return body.appendChild(new TextNode(value)) },
-        // Delivers records to every connected observer of the document, the way
-        // the browser would after the corresponding DOM change.
-        dispatchMutations(records) {
-            observers.filter(observer => observer.targets.has(document)).forEach(observer => observer.callback(records))
+        // Delivers records to every connected observer of the document (or of
+        // the given shadow root), the way the browser would after the
+        // corresponding DOM change.
+        dispatchMutations(records, root = document) {
+            observers.filter(observer => observer.targets.has(root)).forEach(observer => observer.callback(records))
         },
         // Lets pending promise chains (settings reads, applyProtectionMode) settle.
         settle() { return new Promise(resolve => setImmediate(resolve)) },

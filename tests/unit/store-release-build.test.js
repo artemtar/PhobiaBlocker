@@ -144,9 +144,11 @@ test('release build refuses missing HTML dependencies even when their asset dire
     assert.ok(!fs.existsSync(path.join(cwd, 'build/store-release/release.json')))
 })
 
+const releaseWorkflowText = () => fs.readFileSync(path.join(repoRoot, '.github/workflows/chrome-web-store.yml'), 'utf8')
+
 // Minimal reading of the release workflow: job name -> the lines of that job.
 function releaseWorkflowJobs() {
-    const text = fs.readFileSync(path.join(repoRoot, '.github/workflows/chrome-web-store.yml'), 'utf8')
+    const text = releaseWorkflowText()
     const jobsStart = text.indexOf('\njobs:\n')
     assert.notEqual(jobsStart, -1, 'the workflow must define jobs')
     const jobs = new Map()
@@ -195,6 +197,41 @@ test('the upload job is gated by both the validation job and the packaging job',
     const needs = jobNeeds(uploadLines)
     assert.ok(needs.includes(validateJob), `upload must need ${validateJob}, got ${needs}`)
     assert.ok(needs.includes(packageJob), `upload must need ${packageJob}, got ${needs}`)
+})
+
+// A mutable tag such as @v4 can be moved to run different code under the
+// publisher credentials; only a full commit SHA names one immutable revision.
+const PINNED_ACTION = /^\s*-?\s*uses:\s*[\w.-]+\/[\w.-]+@[0-9a-f]{40}\s+#\s*v\d+\.\d+\.\d+\s*$/
+
+test('every action the release workflow uses is pinned to a full commit SHA with a version comment', () => {
+    const usesLines = releaseWorkflowText().split('\n').filter(line => /^\s*-?\s*uses:/.test(line))
+
+    const unpinned = usesLines.filter(line => !PINNED_ACTION.test(line)).map(line => line.trim())
+
+    assert.ok(usesLines.length >= 3, 'the workflow must use checkout, artifact upload and download actions')
+    assert.deepEqual(unpinned, [], 'every uses: line must be `owner/repo@<40-hex-sha> # vX.Y.Z`')
+})
+
+const PUBLIC_REGISTRY = 'https://registry.npmjs.org/'
+
+test('the validation job installs the committed lockfile, which resolves every package from the public registry', () => {
+    const jobs = releaseWorkflowJobs()
+    const [, validateLines] = jobRunning(jobs, 'npm run lint')
+    const lockPath = path.join(repoRoot, 'package-lock.json')
+    const pkg = json(path.join(repoRoot, 'package.json'))
+
+    assert.ok(validateLines.some(line => /\bnpm ci\b/.test(line)), 'validation must install with npm ci, never npm install')
+    assert.ok(fs.existsSync(lockPath), 'npm ci needs a committed root package-lock.json')
+    const lock = json(lockPath)
+    assert.ok(lock.lockfileVersion >= 2, 'the lockfile must carry the packages map npm ci reads')
+    assert.equal(lock.name, pkg.name)
+    assert.equal(lock.version, pkg.version)
+    assert.deepEqual(lock.packages[''].devDependencies, pkg.devDependencies, 'the lockfile must be in sync with package.json')
+    const privateResolutions = Object.entries(lock.packages)
+        .filter(([, entry]) => entry.resolved && !entry.resolved.startsWith(PUBLIC_REGISTRY))
+        .map(([name, entry]) => `${name} -> ${entry.resolved}`)
+    assert.deepEqual(privateResolutions, [], 'every package must resolve from the public registry')
+    assert.ok(Object.keys(lock.packages).length > 1, 'the lockfile must pin the toolchain, not only the root package')
 })
 
 test('a failed pack command restores source versions and never retains a stale archive', t => {

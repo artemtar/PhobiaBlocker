@@ -11,6 +11,7 @@ function clearedPageFixture() {
     const env = createContentHarness()
     const settings = { ...env.Policy.DEFAULTS, targetWords: ['spider'], wordCoverEnabled: true }
     env.controller.mode = 'ANALYZE'
+    env.controller.protectionApplied = true
     env.controller._analysisPending = false
     env.controller._pageAnalysisResult = clean
     env.controller.setSettings(settings)
@@ -131,6 +132,122 @@ test('an element carrying a declarative shadow template is re-checked once the r
     await env.runTimers(0)
 
     assertProtected(root, paragraph, image)
+})
+
+// A streaming page: the host's start tag ends one network chunk and the
+// declarative template arrives with the next one, after the microtask and the
+// follow-up task have both looked. The template never enters the DOM, so the
+// only record the parser produces afterwards is for the sibling that follows.
+function heroRecord(env, hero) {
+    return { type: 'childList', target: env.body, addedNodes: [hero], removedNodes: [] }
+}
+
+async function heroWithLateChunk(env, deliver) {
+    const hero = env.body.appendChild(env.document.createElement('x-hero'))
+    deliver([heroRecord(env, hero)])
+    await env.settle()
+    await env.runTimers(0)
+    assert.ok(!hero.shadowRoot, 'the next chunk has not arrived yet')
+    const root = hero.attachShadow({ mode: 'open' })
+    const rendered = renderComponent(env, root)
+    const sibling = env.body.appendChild(env.document.createElement('p'))
+    sibling.appendChild(env.document.createTextNode('after'))
+    return { hero, root, sibling, ...rendered }
+}
+
+test('a declarative root created by a later network chunk is protected at the next mutation batch', async () => {
+    const env = clearedPageFixture()
+    const { root, sibling, paragraph, image } = await heroWithLateChunk(env, records => env.controller._handleMutations(records))
+
+    env.controller._handleMutations([{ type: 'childList', target: env.body, addedNodes: [sibling], removedNodes: [] }])
+
+    assertProtected(root, paragraph, image)
+    assert.equal(env.controller._pageTextIndex.getTokenCount('spider'), 1)
+    assert.equal(env.controller._analysisPending, true)
+})
+
+test('a declarative root that closes the document is protected when parsing ends', async () => {
+    const env = clearedPageFixture()
+    const { root, paragraph, image } = await heroWithLateChunk(env, records => env.controller._handleMutations(records))
+
+    env.document.readyState = 'interactive'
+    env.document.dispatchEvent({ type: 'readystatechange' })
+
+    assertProtected(root, paragraph, image)
+    assert.equal(env.controller._pageTextIndex.getTokenCount('spider'), 1)
+})
+
+test('before the settings read, a declarative root from a later chunk adopts the protection sheet at the next batch', async () => {
+    const env = createContentHarness()
+    const { root, sibling } = await heroWithLateChunk(env, records => env.dispatchMutations(records))
+
+    env.dispatchMutations([{ type: 'childList', target: env.body, addedNodes: [sibling], removedNodes: [] }])
+
+    assert.equal(env.controller.protectionApplied, false)
+    assert.ok(root.adoptedStyleSheets.length > 0, 'the root must adopt the protection sheet before settings arrive')
+})
+
+test('once parsing has ended, a host without a root is not re-inspected by later batches', async () => {
+    const env = clearedPageFixture()
+    env.document.readyState = 'complete'
+    const host = env.body.appendChild(env.document.createElement('x-late'))
+    let reads = 0
+    Object.defineProperty(host, 'shadowRoot', { get() { reads++; return undefined } })
+    env.controller._handleMutations([heroRecord(env, host)])
+    await env.settle()
+    await env.runTimers(0)
+    const readsAfterChecks = reads
+
+    const sibling = env.body.appendChild(env.document.createElement('p'))
+    env.controller._handleMutations([{ type: 'childList', target: env.body, addedNodes: [sibling], removedNodes: [] }])
+
+    assert.equal(reads, readsAfterChecks, 'the parser cannot add a declarative root after parsing')
+})
+
+// Startup race: the startup observer sees the host before settings arrive, the
+// settings read lands and applyProtectionMode indexes a page without the root,
+// then the parser creates the root. The deferred check must initialise it,
+// not merely register it; the discovery poll skips registered roots.
+test('a declarative root parsed after the settings read is initialised by the startup re-check', async () => {
+    const env = createContentHarness()
+    const hero = env.body.appendChild(env.document.createElement('x-hero'))
+    env.dispatchMutations([heroRecord(env, hero)])
+    await env.settle()
+    env.storage.getWithDefaults = async () => ({ ...env.Policy.DEFAULTS, targetWords: ['spider'], wordCoverEnabled: true })
+    env.document.readyState = 'complete'
+    await env.readAndApplySettings()
+    await env.settle()
+    assert.equal(env.controller.protectionApplied, true)
+    assert.ok(!hero.shadowRoot, 'the parser has not reached the template yet')
+
+    const root = hero.attachShadow({ mode: 'open' })
+    const { paragraph, image } = renderComponent(env, root)
+    await env.runTimers(0)
+
+    assertProtected(root, paragraph, image)
+    assert.ok(env.controller._registry.get(image), 'late shadow media must be registered, not left to the sheet alone')
+    assert.equal(env.controller._pageTextIndex.getTokenCount('spider'), 1)
+    assert.equal(env.controller._analysisPending, true)
+})
+
+// Finding 9, startup window: until the settings read resolves the adopted
+// sheet is the only protection inside a root, so a component that dropped it
+// before rendering must get it back from the startup observer.
+test('before the settings read, content rendered into a root that dropped its sheet re-adopts it', () => {
+    const env = createContentHarness()
+    const host = env.body.appendChild(env.document.createElement('my-card'))
+    const root = host.attachShadow({ mode: 'open' })
+    notifyShadowRoot(env, host)
+    const protectionSheet = root.adoptedStyleSheets[0]
+    assert.ok(protectionSheet, 'the notification must adopt the protection sheet')
+    root.adoptedStyleSheets = [new env.context.CSSStyleSheet()]
+    const image = root.appendChild(new env.context.HTMLImageElement())
+    image.setAttribute('src', 'picture.jpg')
+
+    env.dispatchMutations([{ type: 'childList', target: root, addedNodes: [image], removedNodes: [] }], root)
+
+    assert.equal(env.controller.protectionApplied, false)
+    assert.ok(root.adoptedStyleSheets.includes(protectionSheet), 'the startup observer must re-adopt the dropped sheet')
 })
 
 test('ordinary inserted elements are not re-inspected for shadow roots later', async () => {

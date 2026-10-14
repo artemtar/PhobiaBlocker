@@ -61,18 +61,30 @@ test('a DOM mutation after a fragment change does not re-apply protection', asyn
     assert.equal(analyses.length, analysesBefore)
 })
 
-test('cleared media keep their clearance across a fragment change while new text is analysed', async () => {
+// The clearance record compares URLs without their fragment. Any new vocabulary
+// drops the clearance outright (only the offscreen analyser can recognise an
+// inflected trigger), so the comparison cannot be observed through media state
+// on a page that is being re-analysed; it is checked directly here instead.
+test('a clearance is recorded without the fragment and survives a fragment change only', async () => {
     // Arrange
     const { env, image } = await clearedPage()
+    const node = env.controller._registry.get(image)
+    assert.ok(node, 'the cleared image must be a registered visual')
+    assert.equal(env.controller._clearedUrl, 'https://example.com/safe')
+
+    // Act: scrollspy updates the hash.
     env.context.location.href = 'https://example.com/safe#more'
     env.window.dispatchEvent({ type: 'hashchange' })
 
-    // Act: the page appends text, which starts a new analysis.
-    const text = env.text('another tree')
-    env.dispatchMutations([{ type: 'childList', target: env.body, addedNodes: [text], removedNodes: [] }])
+    // Assert: the clearance belongs to the same document.
+    assert.notEqual(env.context.location.href, env.controller._clearedUrl, 'the stored URL must not carry the fragment')
+    assert.equal(env.controller._canRetainClearance(node), true, 'a fragment change must not void the clearance')
 
-    // Assert: media cleared on this document stay clear during the re-check.
-    assert.equal(image.style.getPropertyValue('filter'), 'none')
+    // Act: the router moves to another path without reloading.
+    env.context.location.href = 'https://example.com/other'
+
+    // Assert: the clearance does not follow the page to a different document.
+    assert.equal(env.controller._canRetainClearance(node), false, 'a path change must void the clearance')
 })
 
 test('a path change still re-applies protection and re-analyses the new document', async () => {

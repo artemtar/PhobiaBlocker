@@ -141,7 +141,9 @@ test('.gitignore keeps agent scratch, captures and installers out of the reposit
         'store-assets/v2/raw/manifest.json',
         'store-assets/v2/capture.log',
         'build/dev/manifest.json',
-        'phobiablur-v1.3.1.zip'
+        'phobiablur-v1.3.1.zip',
+        // The quarantined Puppeteer suite's lockfile resolves from an internal mirror.
+        'tests/package-lock.json'
     ]
     const tracked = [
         'package-lock.json',

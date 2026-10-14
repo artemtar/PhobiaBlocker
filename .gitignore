@@ -19,3 +19,6 @@ playwright.mcp.config.json
 /*.png
 store-assets/v2/raw/manifest.json
 store-assets/v2/capture.log
+# The quarantined Puppeteer suite's lockfile resolves from an internal mirror;
+# only the root package-lock.json (public registry) is tracked.
+/tests/package-lock.json

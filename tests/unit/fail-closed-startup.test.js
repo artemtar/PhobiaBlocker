@@ -99,6 +99,188 @@ test('shadow roots that stream in before the settings read adopt the protection 
     assert.equal(env.controller.protectionApplied, false)
 })
 
+// Records the subtree each shadow-root discovery walk starts from. Every such
+// walk is a whole-subtree query, so the list is the work the handler does.
+function recordDiscoveryWalks(env) {
+    const walks = []
+    const index = env.context.PhobiaBlockerPageTextIndex
+    const collectDomRoots = index.collectDomRoots
+    index.collectDomRoots = (subtree) => {
+        walks.push(subtree)
+        return collectDomRoots(subtree)
+    }
+    return walks
+}
+
+test('startup records walk each inserted subtree once and never the whole record target', () => {
+    // Arrange: the parser streams a section, then a paragraph into it. Each
+    // insertion is reported against its parent, which has no shadow root. The
+    // startup handler is driven directly so the iframe lifecycle observer's
+    // own queries do not count.
+    const env = createContentHarness()
+    const section = env.body.appendChild(env.document.createElement('section'))
+    const paragraph = section.appendChild(env.document.createElement('p'))
+    const walks = recordDiscoveryWalks(env)
+
+    // Act
+    env.controller._handleStartupMutations([childListRecord(env.body, section), childListRecord(section, paragraph)])
+
+    // Assert: <body> is not walked per record and nested inserts are deduped.
+    assert.deepEqual(walks, [section], 'only the outermost inserted subtree is walked, once')
+})
+
+test('a startup record whose target already hosts a shadow root still discovers that root', () => {
+    // Arrange: a host attached its root before the record for its light-DOM
+    // text arrives, so only the record target points at the root.
+    const env = createContentHarness()
+    const host = env.body.appendChild(env.document.createElement('div'))
+    const root = host.attachShadow({ mode: 'open' })
+    const text = host.appendChild(env.document.createTextNode('slotted'))
+
+    // Act
+    env.dispatchMutations([childListRecord(host, text)])
+
+    // Assert
+    assert.equal(root.adoptedStyleSheets.length, 1, 'the host target must still adopt the protection sheet')
+    assert.equal(env.controller.protectionApplied, false)
+})
+
+// Streaming SSR: the parser yields right after a host's start tag, so the
+// host's insertion record arrives with no shadow root, and the next chunk's
+// <template shadowrootmode> creates the root without any record of its own
+// (the template never enters the DOM). A plain host has no hyphen and no
+// template child to give it away; only its position, as the element the
+// parser still had open, does. Media inside such a root must be protected at
+// the next record or the late check, not at the first settings application.
+
+function shadowImage(env, root) {
+    const image = root.appendChild(new env.context.HTMLImageElement())
+    image.setAttribute('src', 'hero.jpg')
+    return image
+}
+
+async function parserYieldsAfter(env, records) {
+    env.dispatchMutations(records)
+    await env.settle()
+    await env.runTimers(0)
+}
+
+function assertSheetOnlyProtection(env, root, image) {
+    assert.equal(root.adoptedStyleSheets.length, 1, 'the late declarative root must adopt the protection sheet')
+    assert.equal(image.style.getPropertyValue('filter'), '', 'no default projection before settings')
+    assert.equal(env.controller.protectionApplied, false)
+}
+
+test('a plain host split across a parser yield is protected at the record for its following sibling', async () => {
+    // Arrange: <div class="hero"> ends one chunk; its record is delivered.
+    const env = createContentHarness()
+    const host = env.body.appendChild(env.document.createElement('div'))
+    host.setAttribute('class', 'hero')
+    await parserYieldsAfter(env, [childListRecord(env.body, host)])
+    assert.ok(!host.shadowRoot, 'the next chunk has not arrived yet')
+
+    // Act: the next chunk creates the root, renders into it, then the parser
+    // closes the host and inserts a sibling, which is the only record it makes.
+    const root = host.attachShadow({ mode: 'open' })
+    const image = shadowImage(env, root)
+    const sibling = env.body.appendChild(env.document.createElement('p'))
+    env.dispatchMutations([childListRecord(env.body, sibling)])
+
+    // Assert
+    assertSheetOnlyProtection(env, root, image)
+})
+
+test('a plain host whose chunk ends in a comment node is still watched for a late declarative root', async () => {
+    // Arrange: server-rendered markup often leaves a marker comment such as
+    // <!--[--> as the last node before the parser yields inside the host.
+    const env = createContentHarness()
+    const host = env.body.appendChild(env.document.createElement('div'))
+    host.setAttribute('class', 'hero')
+    const marker = host.appendChild(env.document.createComment('['))
+    await parserYieldsAfter(env, [childListRecord(env.body, host), childListRecord(host, marker)])
+    assert.ok(!host.shadowRoot, 'the next chunk has not arrived yet')
+
+    // Act: the root arrives with the next chunk; the parser then closes the
+    // host and inserts a sibling.
+    const root = host.attachShadow({ mode: 'open' })
+    const image = shadowImage(env, root)
+    const sibling = env.body.appendChild(env.document.createElement('p'))
+    env.dispatchMutations([childListRecord(env.body, sibling)])
+
+    // Assert
+    assertSheetOnlyProtection(env, root, image)
+})
+
+test('a nested plain host split across a parser yield is protected at the next record', async () => {
+    // Arrange: body <- section <- div.hero, all in one batch; the yield lands
+    // right after the div's start tag, so it is the deepest open element.
+    const env = createContentHarness()
+    const section = env.body.appendChild(env.document.createElement('section'))
+    const host = section.appendChild(env.document.createElement('div'))
+    host.setAttribute('class', 'hero')
+    await parserYieldsAfter(env, [childListRecord(env.body, section), childListRecord(section, host)])
+
+    // Act: the root arrives with the next chunk; the parser then continues in
+    // the section, where the host's sibling is the next record.
+    const root = host.attachShadow({ mode: 'open' })
+    const image = shadowImage(env, root)
+    const sibling = section.appendChild(env.document.createElement('p'))
+    env.dispatchMutations([childListRecord(section, sibling)])
+
+    // Assert
+    assertSheetOnlyProtection(env, root, image)
+})
+
+test('a custom element nested in an inserted ancestor is still watched for a late declarative root', async () => {
+    // Arrange: body <- section <- my-el in one batch. The section is the only
+    // minimal root of the batch; the host must still be remembered.
+    const env = createContentHarness()
+    const section = env.body.appendChild(env.document.createElement('section'))
+    const host = section.appendChild(env.document.createElement('my-el'))
+    await parserYieldsAfter(env, [childListRecord(env.body, section), childListRecord(section, host)])
+
+    // Act
+    const root = host.attachShadow({ mode: 'open' })
+    const image = shadowImage(env, root)
+    const sibling = section.appendChild(env.document.createElement('p'))
+    env.dispatchMutations([childListRecord(section, sibling)])
+
+    // Assert
+    assertSheetOnlyProtection(env, root, image)
+})
+
+test('a plain host whose root is the last thing parsed is protected when parsing ends', async () => {
+    // Arrange: the host's record is the last the parser produces before the
+    // chunk that creates the root closes the document.
+    const env = createContentHarness()
+    const host = env.body.appendChild(env.document.createElement('div'))
+    await parserYieldsAfter(env, [childListRecord(env.body, host)])
+
+    // Act
+    const root = host.attachShadow({ mode: 'open' })
+    const image = shadowImage(env, root)
+    env.document.readyState = 'interactive'
+    env.document.dispatchEvent({ type: 'readystatechange' })
+
+    // Assert
+    assertSheetOnlyProtection(env, root, image)
+})
+
+test('a plain host whose root is parsed within the same task is protected by the follow-up check', async () => {
+    // Arrange
+    const env = createContentHarness()
+    const host = env.body.appendChild(env.document.createElement('div'))
+    env.dispatchMutations([childListRecord(env.body, host)])
+
+    // Act: the parser continues before any other record is produced.
+    const root = host.attachShadow({ mode: 'open' })
+    const image = shadowImage(env, root)
+    await env.runTimers(0)
+
+    // Assert
+    assertSheetOnlyProtection(env, root, image)
+})
+
 test('early-blur covers trigger words until the controller applies the first settings read', async () => {
     // Arrange: manifest order (early-blur.js before js.js) with a settings read
     // that resolves only after both scripts have run, as on a real page.

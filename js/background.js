@@ -413,15 +413,62 @@ function isVersionBelow(version, reference) {
     return false
 }
 
-// Chrome fires one 'update' per version change, so the previous version is
-// the only guard: a marker key would surface as a settings change in every
-// frame. Any failure logs and leaves the stored value untouched.
+// The marker lives in local storage: every storage.onChanged listener ignores
+// that area, so writing it never surfaces as a settings change in a frame,
+// and a synced key would have needed a default every reader validates.
+const BLUR_MIGRATION_MARKER_KEY = 'blurCurveMigratedTo'
+
+function readLocalStorage(keys) {
+    return new Promise((resolve, reject) => {
+        chrome.storage.local.get(keys, values => {
+            const error = chrome.runtime.lastError
+            if (error) {
+                reject(new Error(error.message))
+                return
+            }
+            resolve(values || {})
+        })
+    })
+}
+
+function writeLocalStorage(values) {
+    return new Promise((resolve, reject) => {
+        chrome.storage.local.set(values, () => {
+            const error = chrome.runtime.lastError
+            if (error) {
+                reject(new Error(error.message))
+                return
+            }
+            resolve()
+        })
+    })
+}
+
+// An unreadable marker is reported but does not block the conversion: the
+// conversion only ever strengthens the rendered blur, so running it twice
+// in that rare case is the safer failure.
+async function hasBlurStrengthMigrationRun() {
+    try {
+        const values = await readLocalStorage([BLUR_MIGRATION_MARKER_KEY])
+        return values[BLUR_MIGRATION_MARKER_KEY] === BLUR_CURVE_VERSION
+    } catch (error) {
+        console.error('PhobiaBlocker: blur strength migration marker is unreadable', error)
+        return false
+    }
+}
+
+// Chrome fires one 'update' per version change; the previous version selects
+// the users to migrate and the local marker keeps a repeated event from
+// converting an already converted value. Any failure logs and leaves the
+// stored value untouched.
 async function migrateLegacyBlurStrength(details) {
     if (details.reason !== 'update' || !isVersionBelow(details.previousVersion, BLUR_CURVE_VERSION)) return
+    if (await hasBlurStrengthMigrationRun()) return
     try {
         const values = await storageApi.getWithDefaults([STORAGE_KEYS.blurAmount])
         const converted = convertLegacyBlurSliderValue(values[STORAGE_KEYS.blurAmount])
         await storageApi.set({ [STORAGE_KEYS.blurAmount]: converted })
+        await writeLocalStorage({ [BLUR_MIGRATION_MARKER_KEY]: BLUR_CURVE_VERSION })
         debug('settings.migrated', () => ({ key: STORAGE_KEYS.blurAmount, from: details.previousVersion }))
     } catch (error) {
         console.error('PhobiaBlocker: blur strength migration failed', error)
