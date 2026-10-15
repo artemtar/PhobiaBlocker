@@ -39,8 +39,8 @@ const {
 // 'iconStatus' message without any changes to the extension's own code.
 
 // Only the top frame reports (reportIconStatus returns early in sub-frames), and
-// the worker ignores a message without sender.tab, so the tracker page itself can
-// never add entries; the log holds only what the page under test sent.
+// popup.js never sends iconStatus, so the tracker page adds nothing of its own;
+// the log holds only what the top frame of the page under test sent.
 async function setupIconTracker(browser) {
     const page = await getExtensionPage(browser)
     await page.evaluate(() => {
@@ -99,8 +99,8 @@ describe('Icon Status', () => {
         // Use 'spider' as the sole phobia word — simple-image.html contains it
         await setPhobiaWords(browser, ['spider'])
         // Give the service worker time to finish preloading all icon variants
-        // Needed only by the pixel tests: they read globalThis._tintedIcons directly
-        // while setIcon itself awaits the preload promise before using it.
+        // Needed only by the 'icon preloading' tests: they read globalThis._tintedIcons
+        // directly, while setIcon itself awaits the preload promise before using it.
         await wait(2000)
         trackerPage = await setupIconTracker(browser)
         page = await browser.newPage()
@@ -230,6 +230,8 @@ describe('Icon Status', () => {
             assert.ok(log.includes('idle'),
                 `should send 'idle' when extension is disabled (got: [${log}])`)
 
+            // Not in a finally: a failure above leaves the extension disabled, and the
+            // always-on test below then fails for the wrong reason.
             await setExtensionEnabled(browser, true)
         })
 

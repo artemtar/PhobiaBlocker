@@ -107,6 +107,7 @@ function loadBackground({ onSend, frameData = frameTree } = {}) {
     context = vm.createContext({
         chrome,
         console,
+        // crypto.randomUUID mints the clearance tokens the individual-clearance tests check.
         crypto: require('node:crypto').webcrypto,
         URL,
         setTimeout(callback, delay) {
@@ -191,6 +192,9 @@ test('a failed top-level URL notification recovers automatically without an aggr
             ? available ? Promise.resolve({ ok: true }) : Promise.reject(new Error('Listener unavailable'))
             : undefined,
     })
+    // Model a page without iframes: such a document never requests an aggregate, so
+    // the timer is its only retry path (sendUrlPolicyUpdate). The top frame has no
+    // ancestors, so the pruned tree is not even read here.
     background.frames.splice(1)
     background.emit('onHistoryStateUpdated', navigationDetails())
     await settle()
@@ -209,8 +213,8 @@ test('a failed top-level URL notification recovers automatically without an aggr
 })
 
 test('a permanently unavailable top-level document receives only one automatic retry', async () => {
-    // A null reply is anything but ok:true: no listener in the document, or an
-    // empty answer. It never counts as an acknowledgement.
+    // null models a document that never answered (sendContentMessage also maps a
+    // rejection or timeout to null); only ok:true counts as an acknowledgement.
     const background = loadBackground({
         onSend: message => message.type === 'PB_URL_CHANGED' ? Promise.resolve(null) : undefined,
     })

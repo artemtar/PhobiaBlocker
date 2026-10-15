@@ -14,9 +14,11 @@ function addBackground(env, parent = env.body) {
     return element
 }
 
-// The synchronous part of enableProtection in ALWAYS_BLUR, without the settings
-// read or observers: the full scan registers every background, and each test then
-// drives the controller's handlers directly from that known projected state.
+// A cut-down enableProtection in ALWAYS_BLUR: shadow discovery, media
+// registration, the full background scan and the text index, with no root
+// projection, word covers, stylesheet watching or observers. The full scan
+// registers every background, and each test then drives the controller's
+// handlers directly from that known projected state.
 function startProtection(env) {
     env.controller.mode = 'ALWAYS_BLUR'
     env.controller._discoverShadowRoots(env.document)

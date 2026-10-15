@@ -86,9 +86,10 @@ test('media changes stay blurred until the new text verdict is committed', () =>
 test('an explicit reveal is still honored during pending analysis', () => {
     const env = createContentHarness()
     const image = env.image()
-    // rememberExplicitReveal needs a media fingerprint, which the src provides.
-    // The user's own reveal is one of the sanctioned reveal paths and outranks
-    // the pending state that otherwise blurs everything.
+    // The reveal is tied to the image's fingerprint (src, srcset, picture sources),
+    // so a later src swap ends it; the src here gives that identity real content.
+    // The user's own reveal is one of the sanctioned reveal paths and outranks the
+    // pending state that otherwise blurs everything.
     image.setAttribute('src', 'safe.jpg')
     env.controller._registerMedia(env.document)
     env.controller.rememberExplicitReveal(image)
@@ -335,9 +336,9 @@ for (const observed of [false, true]) {
 test('early URL notifications cannot apply unread default settings', () => {
     const env = createContentHarness()
     // No settings read has completed: applyCurrentUrlPolicy must return before
-    // resolving a mode, or the DEFAULTS trigger list would be analysed against
-    // (the review's CRITICAL finding). The constructor's fail-closed ALWAYS_BLUR
-    // and the policy generation both stay untouched.
+    // resolving a mode, or the DEFAULTS trigger list would be analysed against. The
+    // constructor's fail-closed ALWAYS_BLUR and the policy generation both stay
+    // untouched.
     const generation = env.controller._policyGeneration
     env.context.location.href = 'https://example.com/danger'
     env.messages.forEach(listener => listener({ target: 'content', type: 'PB_URL_CHANGED' }, {}, () => {}))
@@ -501,9 +502,10 @@ test('viewport-driven stylesheet visibility changes reindex trigger text', async
 
 // A cross-origin iframe on a page with a committed clear verdict. Marking its
 // navigation complete records the loaded fingerprint, so only a later src or
-// srcdoc change can make it pending again. The lifecycle observer is picked by
-// its attributeFilter; that works only because applyProtectionMode never runs
-// here, as the main DOM observer created on enable lists 'sandbox' as well.
+// srcdoc change can make it pending again.
+// The lifecycle observer is found by its attributeFilter: the startup observer
+// has none, and the main DOM observer (which lists 'sandbox' too) is created
+// only by applyProtectionMode, after it.
 function iframeLifecycleFixture() {
     const env = createContentHarness()
     const iframe = env.body.appendChild(new env.context.HTMLIFrameElement())

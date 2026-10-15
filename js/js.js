@@ -1758,10 +1758,10 @@ class Controller {
         return scan.success
     }
 
-    // The document itself can become an editing surface (designMode, a
-    // contenteditable <body>) without a record on any element the observer
-    // watches, so both the mutation handler and the poll re-check it. A flip
-    // changes which backgrounds suppress instead of blur and what is indexed.
+    // designMode can be switched on or off with no mutation record anywhere,
+    // so the poll re-checks document editability as well as the mutation
+    // handler. A flip changes which backgrounds suppress instead of blur, what
+    // is indexed, and what the parent editor handshake is told.
     _refreshEditorState() {
         const editable = PageTextIndex.isEditableDocument(document)
         if (editable === this._editorDocumentEditable) return
@@ -1952,10 +1952,12 @@ class Controller {
         this._clearedUrl = null
     }
 
-    // Retention is the one path that leaves media released while a verdict is
-    // pending, so every condition is a reason to refuse: iframes are governed
-    // by the frame protocol, any mode or override other than a plain ANALYZE
-    // clear verdict, a different URL, or media whose content changed since.
+    // Retention is the only automatic path that leaves media released while a
+    // verdict is pending (reveals are user actions, editor iframes are the
+    // child's responsibility), so every condition is a reason to refuse: iframes
+    // are governed by the frame protocol, any mode or override other than a
+    // plain ANALYZE clear verdict, a different URL, or media whose content
+    // changed since.
     _canRetainClearance(node) {
         if (node.kind === 'iframe' || this.mode !== PROTECTION_MODE.ANALYZE ||
             this._manualBlurAllActive || this._inheritedEditorBlur || this._pageAnalysisResult.shouldBlur ||
@@ -2306,6 +2308,9 @@ class Controller {
 
             candidates.forEach((element) => {
                 if (!(element instanceof Element)) return
+                // Non-rendering elements, and media that already have their own kind: a
+                // media element is never also registered as a background (see the kind
+                // check below).
                 if (element.matches('head, script, style, link, meta, title, img, video, iframe')) return
                 // Read the page's background, not our suppression projection,
                 // including during a partial scan of a changed control.
@@ -2459,9 +2464,9 @@ class Controller {
     }
 
     // A <link> stylesheet arriving from the network changes visibility with no
-    // DOM record; its load event is the only signal. rel is read when the event
-    // fires, not when the link was found, since pages flip preload links to
-    // stylesheet once they have loaded.
+    // DOM record; its load event is the only signal. The listener is attached
+    // once per element, so rel is read when the event fires: it may have been
+    // set or changed after the link was first watched.
     _watchStylesheetLink(element) {
         if (!(element instanceof HTMLLinkElement) || this._backgroundLinks.has(element)) return
         this._backgroundLinks.add(element)
@@ -2640,8 +2645,9 @@ class Controller {
             }
             frameWindow = element.contentWindow
             frameDocument = element.contentDocument
-            // Still loading: the load listener re-arms once the document has
-            // settled. A guard left over from a previous document is stale.
+            // No readable document yet: still loading, or cross-origin (contentDocument
+            // is null). The load listener re-arms once a same-origin document has
+            // settled; a guard left over from a previous document is stale.
             if (!frameWindow || !frameDocument || frameDocument.readyState !== 'complete') {
                 const state = this._iframeNavigationGuards.get(element)
                 if (state?.active && state.active.frameDocument !== frameDocument) {
@@ -2649,8 +2655,8 @@ class Controller {
                 }
                 return
             }
-            // Reading location.href throws for a cross-origin document; the
-            // catch below turns that into "no guard".
+            // Belt and braces: a document whose location cannot be read is treated like
+            // a cross-origin one; the catch below disarms any guard.
             if (typeof frameWindow.location.href !== 'string') throw new Error('Inaccessible iframe location')
         } catch (_) {
             const state = this._iframeNavigationGuards.get(element)
@@ -3082,12 +3088,19 @@ class Controller {
 
             this._registerMedia(element, { subtree: false }).forEach(visual => touched.add(visual))
             this._addOwningMedia(element, touched)
+            // Attributes that can create or move an editing surface beneath a
+            // background: contenteditable and role (textbox/combobox count as controls),
+            // slot/name (reassignment changes the rendered ancestors), class/style
+            // (can toggle contenteditable-like widgets and backgrounds).
             if (['class', 'style', 'contenteditable', 'role', 'slot', 'name'].includes(mutation.attributeName)) {
                 this._invalidateBackgroundAncestors(element, touched)
             }
             if (mutation.attributeName === 'contenteditable') {
                 this._invalidateBackgroundSubtree(element, touched)
             }
+            // A class or style change on the root or body (theme switches) can alter
+            // computed backgrounds anywhere in the page; any other element only affects
+            // its own subtree.
             if (mutation.attributeName === 'class' || mutation.attributeName === 'style') {
                 if (element === document.documentElement || element === document.body) {
                     this._scheduleFullBackgroundRescan()
@@ -3398,8 +3411,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: true })
         return true
 
-    // Every frame in the tab receives the popup's message; only the top
-    // document answers so Chrome delivers exactly one response.
+    // Top-frame answers only. The popup already targets frameId 0; the guard
+    // keeps a sender that omits frameId (the test harness, a future caller) from
+    // receiving whichever frame replies first instead of the top document.
     case 'getAnalysisDebugState':
         if (!isTopFrameContext()) return false
         sendResponse({

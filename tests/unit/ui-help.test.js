@@ -26,8 +26,9 @@ function createElement(tagName = 'div') {
         // data-tooltip text must be rendered with textContent; any innerHTML write is
         // an injection path and fails the test on the spot.
         set innerHTML(value) { throw new Error(`Help must render text safely: ${value}`) },
-        // Connected only through the body chain, so a control removed from the tree
-        // reports false and position() can detect a detached target.
+        // position() dismisses a target whose isConnected is false, so the double has to
+        // report true for anything hanging off body; without it every show() would be
+        // dismissed as detached.
         get isConnected() { return this.connected || !!this.parentElement?.isConnected },
         getAttribute(name) { return attributes.get(name) ?? null },
         setAttribute(name, value) { attributes.set(name, String(value)) },
@@ -128,6 +129,8 @@ test('initializes once after DOM readiness even if the script is loaded twice', 
     ui.load()
     assert.equal(ui.tooltip, undefined)
     ui.document.emit('DOMContentLoaded')
+    // Both loads register a DOMContentLoaded listener and both run initializeHelp; the
+    // #pb-ui-tooltip guard is what keeps body at a single bubble.
     assert.equal(ui.body.children.length, 1)
     assert.equal(ui.tooltip.hidden, true)
 })
@@ -181,8 +184,9 @@ test('help clicks pin and dismiss without consuming clicks on state-changing con
     const ui = createHelp()
     const help = ui.trigger({ help: true })
     const setting = ui.trigger()
-    // The help button sits inside a clickable preference row, so its click must be
-    // stopped before the row's handler can flip the setting.
+    // The script stops help clicks in the capture phase so no containing control's handler
+    // can run. The popup keeps .pb-help beside the setting button, so this is defence for a
+    // page that nests it inside a clickable row.
     const click = ui.emit('click', help)
     assert.equal(click.defaultPrevented, true)
     assert.equal(click.stopped, true)

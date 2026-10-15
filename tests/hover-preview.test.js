@@ -252,8 +252,10 @@ describe('PhobiaBlocker - Hover Preview', () => {
                     hasDataPhobiaBlur: img.hasAttribute('data-phobia-blur'),
                     // The current protection.css only forces pointer-events:none on unregistered
                     // media until the root is marked background-ready, so after the 2 s wait this
-                    // reads the UA default (auto). The assertion below reflects the pre-1.3.1
-                    // `img:not(.noblur) { pointer-events: none }` rule, which no longer exists.
+                    // reads the UA default (auto). The assertion below relied on the ungated rule
+                    // of 47819e1 and earlier (`:root[data-phobiablocker-frame="top"] :is(img, video)
+                    // :not([data-phobiablocker-media]) { pointer-events: none }`), which kept any
+                    // unregistered image non-interactive; the gate was added in f2a1c1f (1.3.0).
                     pointerEvents: window.getComputedStyle(img).pointerEvents
                 }
             })
@@ -267,7 +269,8 @@ describe('PhobiaBlocker - Hover Preview', () => {
 
         // A clear verdict may be deferred while the page is still producing text
         // (MAX_DEFERRED_CLEAR_VERDICTS in js.js), whereas a blur verdict is applied at once,
-        // so this case waits longer than the blur cases before reading the class.
+        // so phobia-noblur can arrive several analysis rounds after phobia-blur would have;
+        // the 3 s wait has to cover those re-runs, not just the first verdict.
         it('safe images with .noblur class should remain interactive', async () => {
             await setExtensionEnabled(browser, true)
             await setBlurAmount(browser, 60)
@@ -462,8 +465,9 @@ describe('PhobiaBlocker - Hover Preview', () => {
             await wait(300)
 
             // Move mouse away from image
-            // (10, 10) lands on the page heading. The hit test only reacts to pointer events,
-            // so the move itself is what triggers hidePreview; nothing is polled.
+            // (10, 10) lands on the page heading. The hit test re-runs on pointer moves, scrolls
+            // and settings changes, never on a timer, so this move is what makes
+            // _updateHoverPreview call hidePreview on the image.
             await page.mouse.move(10, 10)
             await wait(400)
 
@@ -841,7 +845,8 @@ describe('PhobiaBlocker - Hover Preview', () => {
         // unblurAll records every registered element as an explicit reveal and renders it
         // with unblur({ explicit: true }): phobia-permanent-unblur is added and
         // data-phobia-blur is restored to what the page had (absent). An explicit reveal
-        // is the user's action, so unlike an automatic clear it survives later re-blurs.
+        // is the user's action, so it holds through later blur verdicts and settings
+        // changes; only blurAll, or the element showing different content, withdraws it.
         it('images should have permamentUnblur class after unblurAll and data-phobia-blur removed', async () => {
             await setExtensionEnabled(browser, true)
             await setBlurAmount(browser, 60)
@@ -1089,10 +1094,11 @@ describe('PhobiaBlocker - Hover Preview', () => {
         })
 
         // The outer overlay shell has pointer-events:none and only the inner control is
-        // hit-testable; elementsFromPoint still returns the <video> beneath it. Note the
-        // current controller previews a <video> only when it has a poster or loaded frame
-        // data (_canRenderPreview, YouTube's empty hover layer); this fixture's video has
-        // neither, so this case predates that guard.
+        // hit-testable; elementsFromPoint still returns the <video> beneath it. The controller
+        // previews a <video> only when it has a poster or loaded frame data (_canRenderPreview,
+        // added for YouTube's empty hover layer in b55c9ba). This fixture's video has neither,
+        // so the case cannot pass as written even though it was added after that guard
+        // (05ec451); give the video a poster before relying on it.
         it('hovering nested Instagram-style video overlay control should show preview blur on the video', async () => {
             await setExtensionEnabled(browser, true)
             await setBlurAmount(browser, 60)
@@ -1136,8 +1142,10 @@ describe('PhobiaBlocker - Hover Preview', () => {
         // phobia-disabled and _showMediaWhileDisabled writes `filter: none !important` inline
         // on every media element to cancel the stylesheet blur. blurAll still registers the
         // media and VisualNode.blur() overwrites that inline filter, so the manual command
-        // works on a disabled page. Hover preview does not: _updateHoverPreview returns early
-        // in DISABLED mode, so the three preview cases below describe pre-1.3.1 behaviour.
+        // works on a disabled page. Hover preview does not: since the hit-test rewrite
+        // (b55c9ba, 1.3.0) _updateHoverPreview returns early in DISABLED mode, so the two
+        // cases below that expect a reduced blur on hover cannot pass, and the move-away
+        // case passes only because nothing changes.
 
         // Fail-closed is not at stake here (blurAll only ever adds blur). The regression
         // guarded is the opposite one: a disabled page silently ignoring the user's

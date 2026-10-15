@@ -44,8 +44,9 @@ test('a URL change before the settings read cannot analyse the page with the def
     env.context.location.href = 'https://example.com/safe/normalized'
 
     // Act
-    // Only the startup observer is connected; its handler finds shadow roots and
-    // never re-resolves the URL policy, so the default trigger list is never used.
+    // The controller's main observer is not installed yet: this record reaches only
+    // the startup observer (shadow-root discovery) and the iframe lifecycle observer,
+    // and neither re-resolves the URL policy, so DEFAULTS are never analysed against.
     env.dispatchMutations([childListRecord(env.body, image)])
     await flushAnalysis(env)
 

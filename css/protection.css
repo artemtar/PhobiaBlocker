@@ -1,6 +1,8 @@
-/* Injected at document_start into every frame (manifest.json). Everything here is the */
-/* state a page has before any script runs, so the defaults must be the fail-closed ones: */
-/* media blurred, backgrounds hidden, trigger words covered. Scripts only ever relax them. */
+/* Injected at document_start into every frame (manifest.json), so these defaults are the */
+/* fail-closed state a page has before any script runs: media blurred and backgrounds hidden. */
+/* The word-cover rule styles the spans early-blur.js and page-text-index.js wrap words in. */
+/* Scripts release any of this only after a committed clear verdict, DISABLED mode or an */
+/* explicit user action; everything else they do re-asserts or strengthens it. */
 /* Legacy name of the blur variable; shared-policy.js reads it as the fallback behind the */
 /* namespaced --phobiablocker-blurValueAmount. Both are overwritten inline on <html> by */
 /* early-blur.js and js.js once settings are known; nothing in this sheet reads it directly. */
@@ -22,7 +24,8 @@
  * Once the document is marked ready the page owns pointer events again, so
  * unregistered media can never be left permanently unclickable.
  */
-/* data-phobiablocker-frame is written by early-blur.js ("top" or "sub"); */
+/* data-phobiablocker-frame is written by early-blur.js ("top" or "sub") and re-asserted by */
+/* js.js because pages rewrite <html> attributes while booting; */
 /* data-phobiablocker-media marks elements the controller has registered. Iframes are */
 /* left out on purpose so embedded players and forms stay usable while blurred; */
 /* tests/unit/protection-css.test.js fails if an iframe rule ever disables pointer events. */
@@ -36,6 +39,9 @@
 /* declaration here without !important: a page's own transition rule may replace it, which */
 /* changes the easing but never whether the blur applies. */
 :root:not(.phobia-disabled) :is(img, video, iframe)[data-phobia-blur] {
+    /* pointer-events:auto overrides a page's own pointer-events:none on the media so the hover */
+    /* preview and the context-menu "Unblur" can reach it; the startup rule above already skips */
+    /* registered media. */
     pointer-events: auto !important;
     cursor: pointer !important;
     transition: filter 0.2s ease;
@@ -43,8 +49,8 @@
 
 /* CSS background images cannot be blurred until the controller has found them with a */
 /* getComputedStyle sweep, so until <html> is marked background-ready they are all hidden. */
-/* The three selectors cover the root, body and every descendant because `:root *` alone */
-/* would not reach <html> and <body> themselves. */
+/* The three selectors cover <html> itself, <body> and everything inside it; a bare `:root *` */
+/* would skip <html>, which can carry a background image too. */
 :root:not([data-phobiablocker-background-ready]):not([data-phobiablocker-background-scanning]),
 :root:not([data-phobiablocker-background-ready]):not([data-phobiablocker-background-scanning]) body,
 :root:not([data-phobiablocker-background-ready]):not([data-phobiablocker-background-scanning]) body * {
@@ -82,6 +88,8 @@
 /* is set inline per cover to the text's computed colour so the bar reads as redaction; the */
 /* stripes stay visible on both light and dark text. js/js.js duplicates this block in */
 /* SHADOW_PROTECTION_CSS for shadow roots, which this document sheet cannot reach. */
+/* No .phobia-disabled exception here: in DISABLED mode the controller unwraps the spans, so */
+/* nothing is left for this rule to match. */
 .phobia-word-cover {
     color: transparent !important;
     /* Pages that paint gradient text set -webkit-text-fill-color, which overrides color for */

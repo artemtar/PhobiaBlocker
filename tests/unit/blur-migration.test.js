@@ -34,8 +34,8 @@ function browserEvent() {
     }
 }
 
-// Every synced key present and valid, so the only write the migration can make is
-// the slider value itself.
+// Every synced key present and valid: the install path's initializeMissingDefaults
+// then writes nothing, so any sync write these suites see comes from the migration.
 const fullyStoredSettings = Object.freeze({
     targetWords: ['spider'],
     phobiaBlockerEnabled: true,

@@ -11,8 +11,9 @@ const test = require('node:test')
 const { inspect } = require('node:util')
 const { loadRelease, uploadToWebStore } = require('../../scripts/upload-webstore.cjs')
 
-// 32 letters a-p is Chrome's extension ID alphabet; the publisher ID uses every
-// character class the script allows in the URL path.
+// 32 letters a-p is Chrome's extension ID alphabet; the publisher ID carries the hyphen,
+// underscore and digits the script's path whitelist allows, so an over-strict pattern
+// would show up here.
 const extensionId = 'abcdefghijklmnopabcdefghijklmnop'
 const publisherId = 'test-publisher_123'
 const itemName = `publishers/${publisherId}/items/${extensionId}`
@@ -98,9 +99,9 @@ test('uploads the archive as an authenticated ZIP and leaves the item as a draft
     assert.deepEqual(upload.body, config.archive)
 })
 
-// The store may answer the upload with IN_PROGRESS and finish processing later;
-// the result then only appears through fetchStatus. Every recorded sleep must be the
-// injected interval, which shows no other timer path exists.
+// The store may answer the upload with IN_PROGRESS and finish processing later; the
+// result then only appears through fetchStatus. Every recorded sleep must be the
+// injected interval, so the wait comes from pollIntervalMs, not a hard-coded delay.
 test('waits for asynchronous upload success before submitting for review', async () => {
     const fake = server(token, uploading, status('IN_PROGRESS'), status('SUCCEEDED'), published('PENDING_REVIEW'))
     assert.deepEqual(await uploadToWebStore({ ...config, submitForReview: true }, fake.dependencies), {
@@ -340,8 +341,8 @@ test('loadRelease rejects a matching checksum when the manifest version differs'
     assert.throws(() => loadRelease(fixture.directory), /manifest.*version/i)
 })
 
-// The archive name is derived from the version rather than read from release.json, so
-// a '../' name fails the metadata check before any file outside the directory is read.
+// The archive name in release.json must equal the one derived from the version, so a
+// '../' name fails the metadata check before any file outside the directory is read.
 test('loadRelease refuses metadata that points to a valid archive outside its directory', t => {
     const fixture = releaseFixture(t)
     fs.renameSync(fixture.archivePath, path.join(fixture.root, fixture.metadata.archive))

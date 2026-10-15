@@ -19,9 +19,11 @@ function fixture() {
     c._analysisPending = false
     c._pageAnalysisResult = { shouldBlur: false, matchedWords: [], matchedInputWords: [] }
     c.settings.keepCrossOriginIframesBlurred = true
-    // Registers an iframe whose declared src counts as navigated to, so it takes
-    // the cross-origin protocol path. contentWindow is a distinct object because
-    // a ticket is matched by event.source identity, never by URL.
+    // Registers a cross-origin iframe (its src origin differs from the page, so
+    // isCrossOriginIframe sends it down the frame protocol) and records that src as
+    // the loaded document, so no navigation is pending when a ticket arrives.
+    // contentWindow is a distinct object because a ticket is matched by
+    // event.source identity, never by URL.
     const frame = (source) => {
         const element = env.body.appendChild(new env.context.HTMLIFrameElement())
         element.setAttribute('src', source)

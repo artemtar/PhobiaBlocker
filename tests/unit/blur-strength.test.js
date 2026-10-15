@@ -1,5 +1,5 @@
 // computeBlurPixels maps the 0-100 slider onto blur pixels with the 1.3.1 curve
-// 101^(v/100) - 1: about 2px at 25, 9px at 50, 32px at 75 and exactly 100px at 100.
+// 101^(v/100) - 1: about 2px at 25, 9px at 50, 31px at 75 and exactly 100px at 100.
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')

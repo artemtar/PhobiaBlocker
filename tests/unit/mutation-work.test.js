@@ -6,10 +6,10 @@ const assert = require('node:assert/strict')
 const test = require('node:test')
 const { createContentHarness } = require('./helpers/content-harness')
 
-// Two backgrounds with 200 children each, so an unnecessary editing-surface walk
-// is visible in the counters, plus a contenteditable editor the user types into.
-// ALWAYS_BLUR keeps vocabulary changes from scheduling analysis. The full scan
-// registers both backgrounds as blurred before any counting starts.
+// Two backgrounds with 200 children each, so an editing-surface walk over either is
+// the expensive step the counters catch, plus a contenteditable editor the user
+// types into. ALWAYS_BLUR keeps vocabulary changes from scheduling analysis. The
+// full scan registers both backgrounds as blurred before any counting starts.
 function backgroundFixture() {
     const env = createContentHarness()
     const ancestor = env.body.appendChild(env.document.createElement('section'))

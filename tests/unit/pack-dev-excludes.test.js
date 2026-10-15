@@ -100,8 +100,8 @@ test('pack-dev.sh copies only the runtime set pack.sh ships and rewrites the man
 function pathWithoutJq(t) {
     const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'phobiablocker-no-jq-'))
     t.after(() => fs.rmSync(bin, { recursive: true, force: true }))
-    // pack-dev.sh exits at its jq check before any of these run; they are linked in so
-    // the failure observed is the jq message and not a missing grep or cp.
+    // Models a host that has coreutils but no jq. With the guard in place none of these
+    // run; without it the build would get as far as the jq invocation itself.
     for (const tool of ['grep', 'rm', 'mkdir', 'cp']) {
         const lookup = spawnSync('which', [tool], { encoding: 'utf8' })
         assert.equal(lookup.status, 0, `${tool} must be available to build the fixture PATH`)
@@ -138,7 +138,8 @@ function createIgnoreRepo(t) {
 }
 
 // core.excludesFile=/dev/null neutralises the user's global ignore file on top of the
-// throwaway repo; --no-index lets paths that do not exist in the fixture be tested.
+// throwaway repo; --no-index keeps tracked paths in scope (check-ignore skips them by
+// default), so the answer depends on the rules alone.
 // Exit 1 means "not ignored"; any other non-zero status is a git error, not an answer.
 function isIgnored(dir, file) {
     const result = spawnSync('git', ['-c', 'core.excludesFile=/dev/null', 'check-ignore', '-q', '--no-index', '--', file], { cwd: dir, encoding: 'utf8' })

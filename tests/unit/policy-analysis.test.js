@@ -1,13 +1,15 @@
 // Runs the real offscreen analyser, with the bundled compromise.js, and the shared
 // site-rule policy. Analysis is exercised through the PB_ANALYZE_SCOPES message the
-// service worker would send, so the verdict shape is the one frames receive.
+// service worker sends, so the per-scope verdict shape asserted here is the one the
+// worker validates before relaying a verdict to a frame.
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const test = require('node:test')
 const vm = require('node:vm')
 
-// Compiled once; compromise.min.js is large and the context is only built once.
+// Pre-compiled so loadAnalysis can run them in any number of fresh contexts;
+// today one context serves every test.
 const scripts = ['compromise.min.js', 'shared-policy.js', 'offscreen.js'].map(file =>
     new vm.Script(fs.readFileSync(path.join(__dirname, '../../js', file), 'utf8'), {
         filename: file,
@@ -31,9 +33,10 @@ function loadAnalysis() {
 
     return {
         policy: context.PhobiaBlockerPolicy,
-        // The scope id (7) is arbitrary and is echoed back; the worker matches
-        // replies to frames by it. The listener answers synchronously, so a missing
-        // response means it threw or returned early rather than that it is async.
+        // The scope id (7) is arbitrary and is echoed back; the worker matches replies to
+        // frames by it. The listener answers synchronously or ignores the message, so a
+        // missing response means the request was not accepted, never that the answer is
+        // still pending.
         analyze(targetWords, words) {
             let response
             onMessage({
@@ -53,8 +56,8 @@ function loadAnalysis() {
 const { policy, analyze } = loadAnalysis()
 
 // Every word validateTargetWord accepts must be matchable on a page. matchedWords
-// is not pinned because normalize() may fold the accent of café; the compounds and
-// the kanji take the literal path, where the raw token is the match.
+// is not pinned because normalize() folds café to 'cafe'; the compounds and the
+// kanji take the literal path, where the raw token is the match.
 for (const word of ['blood-red', 'spider-man', 'near-death', 'a-b-c', 'café', '火山灰']) {
     test(`accepted trigger ${word} matches its exact page token`, () => {
         assert.equal(policy.validateTargetWord(word).valid, true)
@@ -136,8 +139,9 @@ test('literal compounds and normal inflections coexist in one analysis', () => {
 })
 
 // matchedWords lists the NLP matches in page order and then the literal compound;
-// matchedInputWords follows page order throughout. '---' has no letters and is
-// dropped before analysis, and near-death is an unrelated compound.
+// matchedInputWords follows page order throughout. '---' passes the hyphen-and-letter
+// token filter and compromise keeps it, so it fills a slot that can never match;
+// near-death is an unrelated compound.
 test('normalization keeps each match associated with its original page word', () => {
     const result = analyze(
         ['fall', 'spider', 'mouse', 'spider-man'],
@@ -274,8 +278,8 @@ test('directory rules preserve blacklist precedence over whitelist and global di
     }, 'https://example.com/gallery-other'), 'ANALYZE')
 })
 
-// Rules are stored as typed; matching serializes the rule through URL so raw
-// Unicode and spaces compare against the percent-encoded pathname of the page.
+// The stored rule keeps the path's raw Unicode and spaces; matching serializes it
+// through URL so they compare against the percent-encoded pathname of the page.
 // Escape hex case is unified without decoding, so %c3%a9 and %C3%A9 are one path.
 for (const [rule, pathname] of [
     ['example.com/café', '/caf%C3%A9'],
@@ -368,9 +372,10 @@ test('URL-encoded site paths preserve protection-mode precedence', () => {
 })
 
 // Removing trailing slashes can expose trailing whitespace, which a later trim()
-// (on save, on reload) would silently eat and widen the rule to its parent path.
-// parseSiteRule percent-encodes only that trailing run; tabs and newlines are
-// dropped as browsers do. Re-parsing the normalized form must be a no-op.
+// (on save, on reload) would silently eat, turning the rule into one for the
+// neighbouring path without the space. parseSiteRule percent-encodes only that
+// trailing run; tabs and newlines are dropped as browsers do. Re-parsing the
+// normalized form must be a no-op.
 for (const [rule, normalized, pathname, siblingPath] of [
     ['example.com/travel photos /', 'example.com/travel photos%20', '/travel%20photos%20', '/travel%20photos'],
     ['https://example.com/café  ///', 'example.com/café%20%20', '/caf%C3%A9%20%20', '/caf%C3%A9'],

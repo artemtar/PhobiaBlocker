@@ -10,7 +10,6 @@ const vm = require('node:vm')
 
 const repositoryRoot = path.resolve(__dirname, '../..')
 const popupHtml = fs.readFileSync(path.join(repositoryRoot, 'popup.html'), 'utf8')
-// What storage holds before the popup opens.
 const savedWords = ['spider', 'clown', 'mice']
 // setImmediate runs after every pending microtask, so one settle() lets a whole
 // storage callback -> promise -> render chain finish before the next assertion.
@@ -72,8 +71,8 @@ function createPopup({ failStatusRead = false, deferWrites = false, url = 'https
         element.disabled = /\bdisabled\b/.test(tag)
         elements.set(id, element)
     }
-    // Defensive only: all six ids exist in popup.html, so this never runs today.
-    // It would mask an id rename that crashes the real popup (review finding 74).
+    // Defensive only: all six ids exist in popup.html, so this never runs today,
+    // and it would mask an id rename that crashes the real popup.
     for (const id of ['mode-smart', 'mode-always', 'mode-off', 'preview-toggle', 'cover-toggle', 'site-rule-select']) {
         if (!elements.has(id)) elements.set(id, createElement())
     }
@@ -99,6 +98,8 @@ function createPopup({ failStatusRead = false, deferWrites = false, url = 'https
         runtime.lastError = null
     }
     const context = vm.createContext({
+        // popup.js logs each failure these tests provoke with console.error; the stub
+        // keeps the run quiet.
         console: { error() {} },
         URL,
         setTimeout,
@@ -113,6 +114,8 @@ function createPopup({ failStatusRead = false, deferWrites = false, url = 'https
         },
         chrome: {
             runtime,
+            // One tab at `url`; getTriggeredWords answers at once with no words, so the 3 s
+            // analysis timeout in queryActiveTabAnalysis is cleared before it could fire.
             tabs: {
                 query(query, callback) { callback([{ id: 1, url }]) },
                 sendMessage(...args) { args.at(-1)({ words: [] }) },

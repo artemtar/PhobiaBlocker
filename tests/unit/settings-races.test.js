@@ -106,6 +106,9 @@ function createSettings({ initial = {}, hash = '' } = {}) {
         runtime.lastError = null
     }
     const context = vm.createContext({
+        // settings.js logs every failed read, refresh and write with console.error, and
+        // most of this suite triggers those on purpose; silenced so expected failures do
+        // not bury a real one.
         console: { error() {} },
         URL,
         setTimeout,

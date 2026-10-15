@@ -9,9 +9,8 @@ const { createContentHarness } = require('./helpers/content-harness')
 const clean = { shouldBlur: false, matchedWords: [], matchedInputWords: [] }
 const ANALYSIS_DEBOUNCE_MS = 200
 
-// Reaches a committed clear verdict through the real settings read. The first
-// verdict is always deferred once (the word-count sentinel), and the debounced
-// re-analysis commits it because the page is complete and its text unchanged.
+// Reaches a committed clear verdict through the real settings read rather than
+// hand-built state; see the deferral note below for why the timer runs once.
 async function clearedPage() {
     const env = createContentHarness()
     env.document.readyState = 'complete'

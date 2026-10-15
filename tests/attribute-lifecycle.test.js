@@ -44,8 +44,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
         browser = await launchBrowserWithExtension()
         await clearExtensionStorage(browser)
         await setExtensionEnabled(browser, true)
-        // 60 is computeBlurPixels(60), about 14.94px on the current curve; the suite only
-        // needs a clearly non-zero radius so computed-filter reads can tell blur from none.
+        // Slider value 60 renders as computeBlurPixels(60), about 14.94px on the current curve;
+        // the suite only needs a clearly non-zero radius so computed-filter reads can tell blur
+        // from none.
         await setBlurAmount(browser, 60)
         page = await browser.newPage()
         page.setDefaultTimeout(5000)
@@ -230,8 +231,8 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
     describe('No premature .blur class before analysis (flash prevention)', () => {
         // Models an older build that injected a <style id="phobiablocker-early-blur"> from
         // script. Today protection.css arrives through the manifest "css" entry and
-        // early-blur.js writes only root attributes and CSS variables, so the observer below
-        // never sees such an element and this case fails on the current code.
+        // early-blur.js inserts no stylesheet (it only projects onto <html> and wraps trigger
+        // words), so the observer below never sees such an element and this case fails.
         it('CSS flash prevention: #phobiablocker-early-blur style is injected on page load', async () => {
             await setPhobiaWords(browser, ['spider'])
 
@@ -460,8 +461,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                 img.src = 'https://via.placeholder.com/300x200/11aa11/ffffff?text=Safe+Reloaded'
             })
 
-            // Nothing to wait for by class: the expectation is that nothing changes, so give
-            // the 200 ms analysis debounce and the image's load events ample time to run first.
+            // Nothing to wait for by class: the expectation is that nothing changes. A src change
+            // schedules no analysis; the wait gives the attribute record and the image's load events
+            // time to re-apply the clear verdict, and would expose a re-analysis if one were wrongly run.
             await wait(2000)
 
             const after = await page.evaluate(() => {
@@ -637,8 +639,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
     })
 
     // "BgImageNode" is the former name of what is now a VisualNode of kind 'background'.
-    // Background nodes blur through an inline filter rather than the img/video/iframe
-    // stylesheet rule, so the reveal paths are checked on them separately.
+    // The stylesheet's unconditional 40px rule covers only img/video/iframe; a background div
+    // is held by VisualNode's inline filter and the [data-phobia-blur]-keyed fallback rule,
+    // so its reveal paths are checked separately from element media.
     describe('unblurAll covers BgImageNode (background-image div) elements', () => {
         it('BgImageNode div should have phobia-blur class after detection', async () => {
             await setPhobiaWords(browser, ['snake'])
@@ -1033,7 +1036,10 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
 
     // The current handler answers from the committed verdict: words are hidden only in
     // DISABLED mode or when shouldBlur is false, and counts come from the text index. Three
-    // cases below still expect the rendered state to matter and fail on the current code.
+    // cases below still expect the rendered state to matter and contradict that handler.
+    // In this harness none of them reach it: without the "tabs" permission tab.url is
+    // undefined for file:// pages, so queryTriggeredWords resolves [] (see test-utils.js);
+    // the first case therefore fails and the three 'returns empty' cases pass vacuously.
     describe('getTriggeredWords message', () => {
         it('returns detected words with counts when images are blurred', async () => {
             await setBlurAmount(browser, 60)
@@ -1148,6 +1154,10 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                             reject(new Error(chrome.runtime.lastError.message))
                             return
                         }
+                        // Trap: tab.url is only populated when the extension has the "tabs" permission or host
+                        // permissions for the page; the manifest grants http(s) only, so for file:// test pages
+                        // tab.url is undefined, this rejects with 'No tab found', and every case that calls
+                        // waitForPageAnalysis fails here before the content script is asked anything.
                         const tab = tabs.find(tab => tab.url === targetUrl)
                         if (!tab) {
                             reject(new Error(`No tab found for analysis debug query: ${targetUrl}`))
@@ -1325,9 +1335,10 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             await page.evaluateOnNewDocument(() => {
                 window.__phobiaSafeWordBlurredFrames = 0
 
-                // '0px 0px 7px' is the text-shadow signature of the pending-text mask these
-                // probes were written to catch; the current build never masks text, it only
-                // covers matched words, so any hit here means safe text was obscured.
+                // The probe counts frames in which #custom-text is obscured by a filter, a blurred
+                // text-shadow or a transparent text fill. No committed build has ever masked pending
+                // text this way (git log -S finds no such text-shadow in js/ or css/); the check is a
+                // regression guard for the rule that only matched words are covered, never masked.
                 const isCssBlurred = (element) => {
                     if (!element) return false
                     const style = window.getComputedStyle(element)
@@ -1410,8 +1421,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
 
         // word-cover.html's inline script inserts a trigger word while the parser is still
         // running and records, from its own MutationObserver, whether it was already covered.
-        // Observers are notified in creation order, so the document_start shim's observer
-        // covers the word before the page's observer looks; this checks the shim, not js.js.
+        // Blink delivers observer callbacks in creation order, so once the shim's settings read
+        // has resolved its document_start observer covers the word before the page's observer
+        // looks; the case checks the shim, not js.js, and depends on that read beating the parser.
         it('covers parser-inserted target words during the early mutation pass', async () => {
             await setPhobiaWords(browser, ['spider'])
 
@@ -1812,9 +1824,10 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             assert.ok(coverCount > 0, 'toggle command should re-cover words when enabling')
         })
 
-        // Synthetic CDP key events reach the page but not Chrome's commands API, so this
-        // exercises the content script's own keydown listener (which forwards toggleWordCover
-        // to the service worker), not the manifest command binding.
+        // The content script's own keydown listener (js.js) forwards toggleWordCover to the
+        // worker, so this case does not depend on chrome.commands receiving the synthetic press.
+        // If Chrome also delivers the manifest command, the worker's KEYBOARD_TOGGLE_DEBOUNCE_MS
+        // reports the current value instead of toggling back, so the outcome is the same.
         it('Alt+Shift+W toggles word covers off when the page has focus', async () => {
             await setPhobiaWords(browser, ['spider'])
 
@@ -1984,9 +1997,11 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                 `blurAll should apply a non-zero blur amount even without stored blurValueAmount, got ${blurAfter}px`)
         })
 
-        // blurAll sets _manualBlurAllActive and _applyResultToNode blurs while that flag is set
-        // regardless of the verdict. The 3.5 s wait outlasts the debounce and the deferred-clear
-        // retries, so a clear verdict has had every chance to be applied and was refused.
+        // blurAll sets _manualBlurAllActive. While it is set _handleMutations skips
+        // _handleVocabularyChange, so the appended text schedules no analysis at all, and
+        // _applyResultToNode blurs regardless of the stored verdict. The 3.5 s wait outlasts the
+        // 200 ms debounce and the deferred-clear retries, so if an analysis were wrongly scheduled
+        // its clear verdict would have landed by now; the title's "later analysis" never runs.
         it('blurAll should stay blurred when later clean-page analysis finishes', async () => {
             await clearExtensionStorage(browser)
             await setExtensionEnabled(browser, true)

@@ -61,8 +61,8 @@ async function beginAnalysisRound(env) {
         if (message.type !== 'PB_ANALYZE_WORDS') return Promise.resolve({ ok: true })
         return new Promise(resolve => { resolveAnalysis = resolve })
     }
-    // 200 ms is ANALYSIS_DEBOUNCE_MS. runTimers would await the callback and
-    // deadlock on the held reply, so the timer is taken and started by hand.
+    // 200 ms is ANALYSIS_DEBOUNCE_MS; the timer is taken and started by hand for
+    // the reason given above.
     const [id, analysisTimer] = [...env.timers].find(([, timer]) => timer.delay === 200) || []
     assert.ok(analysisTimer, 'a debounced analysis must be scheduled')
     env.timers.delete(id)

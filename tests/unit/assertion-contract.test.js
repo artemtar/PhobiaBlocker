@@ -20,8 +20,9 @@ async function loadBrowserCase(filename, name, page, helpers = {}, globals = {})
         ...helpers,
     }, { get: (target, key) => target[key] || noop })
     const source = fs.readFileSync(path.join(__dirname, '..', filename), 'utf8')
-    // describe runs at once so `it` only collects cases; after() is dropped so no
-    // browser is closed, and setTimeout fires immediately so a case never waits.
+    // describe runs at once so `it` only collects cases; before() hooks are kept
+    // and run ahead of the case, after() is dropped so no browser is closed, and
+    // setTimeout fires immediately so a case never waits.
     vm.runInNewContext(source, {
         require: name => name === 'node:test' ? {
             describe: (_name, callback) => callback(),

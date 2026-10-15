@@ -14,8 +14,8 @@ const DISCOVERY_YIELD_MS = 16
 // clock by `readCost` ms; performance.now reads that clock (the harness default is
 // frozen), so the 4 ms time budget is consumed purely by shadowRoot reads.
 // _startStylesheetPolling arms the interval that schedules discovery and poll()
-// fires it; wholePageQueries counts querySelectorAll('*'), the signature of a
-// collectDomRoots sweep over the document.
+// fires it; wholePageQueries counts document.querySelectorAll('*'), which a
+// collectDomRoots sweep (or a full background scan, never run here) would issue.
 function pollingFixture(size = 1000, readCost = 0) {
     const env = createContentHarness()
     const visited = []
@@ -180,9 +180,11 @@ test('a document stylesheet edit during shadow discovery still refreshes visible
     assert.equal(index.getTokenCount('spider'), 1)
 })
 
-// Ten elements, so discovery finishes in one slice. The root's own styleSheets must
-// be part of the baseline taken at registration; otherwise a rule inserted later
-// would not read as a change and the text it reveals would never be indexed.
+// Ten elements, so discovery finishes in one slice. The baseline taken at
+// registration must include the root's own styleSheets as they are then: the rule
+// inserted afterwards changes that sheet's rule count, and the next poll must read
+// the difference and re-index the text it reveals (the previous test pins the
+// other side: no rebuild when nothing changed).
 test('a stylesheet edit in a newly initialized root is detected on its next poll', async () => {
     const env = pollingFixture(10)
     const host = env.elements.at(-1)
@@ -291,10 +293,11 @@ test('polling repairs protection CSS in a known shadow root without a whole-page
 })
 
 // The paused TreeWalker's currentNode is the last element the slice visited. If the
-// page removes it, a walker that kept going would traverse the detached subtree (a
-// retained copy of the page, here 500 instrumented spans) and never reach the rest of
-// the document. The slice must detect the detached cursor, give up that walk, and the
-// next poll must start a fresh one that reaches the host at the end.
+// page removes it, a walker that kept going would traverse that detached subtree
+// (which the page may keep growing; here 500 instrumented spans) and, with no path
+// back to the root, never reach the rest of the document. The slice must detect the
+// detached cursor, give up that walk, and the next poll must start a fresh one that
+// reaches the host at the end.
 test('removing a paused discovery cursor releases that walk and the next poll reaches later hosts', async () => {
     const env = pollingFixture()
     const host = env.elements.at(-1)

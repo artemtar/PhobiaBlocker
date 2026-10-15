@@ -6,9 +6,9 @@ set -euo pipefail
 
 echo "Building DEV version of PhobiaBlur..."
 
-# Checked first, before anything is deleted or created: without jq the manifest
-# rewrite below would truncate build/dev/manifest.json to an empty file and the build
-# would still report success.
+# Checked first, before anything is deleted or created. Without it a missing jq would
+# still leave build/dev with an empty manifest.json: the redirect truncates the file
+# before bash finds the command missing, and set -e then aborts the half-built copy.
 if ! command -v jq >/dev/null 2>&1; then
     echo "Error: jq is required to generate the dev manifest" >&2
     exit 1

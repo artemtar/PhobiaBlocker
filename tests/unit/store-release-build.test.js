@@ -30,8 +30,9 @@ function fixture(t, version = '1.3.1') {
     return cwd
 }
 
-// Run the way the CI package job runs it: a separate Node process with the fixture
-// as cwd, and the version as an argv element that never passes through a shell.
+// A separate Node process with the fixture as cwd. spawnSync without `shell` hands the
+// version to Node as a bare argv element, like the CI step's quoted "$RELEASE_VERSION":
+// in neither case can the string be parsed as shell code.
 function run(cwd, ...args) {
     return spawnSync(process.execPath, [script, ...args], { cwd, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
 }
@@ -93,9 +94,9 @@ test('release version validation rejects malformed and out-of-range inputs witho
     const cwd = fixture(t)
     const originalManifest = fs.readFileSync(path.join(cwd, 'manifest.json'), 'utf8')
     const originalPackage = fs.readFileSync(path.join(cwd, 'package.json'), 'utf8')
-    // One input per rule: component count (npm needs exactly three), leading zeroes,
-    // Chrome's 65535 ceiling, all-zero, prefix/suffix text, trailing whitespace and a
-    // shell metacharacter payload.
+    // Grouped by rule, with one input per component position where the position matters:
+    // component count (npm needs exactly three), leading zeroes, Chrome's 65535 ceiling,
+    // all-zero, prefix/suffix text, trailing whitespace and a shell metacharacter payload.
     for (const version of ['1', '1.3', '1.3.2.0', '01.3.2', '1.03.2', '1.3.02', '65536.0.0', '1.65536.0', '1.0.65536', '0.0.0', 'v1.3.2', '1.3.2-beta', '1.3.2\n', '1.3.2; touch injected']) {
         assertFailed(run(cwd, version), /version/i)
     }
@@ -103,8 +104,9 @@ test('release version validation rejects malformed and out-of-range inputs witho
     assert.equal(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8'), originalPackage)
     // The `touch` payload could only have run if some step handed the version to a shell.
     assert.ok(!fs.existsSync(path.join(cwd, 'injected')))
-    // release.json is the only thing the upload job reads, so its absence is the proof
-    // that a failed run left nothing to upload. Later tests repeat this check.
+    // release.json is the upload job's entry point to the artifact (loadRelease reads
+    // nothing before it), so its absence proves a failed run left nothing to upload.
+    // Later tests repeat this check.
     assert.ok(!fs.existsSync(path.join(cwd, 'build/store-release/release.json')))
 })
 
@@ -185,6 +187,8 @@ function releaseWorkflowJobs() {
     const jobs = new Map()
     let current = null
     for (const line of text.slice(jobsStart + '\njobs:\n'.length).split('\n')) {
+        // Exactly two-space job indentation is assumed; a reformatted file yields no jobs and
+        // fails at jobRunning's count check rather than passing silently.
         const header = line.match(/^ {2}([\w-]+):\s*$/)
         if (header) {
             current = []
@@ -217,6 +221,8 @@ test('the release ZIP is packaged in a job that never installs or runs npm packa
     const jobs = releaseWorkflowJobs()
     const [, packageLines] = jobRunning(jobs, 'prepare-store-release.cjs')
 
+    // Comment lines count too: nothing in the package job may even mention npm, npx or
+    // node_modules, so a future `run:` line cannot hide behind a comment.
     const thirdPartyCode = packageLines.filter(line => /\bnpm\b|\bnpx\b|node_modules/.test(line))
 
     assert.deepEqual(thirdPartyCode, [], 'the packaging job must build from the pristine checkout with Node built-ins only')

@@ -1,8 +1,9 @@
 // Historical Puppeteer end-to-end suite, kept for reference. It is not a release gate:
 // root `npm test` fails on purpose and the gate is `npm run test:unit` (tests/README.md).
-// Pages load over file://, whose URL has no hostname, so no site rule can ever match here
-// and the cases below only prove storage round-trips. Matching and mode precedence are
-// covered by tests/unit/policy-analysis.test.js against parseSiteRule / matchesSiteRule.
+// Pages load over file://, whose URL has no hostname, so no site rule can ever match here;
+// the cases below prove storage round-trips and the global toggles, never a rule.
+// Matching and mode precedence are covered by tests/unit/policy-analysis.test.js
+// against parseSiteRule / matchesSiteRule.
 const { describe, it, before, beforeEach, after, afterEach } = require('node:test')
 const assert = require('node:assert')
 const {
@@ -456,9 +457,9 @@ describe('PhobiaBlocker - Site Rules (Whitelist/Blacklist)', () => {
             await wait(500)
 
             // Simulate toggle in popup by changing storage
-            // This is faithful: the popup's own switch writes blurIsAlwaysOn to storage and
-            // the content script reacts to storage.onChanged, so the popup page being open
-            // adds nothing to the mechanism.
+            // Close to the real mechanism: the popup's "Always blur" mode tile writes
+            // blurIsAlwaysOn (together with phobiaBlockerEnabled) to storage and the content
+            // script reacts to storage.onChanged, so the popup page being open adds nothing.
             await setBlurAlwaysOn(browser, true)
             await wait(500)
 

@@ -7,8 +7,8 @@
 set -euo pipefail
 
 # Read current version from manifest.json
-# grep rather than jq so this runs on a bare runner; the pattern depends on the
-# manifest's exact `"version": "x"` spacing.
+# The pattern depends on the manifest's exact `"version": "x"` spacing; with pipefail
+# a non-match aborts here instead of continuing with an empty version.
 CURRENT_VERSION=$(grep -o '"version": "[^"]*"' manifest.json | grep -o '[0-9.]*')
 echo "Current version: $CURRENT_VERSION"
 
@@ -28,6 +28,8 @@ if [[ $# -eq 1 ]]; then
     fi
 else
     # Split version into components
+    # The implicit bump assumes X.Y.Z: a fourth component is dropped and fewer than three
+    # aborts under set -u. The CI release always passes an explicit version.
     IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
     MAJOR=${VERSION_PARTS[0]}
     MINOR=${VERSION_PARTS[1]}
@@ -58,7 +60,8 @@ echo "Creating $ZIP_FILE..."
 
 # The archive is assembled in a temp directory beside its destination so the final mv
 # is a rename on the same filesystem: a partial ZIP never appears under the final name.
-# pwd -P resolves symlinks so both paths really are on the same volume.
+# pwd -P records the physical path so the destination that is printed and moved to does
+# not go through a symlinked cwd.
 OUTPUT_DIR=$(pwd -P)
 TMP_DIR=$(mktemp -d "${OUTPUT_DIR}/.phobiablocker-pack.XXXXXX")
 TMP_ZIP="${TMP_DIR}/${ZIP_FILE}"
@@ -91,8 +94,8 @@ zip -r "$TMP_ZIP" "${PACKAGE_FILES[@]}"
 # before it is moved into place.
 unzip -t "$TMP_ZIP"
 
-# Confirms the archive carries the bumped manifest. This catches a sed that matched
-# nothing, for example on a manifest whose spacing differs from the grep pattern.
+# Confirms the archive carries the bumped manifest, independent of whether the sed above
+# actually changed anything (sed itself does not fail on a non-match).
 ARCHIVED_VERSION=$(unzip -p "$TMP_ZIP" manifest.json | grep -o '"version": "[^"]*"' | grep -o '[0-9.]*')
 if [[ "$ARCHIVED_VERSION" != "$NEW_VERSION" ]]; then
     echo "Error: archived manifest version is $ARCHIVED_VERSION, expected $NEW_VERSION" >&2

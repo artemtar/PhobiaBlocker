@@ -116,10 +116,11 @@ test('edits in a detached owned cover do not request reconciliation or retain pa
     assert.equal(index.wordCount, 0)
 })
 
-// The callback does what WordCoverManager.reconcileCover does: drop the old text
-// from the index, disown and detach the cover, and index the replacement with
-// notify:false. The batch must then skip the detached original (it is no longer
-// eligible) and report the net change spider -> snake in a single delta.
+// The callback stands in for WordCoverManager.reconcileCover: the old text leaves
+// the index and the cover is disowned synchronously, inside the batch, and the
+// replacement text is indexed at once (notify:false so nothing is re-covered). The
+// batch must then skip the detached original (no longer eligible) and report the
+// net change spider -> snake in a single delta.
 test('synchronous reconciliation contributes net words without indexing its detached source again', () => {
     const { index, text } = coveredText('spider', ({ cover, index, env, text, owned }) => {
         index.removeTextNode(text)
