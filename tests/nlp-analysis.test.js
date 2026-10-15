@@ -146,7 +146,8 @@ describe('PhobiaBlocker - NLP Text Analysis', () => {
 
         // Load test page with special characters
         // "Spider!!!" and "spider..." tokenize to "spider" because punctuation is not
-        // a letter; WORD_RE keeps only letters and internal hyphens.
+        // a letter; WORD_RE keeps only letters and hyphens, and tokenize() drops runs
+        // with fewer than three letters (HAS_THREE_LETTERS_RE).
         await loadTestPage(page, 'nlp-special-chars-test.html')
         await page.waitForSelector('#test-img', { timeout: 5000 })
         await new Promise(r => setTimeout(r, 3000))

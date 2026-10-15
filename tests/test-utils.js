@@ -140,7 +140,7 @@ async function launchBrowserWithExtension(options = {}) {
 
     // Strategy 1: scan targets that exist RIGHT NOW.
     // The MV3 service worker may have started and already been killed by Chrome's
-    // 5-second idle timer before puppeteer.launch() returned, so waitForTarget()
+    // 30-second idle timer before puppeteer.launch() returned, so waitForTarget()
     // (which only catches *new* target events) would miss it entirely.
     // A bare "chrome-extension://" is 19 characters; a real extension URL carries a
     // 32-letter id, so the length check skips targets that have no id to read yet.

@@ -73,6 +73,9 @@ describe('PhobiaBlocker - Flash Prevention', () => {
         })
 
         assert.ok(results.imageBlurred, 'Images should be blurred immediately by CSS')
+        // Unlike the <img>, the background div is hidden, not blurred, until the
+        // controller's scan registers it, so this assertion only holds once that scan
+        // has run after DOMContentLoaded; it is not a pre-script CSS guarantee.
         assert.ok(results.bgBlurred, 'Background images should be blurred immediately by CSS')
     })
 
@@ -85,7 +88,7 @@ describe('PhobiaBlocker - Flash Prevention', () => {
         // Check immediately and after brief wait
         // The second sample lands after the controller has replaced the stylesheet's
         // 40px with its own inline value; the page mentions "spider", so a committed
-        // verdict can only keep the blur. A clear verdict would itself be deferred.
+        // verdict can only keep the blur.
         const initialBlur = await isElementBlurred(page, '#spider-image')
         await new Promise(r => setTimeout(r, 1000))
         const afterWaitBlur = await isElementBlurred(page, '#spider-image')
@@ -103,7 +106,9 @@ describe('PhobiaBlocker - Flash Prevention', () => {
     it('should cover words inserted during handoff without CSS-blurring them', async () => {
         await setPhobiaWords(browser, ['spider'])
 
-        // Installed before any page or content script runs on the next navigation.
+        // Runs before any page script on the next navigation, so the listener is in
+        // place long before the hand-off event, which fires at DOMContentLoaded at the
+        // earliest once the settings read resolves.
         await page.evaluateOnNewDocument(() => {
             window.__phobiaHandoffWordCoverState = {
                 inserted: false,

@@ -46,7 +46,8 @@ describe('PhobiaBlocker - Basic Functionality', () => {
 
     it('should load extension successfully', async () => {
         // Snapshot only: an MV3 worker is killed when idle, so this passes because the
-        // storage helpers in before() just woke it through a popup page.
+        // storage writes in before() fired storage.onChanged, an event the worker listens
+        // for (background.js), which made Chrome start it again.
         const targets = await browser.targets()
         const extensionTarget = targets.find(target =>
             target.type() === 'service_worker' &&
@@ -125,6 +126,8 @@ describe('PhobiaBlocker - Basic Functionality', () => {
         assert.ok(blurredCount >= 2, 'All images should be blurred in always-on mode')
 
         // Disable always blur mode
+        // Not in a finally: a failed assertion leaves blurIsAlwaysOn true for the
+        // context-menu tests below, which never reset it.
         await setBlurAlwaysOn(browser, false)
     })
 
@@ -142,8 +145,9 @@ describe('PhobiaBlocker - Basic Functionality', () => {
             // Models the right-click: the content script's capture-phase contextmenu
             // listener records the event target and pointer position, and the service
             // worker later sends 'unblur' when the menu item is clicked. The synthetic
-            // event has no coordinates, so the hit test by point fails and the visual
-            // is resolved by walking up from the recorded target, here the image itself.
+            // event defaults to clientX/clientY 0, a point outside every registered element,
+            // so the hit test by point fails and the visual is resolved by walking up from
+            // the recorded target, here the image itself.
             // Simulate contextmenu event fired directly on the .phobia-blur image
             // ([data-phobia-blur] gives it pointer-events: auto)
             await page.evaluate(() => {
@@ -188,9 +192,11 @@ describe('PhobiaBlocker - Basic Functionality', () => {
             // protection.css (`:root :is(img, video, iframe)` at 40px, pointer-events:
             // none only until the background scan is ready), not by these class names:
             // blur/noblur/permamentUnblur are legacy and never set, so the image keeps
-            // phobia-blur and stays registered. With a synthetic event (no coordinates)
-            // the resolver only walks up from the parent, which owns no visual, so the
-            // unblur is refused and this case fails on unmodified code (tests/README.md).
+            // phobia-blur and stays registered. With a synthetic event (coordinates 0,0,
+            // outside every visual) the resolver only walks up from the parent, which
+            // owns no visual, so the unblur is refused and this case fails on unmodified
+            // code (one of the cases tests/README.md warns still assumes behaviour the
+            // extension no longer has).
             await page.evaluate(() => {
                 const img = document.querySelector('#spider-image')
                 if (img) {
