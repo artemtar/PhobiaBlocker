@@ -1,3 +1,6 @@
+// Historical Puppeteer suite, not a release gate: it needs a headed Chrome outside
+// the sandbox and some cases assume behaviour the extension no longer has (see
+// tests/README.md). Covers loading, word storage, the page-wide verdict and unblur.
 const { describe, it, before, after } = require('node:test')
 const assert = require('node:assert')
 const {
@@ -28,6 +31,9 @@ describe('PhobiaBlocker - Basic Functionality', () => {
         await clearExtensionStorage(browser)
 
         // Set default settings
+        // 3 predates the 0-100 slider: computeBlurPixels(3) is about 0.15px, which
+        // isElementBlurred still counts as blurred (> 0). Media show the stylesheet's
+        // 40px fail-closed blur until the controller writes that inline value.
         await setExtensionEnabled(browser, true)
         await setBlurAmount(browser, 3)
     })
@@ -39,6 +45,8 @@ describe('PhobiaBlocker - Basic Functionality', () => {
     })
 
     it('should load extension successfully', async () => {
+        // Snapshot only: an MV3 worker is killed when idle, so this passes because the
+        // storage helpers in before() just woke it through a popup page.
         const targets = await browser.targets()
         const extensionTarget = targets.find(target =>
             target.type() === 'service_worker' &&
@@ -65,6 +73,9 @@ describe('PhobiaBlocker - Basic Functionality', () => {
         await page.waitForSelector('img', { timeout: 5000 })
 
         // Wait for content script to process (give it up to 5 seconds)
+        // Fail-closed invariant: the image is blurred by protection.css before any
+        // script runs, so this would pass even if analysis never finished. The wait
+        // only makes the assertion read the controller's committed blur verdict.
         await new Promise(r => setTimeout(r, 3000))
 
         // Check if spider image is blurred
@@ -80,7 +91,13 @@ describe('PhobiaBlocker - Basic Functionality', () => {
         await loadTestPage(page, 'simple-image.html')
         await page.waitForSelector('#safe-image', { timeout: 5000 })
 
-        // Wait for content script to process and unveil timer (2 seconds + buffer)
+        // Wait for the controller to commit a clear verdict. The "unveil timer" the
+        // suite was written against is gone: a clear verdict is now deferred and
+        // re-analysed (MAX_DEFERRED_CLEAR_VERDICTS times) while the page still
+        // produces text, and only the committed verdict writes filter: none.
+        // The page is one verdict: "spider" is nowhere on it, so every image clears.
+        // #safe-image is only distinct from #spider-image in the markup, not for
+        // the extension, whose analysis is page-wide rather than per element.
         await new Promise(r => setTimeout(r, 3000))
 
         // Check if safe image is not blurred
@@ -101,6 +118,9 @@ describe('PhobiaBlocker - Basic Functionality', () => {
         await new Promise(r => setTimeout(r, 2000))
 
         // Count blurred images
+        // ALWAYS_BLUR skips analysis entirely, so an empty word list cannot clear
+        // anything. simple-image.html has two <img> plus one inline background div;
+        // >= 2 tolerates the div, whose blur waits for the background scan.
         const blurredCount = await countBlurredImages(page)
         assert.ok(blurredCount >= 2, 'All images should be blurred in always-on mode')
 
@@ -119,12 +139,22 @@ describe('PhobiaBlocker - Basic Functionality', () => {
             await page.waitForSelector('#spider-image', { timeout: 5000 })
             await wait(3000)
 
-            // Simulate contextmenu event fired directly on the .blur image (pointer-events: auto)
+            // Models the right-click: the content script's capture-phase contextmenu
+            // listener records the event target and pointer position, and the service
+            // worker later sends 'unblur' when the menu item is clicked. The synthetic
+            // event has no coordinates, so the hit test by point fails and the visual
+            // is resolved by walking up from the recorded target, here the image itself.
+            // Simulate contextmenu event fired directly on the .phobia-blur image
+            // ([data-phobia-blur] gives it pointer-events: auto)
             await page.evaluate(() => {
                 const img = document.querySelector('#spider-image')
                 if (img) img.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
             })
 
+            // Mirrors the service worker's menu-click message. An explicit reveal is a
+            // user action, so it may unblur without a clear verdict; it sets
+            // phobia-noblur plus phobia-permanent-unblur so later automatic
+            // re-applies leave the element alone.
             await sendMessageToAllContentScripts(browser, { type: 'unblur' })
             await wait(300)
 
@@ -152,11 +182,15 @@ describe('PhobiaBlocker - Basic Functionality', () => {
             await page.waitForSelector('#spider-image', { timeout: 5000 })
             await wait(3000)
 
-            // Remove .blur class to simulate a CSS-only-blurred image (pre-analysis state or
-            // a page where mutations haven't been processed yet). The image remains visually
-            // blurred by the CSS rule `img:not(.noblur):not(.permamentUnblur)`.
-            // With no .blur class, pointer-events: none kicks in, so the contextmenu event
-            // lands on the parent element rather than the image itself.
+            // Meant to model an image that is blurred only by the stylesheet (not yet
+            // registered by the controller), where pointer-events: none would make the
+            // right-click land on the parent. Today that state is produced by
+            // protection.css (`:root :is(img, video, iframe)` at 40px, pointer-events:
+            // none only until the background scan is ready), not by these class names:
+            // blur/noblur/permamentUnblur are legacy and never set, so the image keeps
+            // phobia-blur and stays registered. With a synthetic event (no coordinates)
+            // the resolver only walks up from the parent, which owns no visual, so the
+            // unblur is refused and this case fails on unmodified code (tests/README.md).
             await page.evaluate(() => {
                 const img = document.querySelector('#spider-image')
                 if (img) {

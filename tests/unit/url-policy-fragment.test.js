@@ -9,6 +9,9 @@ const { createContentHarness } = require('./helpers/content-harness')
 const clean = { shouldBlur: false, matchedWords: [], matchedInputWords: [] }
 const ANALYSIS_DEBOUNCE_MS = 200
 
+// Reaches a committed clear verdict through the real settings read. The first
+// verdict is always deferred once (the word-count sentinel), and the debounced
+// re-analysis commits it because the page is complete and its text unchanged.
 async function clearedPage() {
     const env = createContentHarness()
     env.document.readyState = 'complete'
@@ -34,6 +37,7 @@ test('a fragment change on a cleared page neither re-blurs media nor re-analyses
 
     // Act: scrollspy updates the hash.
     env.context.location.href = 'https://example.com/safe#section-2'
+    // hashchange runs applyCurrentUrlPolicy, which compares fragment-stripped URLs.
     env.window.dispatchEvent({ type: 'hashchange' })
 
     // Assert: no blur pulse, no repeated analysis.
@@ -51,6 +55,7 @@ test('a DOM mutation after a fragment change does not re-apply protection', asyn
 
     // Act: an unrelated attribute change is observed with the new hash.
     image.setAttribute('alt', 'garden')
+    // The mutation handler's URL branch uses the same fragment-stripped comparison.
     env.dispatchMutations([{ type: 'attributes', target: image, attributeName: 'alt', oldValue: null }])
 
     // Assert
@@ -93,6 +98,8 @@ test('a path change still re-applies protection and re-analyses the new document
 
     // Act: pushState to a different route.
     env.context.location.href = 'https://example.com/other'
+    // popstate is the direct listener; pushState itself reaches the content script
+    // through the worker's PB_URL_CHANGED relay, which runs the same policy check.
     env.window.dispatchEvent({ type: 'popstate' })
 
     // Assert: fail-closed first, then a fresh analysis.

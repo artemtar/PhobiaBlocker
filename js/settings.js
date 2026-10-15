@@ -9,6 +9,11 @@ if (!settingsPolicy || !settingsStorage || !settingsUi) {
 }
 
 const SETTINGS_KEYS = settingsPolicy.STORAGE_KEYS
+// Edit locks mirror the popup: settingsWritesPending (write in flight),
+// settingsRefreshRequired (changed in storage, not yet re-read) and
+// settingsKeyRevisions (bumped per change so a late write callback cannot
+// paint a stale value). settingsLoadGeneration is bumped by every (re)load so
+// refresh callbacks started before a retry are ignored; the retry re-reads all.
 let settingsState = {}
 let settingsLoaded = false
 let settingsLoading = false
@@ -72,14 +77,19 @@ async function initializeSettingsPage() {
 }
 
 async function loadSettings() {
+    // A reload during a write would race that write's callback. The retry button
+    // is disabled in that state too; this guard is the backstop.
     if (settingsLoading || settingsWritesPending.size > 0) return
     settingsLoading = true
+    // Dropping settingsLoaded disables every control until the full read lands.
     settingsLoaded = false
     settingsLoadGeneration += 1
     clearSettingsError(true)
     updateSettingsControls()
     try {
         const values = await settingsReader.loadAll(SETTINGS_PAGE_KEYS)
+        // A complete read supersedes every pending per-key refresh; their late
+        // callbacks are also dropped by the generation check.
         settingsRefreshRequired.clear()
         settingsLoaded = true
         applySettings(values)
@@ -123,6 +133,8 @@ function canEditSettings(keys) {
     return settingsLoaded && keys.every(key => !settingsRefreshRequired.has(key) && !settingsWritesPending.has(key))
 }
 
+// Both site lists share one input and type selector, so a write to either
+// list locks the whole site-rule editor, not just the list being written.
 function siteWritePending() {
     return settingsWritesPending.has(SETTINGS_KEYS.whitelist) || settingsWritesPending.has(SETTINGS_KEYS.blacklist)
 }
@@ -196,6 +208,9 @@ async function persistSettings(values) {
         debugSettings('settings.saved', () => ({ keys }))
         return true
     } catch (error) {
+        // The control already shows the attempted value (checkbox ticked, slider
+        // moved); repaint the committed state so the UI does not claim a change
+        // that was never saved.
         keys.forEach(key => SETTINGS_RENDERERS[key](settingsState[key]))
         showSettingsError('Could not save this change. Your previous settings are still active.')
         console.error('PhobiaBlur: settings write failed', error)
@@ -218,6 +233,8 @@ function initializeEventListeners() {
     }
     for (const [key, id] of Object.entries(SLIDER_CONTROLS)) {
         const slider = document.getElementById(id)
+        // input previews the strength live while dragging; only change (release)
+        // writes, keeping storage.sync inside its per-minute write quota.
         slider.addEventListener('input', () => {
             if (canEditSettings([key])) updateBlurDemo(key, Number(slider.value))
         })
@@ -231,6 +248,8 @@ function initializeEventListeners() {
             })
         })
     })
+    // Extensions cannot rebind their own shortcuts, and chrome:// URLs cannot
+    // be opened from a link, so hand the user to Chrome's page via tabs.create.
     document.getElementById('configure-shortcuts-btn').addEventListener('click', () => {
         chrome.tabs.create({ url: 'chrome://extensions/shortcuts' })
     })
@@ -261,6 +280,10 @@ function getSiteListConfig(listType) {
     }
 }
 
+// Stored lists are validated only as string arrays, so an entry an older
+// parser accepted may be invalid today. Compare on the normalized form and
+// fall back to the raw string so such an entry is compared literally (never
+// as undefined) and still renders so the user can remove it.
 function normalizedSiteRule(rule) {
     const parsed = settingsPolicy.parseSiteRule(rule)
     return parsed.valid ? parsed.normalized : String(rule)
@@ -356,6 +379,10 @@ async function addTargetWord() {
     const validation = settingsPolicy.validateTargetWord(input.value)
     const words = settingsState[SETTINGS_KEYS.targetWords]
     if (!validation.valid) return showWordError(validation.reason)
+    // The 20-word cap is a product limit inherited from the original Tagify
+    // maxTags setting and documented in README.md; it is not a storage-quota
+    // bound. The popup, README and settings-races test enforce the same number;
+    // change them together.
     if (words.length >= 20) return showWordError('You can store up to 20 trigger words.')
     if (words.some(word => settingsPolicy.validateTargetWord(word).normalized === validation.normalized)) {
         return showWordError('That trigger word is already in your list.')
@@ -375,6 +402,10 @@ async function removeTargetWord(index) {
 
 function initializeNavigation() {
     const showSection = (hash, focus = false) => {
+        // Hashes from the pre-1.3.1 layout (separate hover-preview, about and debug
+        // sections) still land on the section that absorbed them, so old bookmarks
+        // keep working; no page in the repo links to them. Unknown hashes fall back
+        // to the site-rules landing page.
         const aliases = { 'hover-preview': 'protection', about: 'help', debug: 'help' }
         const requested = hash.replace(/^#/, '')
         const section = aliases[requested] || requested
@@ -393,6 +424,8 @@ function initializeNavigation() {
         link.addEventListener('click', event => {
             event.preventDefault()
             const hash = link.getAttribute('href')
+            // Setting the hash also fires hashchange, which re-renders without
+            // moving focus; the direct call focuses the heading for keyboard users.
             window.location.hash = hash
             showSection(hash, true)
         })
@@ -405,6 +438,8 @@ function displayVersion() {
     document.getElementById('version-number').textContent = chrome.runtime.getManifest().version
 }
 
+// chrome.commands reports macOS shortcuts with modifier glyphs; spell them out
+// so the list reads the same on every platform.
 function formatShortcutText(shortcut) {
     return shortcut.replace(/⌘/g, 'Command+').replace(/⌥/g, 'Alt+')
         .replace(/⇧/g, 'Shift+').replace(/⌃/g, 'Ctrl+').replace(/\+$/, '')
@@ -455,6 +490,8 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
     void settingsReader.refresh(changedKeys, values => {
         if (loadGeneration !== settingsLoadGeneration) return
         Object.keys(values).forEach(key => settingsRefreshRequired.delete(key))
+        // Only a refresh-caused alert clears itself once every affected key has
+        // a current value; an action error stays until the user acts again.
         if (settingsRefreshRequired.size === 0 && settingsErrorSource === 'refresh') clearSettingsError()
         applySettings(values)
         debugSettings('settings.refreshed', () => ({ keys: Object.keys(values) }))

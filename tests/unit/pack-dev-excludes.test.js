@@ -1,3 +1,6 @@
+// Runs pack-dev.sh against a copy of the runtime set plus planted scratch files, and
+// checks .gitignore with git itself; together they decide what reaches the unpacked
+// extension Chrome loads and what can reach the public repository.
 const assert = require('node:assert/strict')
 const { spawnSync } = require('node:child_process')
 const fs = require('node:fs')
@@ -9,6 +12,9 @@ const repoRoot = path.resolve(__dirname, '../..')
 // The runtime set pack.sh ships; the dev build must contain exactly this.
 const RUNTIME_ENTRIES = ['manifest.json', 'popup.html', 'settings.html', 'offscreen.html', 'css', 'js', 'icons']
 // Working-tree contents that must never reach the unpacked dev extension.
+// Each entry stands for a category the review found in the tree: captures, agent and
+// MCP configs, a nested worktree with a stale js/ copy, docs, release tooling, tests,
+// store assets and the repository's own metadata.
 const SCRATCH_FILES = {
     'popup-screenshot.png': 'png',
     '.mcp.json': '{}',
@@ -25,6 +31,8 @@ const SCRATCH_FILES = {
     'package.json': '{}',
     'pack.sh': '#!/bin/bash\n'
 }
+// Probed once at load so the build test can skip with a reason on a host without jq
+// instead of failing; the missing-jq test below runs regardless.
 const hasJq = spawnSync('jq', ['--version'], { encoding: 'utf8' }).status === 0
 
 function walk(root, directory = root) {
@@ -53,6 +61,8 @@ function createFixture(t) {
     return dir
 }
 
+// Expands the runtime set to individual files so the comparison also fails when
+// pack-dev.sh drops or adds a file inside css/, js/ or icons/.
 function runtimeFilesOf(dir) {
     return RUNTIME_ENTRIES.flatMap(entry => {
         const full = path.join(dir, entry)
@@ -74,10 +84,14 @@ test('pack-dev.sh copies only the runtime set pack.sh ships and rewrites the man
     }
     const devManifest = JSON.parse(fs.readFileSync(path.join(buildDir, 'manifest.json'), 'utf8'))
     assert.equal(devManifest.name, 'PhobiaBlur DEV')
+    // The real version is untouched; only version_name, the string chrome://extensions
+    // displays when present, carries the -dev marker.
     assert.equal(devManifest.version, sourceManifest.version)
     assert.equal(devManifest.version_name, `${sourceManifest.version}-dev`)
     assert.equal(devManifest.description, `[DEV BUILD] ${sourceManifest.description}`)
     assert.equal(devManifest.action.default_title, 'PhobiaBlur DEV')
+    // The jq rewrite may touch only the labels above; the loaded scripts must be the
+    // same set in the same order as the store build.
     assert.deepEqual(devManifest.content_scripts, sourceManifest.content_scripts)
 })
 
@@ -86,6 +100,8 @@ test('pack-dev.sh copies only the runtime set pack.sh ships and rewrites the man
 function pathWithoutJq(t) {
     const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'phobiablocker-no-jq-'))
     t.after(() => fs.rmSync(bin, { recursive: true, force: true }))
+    // pack-dev.sh exits at its jq check before any of these run; they are linked in so
+    // the failure observed is the jq message and not a missing grep or cp.
     for (const tool of ['grep', 'rm', 'mkdir', 'cp']) {
         const lookup = spawnSync('which', [tool], { encoding: 'utf8' })
         assert.equal(lookup.status, 0, `${tool} must be available to build the fixture PATH`)
@@ -94,6 +110,8 @@ function pathWithoutJq(t) {
     return bin
 }
 
+// Before the guard existed, a missing jq left build/dev with an empty manifest.json
+// (the shell redirect truncated it) and the script still printed success.
 test('pack-dev.sh fails loudly instead of producing a half-built extension when jq is missing', t => {
     const dir = createFixture(t)
 
@@ -119,6 +137,9 @@ function createIgnoreRepo(t) {
     return dir
 }
 
+// core.excludesFile=/dev/null neutralises the user's global ignore file on top of the
+// throwaway repo; --no-index lets paths that do not exist in the fixture be tested.
+// Exit 1 means "not ignored"; any other non-zero status is a git error, not an answer.
 function isIgnored(dir, file) {
     const result = spawnSync('git', ['-c', 'core.excludesFile=/dev/null', 'check-ignore', '-q', '--no-index', '--', file], { cwd: dir, encoding: 'utf8' })
     if (result.status !== 0 && result.status !== 1) throw new Error(`git check-ignore failed for ${file}: ${result.stderr}`)
@@ -145,6 +166,9 @@ test('.gitignore keeps agent scratch, captures and installers out of the reposit
         // The quarantined Puppeteer suite's lockfile resolves from an internal mirror.
         'tests/package-lock.json'
     ]
+    // Counterexamples for the rules above: the root package-lock.json must stay
+    // trackable while tests/package-lock.json is ignored, and the root-only `/*.png`
+    // rule must not hide icons or store screenshots in subdirectories.
     const tracked = [
         'package-lock.json',
         'manifest.json',

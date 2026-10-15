@@ -1,3 +1,6 @@
+// Historical Puppeteer suite, not a release gate (tests/README.md); the icon
+// plumbing it inspects lives in js/background.js (_preloadTintedIcons) and the
+// reportIconStatus calls in js/js.js.
 /**
  * Icon Status Test Cases
  *
@@ -35,6 +38,9 @@ const {
 // extension (background, popup, options page, …), this page captures every
 // 'iconStatus' message without any changes to the extension's own code.
 
+// Only the top frame reports (reportIconStatus returns early in sub-frames), and
+// the worker ignores a message without sender.tab, so the tracker page itself can
+// never add entries; the log holds only what the page under test sent.
 async function setupIconTracker(browser) {
     const page = await getExtensionPage(browser)
     await page.evaluate(() => {
@@ -72,6 +78,9 @@ async function getIconAverageColor(browser, iconKey) {
         if (!imgData) return null
         const d = imgData.data  // Uint8ClampedArray: R,G,B,A,R,G,B,A,…
         let r = 0, g = 0, b = 0, n = 0
+        // Alpha > 64 skips the transparent padding and most anti-aliased edge
+        // pixels, which the 'destination-in' pass keeps identical in every variant
+        // and which would otherwise dilute the tint difference.
         for (let i = 0; i < d.length; i += 4) {
             if (d[i + 3] > 64) { r += d[i]; g += d[i + 1]; b += d[i + 2]; n++ }
         }
@@ -90,6 +99,8 @@ describe('Icon Status', () => {
         // Use 'spider' as the sole phobia word — simple-image.html contains it
         await setPhobiaWords(browser, ['spider'])
         // Give the service worker time to finish preloading all icon variants
+        // Needed only by the pixel tests: they read globalThis._tintedIcons directly
+        // while setIcon itself awaits the preload promise before using it.
         await wait(2000)
         trackerPage = await setupIconTracker(browser)
         page = await browser.newPage()
@@ -124,6 +135,10 @@ describe('Icon Status', () => {
             }
         })
 
+        // The tints are #F5A623 (processing) and #E53935 (detected) applied with the
+        // 'color' composite, which keeps the icon's luminance and changes only hue and
+        // saturation. The margins are small on purpose: a dark icon absorbs most of
+        // the tint, so channel averages move by tens of units, not hundreds.
         it('processing icon should have a yellow/amber tint (red channel > blue channel)', async () => {
             const c = await getIconAverageColor(browser, 'processing_48')
             assert.ok(c, 'processing_48 ImageData should exist in service worker')
@@ -142,6 +157,8 @@ describe('Icon Status', () => {
             )
         })
 
+        // idle_* is the untinted PNG drawn as-is; this guards against a tint pass
+        // that silently became a no-op (wrong composite mode, fill skipped).
         it('idle icon should be visually distinct from both tinted variants', async () => {
             const idle = await getIconAverageColor(browser, 'idle_48')
             const proc = await getIconAverageColor(browser, 'processing_48')
@@ -165,9 +182,14 @@ describe('Icon Status', () => {
             // nlp-case-test.html has one <img> and only "SNAKE" text — not a phobia word
             await page.bringToFront()
             await loadTestPage(page, 'nlp-case-test.html')
-            // Allow: content-script init (~500ms) + NLP analysis + 800ms debounce
+            // Allow: content-script init (~500ms) + NLP analysis + the 250ms delay
+            // reportIconStatus puts on idle/detected (processing is sent at once).
+            // A clear verdict is also deferred and re-analysed while the page still
+            // produces text, so the idle may arrive several round trips after load.
             await wait(3000)
 
+            // Order is not asserted because each deferred re-analysis sends another
+            // processing; only the final state matters to the user.
             const log = await readIconLog(trackerPage)
             assert.ok(log.includes('processing'),
                 `expected 'processing' in icon log (got: [${log}])`)
@@ -192,6 +214,8 @@ describe('Icon Status', () => {
                 'icon must not be stuck on processing after phobia content is detected')
         })
 
+        // DISABLED mode never analyses: disableProtection reports idle directly, and
+        // the page already open re-applies on the storage change, hence the clear.
         it('should send idle (no processing) when the extension is disabled', async () => {
             await setExtensionEnabled(browser, false)
             await clearIconLog(trackerPage)  // discard any idle from the disable action
@@ -215,7 +239,8 @@ describe('Icon Status', () => {
 
             await page.bringToFront()
             await loadTestPage(page, 'simple-image.html')
-            // onLoadBlurAll() → reportIconStatus('detected') with 800ms debounce
+            // applyProtectionMode's ALWAYS_BLUR branch reports 'detected' without ever
+            // calling analyzeCurrentPage, after reportIconStatus's 250ms delay.
             await wait(2000)
 
             const log = await readIconLog(trackerPage)

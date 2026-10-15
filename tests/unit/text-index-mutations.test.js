@@ -1,7 +1,14 @@
+// How PageTextIndex and WordCoverManager react when the page edits text that sits
+// inside one of our own cover spans, removes or re-inserts covers, or carries text
+// whose Unicode normalization changes its length. The invariant: a trigger word is
+// never left readable because a cover went stale, and page markup is never lost.
 const assert = require('node:assert/strict')
 const test = require('node:test')
 const { createContentHarness } = require('./helpers/content-harness')
 
+// A standalone index with a hand-made owned cover: a plain span whose ownership is
+// the `owned` set, no WordCoverManager. That isolates the index's reconciliation
+// requests; `onChange` lets a test perform the reconciliation itself.
 function coveredText(value = 'spider', onChange = () => {}) {
     const env = createContentHarness()
     const wrapper = env.body.appendChild(env.document.createElement('span'))
@@ -20,6 +27,9 @@ function coveredText(value = 'spider', onChange = () => {}) {
     return { ...env, index, wrapper, text, owned, changedCovers }
 }
 
+// Any text change inside a cover is reported, even when the token is unchanged:
+// 'SPIDER!' still tokenizes to 'spider' (NFKC, lowercase, WORD_RE drops the '!'),
+// yet the cover no longer wraps exactly the word and must be rebuilt.
 for (const [value, expectedWords] of [
     ['garden', ['garden']],
     ['snake', ['snake']],
@@ -39,6 +49,8 @@ for (const [value, expectedWords] of [
     })
 }
 
+// A browser delivers both records in one batch when a script swaps the text node
+// and edits it; the cover must be reconciled once, against the final content.
 test('replacing an owned cover child requests one reconciliation for the final content', () => {
     const { index, wrapper, text, changedCovers, document } = coveredText()
     wrapper.removeChild(text)
@@ -55,6 +67,8 @@ test('replacing an owned cover child requests one reconciliation for the final c
     assert.equal(index.getTokenCount('snake'), 1)
 })
 
+// The returned delta is what the controller feeds to _handleVocabularyChange:
+// losing the last 'spider' is the removal that can lift a blur verdict.
 test('emptying an owned cover requests reconciliation and removes its last indexed word', () => {
     const { index, wrapper, text, changedCovers } = coveredText()
     wrapper.removeChild(text)
@@ -69,6 +83,10 @@ test('emptying an owned cover requests reconciliation and removes its last index
     assert.deepEqual([...delta.removed], ['spider'])
 })
 
+// Only characterData and childList records count as a cover change. A reconciliation
+// unwraps and re-covers, which would discard a reveal the user made on that word, so
+// the class/style writes of the projection itself and the body-level record for the
+// cover's own insertion must not trigger one.
 test('projection attributes and initial cover insertion do not reset an existing reveal', () => {
     const { index, wrapper, body, changedCovers } = coveredText()
 
@@ -82,6 +100,8 @@ test('projection attributes and initial cover insertion do not reset an existing
     assert.equal(index.getTokenCount('spider'), 1)
 })
 
+// The removal and the edit arrive in one batch. A detached cover has nothing to
+// reconcile, and its words must leave the vocabulary rather than keep a page blurred.
 test('edits in a detached owned cover do not request reconciliation or retain page words', () => {
     const { index, wrapper, text, body, changedCovers } = coveredText()
     body.removeChild(wrapper)
@@ -96,6 +116,10 @@ test('edits in a detached owned cover do not request reconciliation or retain pa
     assert.equal(index.wordCount, 0)
 })
 
+// The callback does what WordCoverManager.reconcileCover does: drop the old text
+// from the index, disown and detach the cover, and index the replacement with
+// notify:false. The batch must then skip the detached original (it is no longer
+// eligible) and report the net change spider -> snake in a single delta.
 test('synchronous reconciliation contributes net words without indexing its detached source again', () => {
     const { index, text } = coveredText('spider', ({ cover, index, env, text, owned }) => {
         index.removeTextNode(text)
@@ -116,6 +140,10 @@ test('synchronous reconciliation contributes net words without indexing its deta
 })
 
 // The real manager and index run against the harness DOM tree.
+// build() covers 'spider' through the index's onDirectMatch callback, and `mutate`
+// runs the controller's full mutation path. The controller itself is left at its
+// construction state (ALWAYS_BLUR, settings never applied), so no analysis is
+// scheduled and only the cover and index behaviour is under test.
 function wordCoverHarness() {
     const env = createContentHarness()
     const manager = env.controller._wordCoverManager
@@ -144,6 +172,8 @@ test('covered text changed to an ordinary word loses its cover', () => {
     assert.equal(env.index.getTokenCount('garden'), 1)
 })
 
+// A reveal belongs to the word the user saw. Once the text changes, the wrapper is
+// unwrapped and the new trigger gets a fresh, covered span, not the uncover class.
 test('editing a revealed word to another trigger covers the replacement', () => {
     const env = wordCoverHarness()
     const wrapper = env.cover()
@@ -158,6 +188,9 @@ test('editing a revealed word to another trigger covers the replacement', () => 
     assert.equal(env.index.getTokenCount('snake'), 1)
 })
 
+// The page replaced the cover's child with <strong>snake</strong>. Unwrapping moves
+// that element out intact instead of flattening it to text, and re-indexing covers
+// 'snake' inside the strong, so the new cover's parent is the page's element.
 test('cover textContent replacement preserves page-added markup and re-covers matching text', () => {
     const env = wordCoverHarness()
     const wrapper = env.cover()
@@ -177,6 +210,9 @@ test('cover textContent replacement preserves page-added markup and re-covers ma
     assert.equal(env.index.getTokenCount('snake'), 1)
 })
 
+// A class record on an owned wrapper goes through repairProjection, which re-asserts
+// whichever projection applies; for a revealed word that is the uncover class, so no
+// .phobia-word-cover appears while the wrapper stays owned.
 test('projection-only changes preserve a word reveal until its text changes', () => {
     const env = wordCoverHarness()
     const wrapper = env.cover()
@@ -189,6 +225,8 @@ test('projection-only changes preserve a word reveal until its text changes', ()
     assert.equal(env.manager.ownsWrapper(wrapper), true)
 })
 
+// "Reveal current content" deactivates the manager; a trigger typed afterwards is
+// indexed but not re-covered until a settings change calls configure() again.
 test('unblurAll stays revealed when the page changes an unwrapped word', () => {
     const env = wordCoverHarness()
     env.controller.unblurAll()
@@ -202,6 +240,9 @@ test('unblurAll stays revealed when the page changes an unwrapped word', () => {
     assert.equal(env.index.getTokenCount('snake'), 1)
 })
 
+// prune() unwraps a disconnected wrapper and strips its classes, so when the page
+// re-attaches the very same node it is plain text again: it is indexed, matched and
+// given a new cover span nested inside the old one.
 test('removing a cover releases retained ownership and reinsertion can be covered again', () => {
     const env = wordCoverHarness()
     const wrapper = env.cover()
@@ -223,6 +264,8 @@ test('removing a cover releases retained ownership and reinsertion can be covere
     assert.equal(env.manager._ownedWrappers.size, 1)
 })
 
+// The wrapper still has a parent inside the detached container, so unwrapping moves
+// its text into the container; a page that re-inserts the container gets its text back.
 test('removing a subtree unwraps owned covers without dropping its child elements', () => {
     const env = wordCoverHarness()
     const wrapper = env.cover()
@@ -239,6 +282,10 @@ test('removing a subtree unwraps owned covers without dropping its child element
     assert.equal(env.index.getTokenCount('spider'), 0)
 })
 
+// NFKC composes 'e' + U+0301 into 'é', so the decomposed spelling tokenizes to the
+// same 'café' while the cover must keep the original code units. 'cafe' and
+// 'cafeteria' are distinct tokens and stay uncovered. `parts` pins the surrounding
+// text nodes; the sibling <strong> and <em> prove unwrapping touched only the <p>.
 for (const [name, value, covered, parts] of [
     ['composed accents', 'Before (café), CAFÉ; cafeteria, cafe — café.',
         ['café', 'CAFÉ', 'café'], ['Before (', 'café', '), ', 'CAFÉ', '; cafeteria, cafe — ', 'café', '.']],
@@ -285,6 +332,11 @@ for (const [name, value, covered, parts] of [
     })
 }
 
+// Cases where NFKC changes the string length, so match offsets found in the
+// normalized text must be mapped back onto the original: circled letters and the
+// ffi ligature fold to ASCII; compatibility jamo compose into syllables; a mark
+// that does not compose stays attached to its grapheme, so the cover includes it;
+// U+FDFA expands to several words, and two targets inside it merge into one cover.
 for (const [name, targets, value, expected] of [
     ['compatibility letters', ['cafe', 'ffi'], 'ⓒⓐⓕⓔ, ﬃ; xﬃ.', ['ⓒⓐⓕⓔ', 'ﬃ']],
     ['compatibility jamo composition', ['가나다'], 'Before ㄱㅏㄴㅏㄷㅏ, after 가나다.', ['ㄱㅏㄴㅏㄷㅏ', '가나다']],

@@ -37,6 +37,9 @@
             // that load to read again.
             invalidate() { revision += 1 },
 
+            // Repeats the full read until no invalidate() or refresh() happened
+            // while it was in flight, so the initial snapshot never predates a
+            // change the page has already been notified about.
             async loadAll(keys) {
                 let loadRevision
                 let values
@@ -58,6 +61,8 @@
                         .map(key => [key, loaded[key]]))
                     if (Object.keys(values).length > 0) onValues(values)
                 }).catch((error) => {
+                    // A failure only matters while this read still owns a key; a
+                    // superseded read must not lock keys a newer read has refreshed.
                     if (keys.some(key => keyRevisions.get(key) === current)) onError(error)
                 })
             },

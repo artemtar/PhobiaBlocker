@@ -1,3 +1,5 @@
+/* Styles for js/ui-help.js: the .pb-help buttons and the one shared tooltip bubble. */
+/* Written to be page-agnostic; it relies on theme.css only for the --pb-* tokens. */
 /* Separate help controls never share the setting's clickable area. */
 .pb-help {
     display: inline-flex;
@@ -39,10 +41,16 @@
     box-shadow: var(--pb-focus);
 }
 
+/* #pb-ui-tooltip, created once by ui-help.js and placed with viewport coordinates from */
+/* getBoundingClientRect, hence position:fixed. */
 .pb-tooltip {
     position: fixed;
     z-index: 1000;
+    /* Shrink-wraps short help so centring under the control looks right; long help */
+    /* still wraps at the max-width. */
     width: max-content;
+    /* 16px is twice the 8px margin ui-help.js keeps from every viewport edge. A text that */
+    /* is taller than the short action popup scrolls inside the bubble instead of clipping. */
     max-width: min(260px, calc(100vw - 16px));
     max-height: calc(100vh - 16px);
     overflow: auto;
@@ -59,10 +67,13 @@
     overflow-wrap: anywhere;
 }
 
+/* ui-help.js toggles the hidden property. theme.css already hides [hidden], but this */
+/* sheet must also work on a page that does not load theme.css. */
 .pb-tooltip[hidden] {
     display: none;
 }
 
+/* 44px is the touch-target minimum. */
 @media (pointer: coarse) {
     .pb-help {
         width: 44px;

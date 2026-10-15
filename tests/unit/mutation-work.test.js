@@ -1,7 +1,15 @@
+// How much work one mutation batch costs the controller, measured by wrapping the
+// expensive steps: containsEditingSurface walks a whole subtree, _scanBackgrounds
+// reads computed styles, indexTextNode reads layout. Typing into an editor on a
+// page with large backgrounds is the scenario; verdicts are not under test here.
 const assert = require('node:assert/strict')
 const test = require('node:test')
 const { createContentHarness } = require('./helpers/content-harness')
 
+// Two backgrounds with 200 children each, so an unnecessary editing-surface walk
+// is visible in the counters, plus a contenteditable editor the user types into.
+// ALWAYS_BLUR keeps vocabulary changes from scheduling analysis. The full scan
+// registers both backgrounds as blurred before any counting starts.
 function backgroundFixture() {
     const env = createContentHarness()
     const ancestor = env.body.appendChild(env.document.createElement('section'))
@@ -22,6 +30,8 @@ function backgroundFixture() {
     const checks = new Map()
     const Index = env.context.PhobiaBlockerPageTextIndex
     const containsEditingSurface = Index.containsEditingSurface
+    // VisualNode looks the static up on the class at call time, so patching it after
+    // the initial scan counts only the checks the mutation path performs.
     Index.containsEditingSurface = element => {
         checks.set(element, (checks.get(element) || 0) + 1)
         return containsEditingSurface(element)
@@ -29,6 +39,8 @@ function backgroundFixture() {
     return { ...env, ancestor, background, unrelated, editor, text, checks }
 }
 
+// A background is blurred with a filter unless it contains an editing surface; then
+// a filter would blur the text being typed, so its image is hidden instead.
 function assertFiltered(element) {
     assert.equal(element.style.getPropertyValue('background-image'), 'url("wallpaper.jpg")')
     assert.match(element.style.getPropertyValue('filter'), /^blur\(/)
@@ -39,6 +51,8 @@ function assertSuppressed(element) {
     assert.equal(element.style.getPropertyValue('filter'), '')
 }
 
+// Each keystroke is a characterData record. Text cannot change which elements hold
+// an editing surface, so no background may be re-evaluated for it.
 test('typing text does not inspect unrelated background descendants', () => {
     const env = backgroundFixture()
     for (let index = 0; index < 10; index++) {
@@ -53,6 +67,9 @@ test('typing text does not inspect unrelated background descendants', () => {
     assert.equal(env.checks.get(env.unrelated) || 0, 0)
 })
 
+// Editors often replace the text node rather than edit it. A childList record whose
+// added and removed nodes are all text must cost no more than a characterData one:
+// no ancestor invalidation and no stylesheet search of the parent's subtree.
 test('text-only child replacements do not inspect unrelated background descendants', () => {
     const env = backgroundFixture()
     let descendantQueries = 0
@@ -72,6 +89,9 @@ test('text-only child replacements do not inspect unrelated background descendan
     assert.equal(descendantQueries, 0, 'replacing text must not search its entire parent for stylesheets')
 })
 
+// Editors rewrite the same class and style strings on every key. MutationObserver
+// still reports them with oldValue equal to the current value; such records are
+// dropped before any work, so the 200 paragraphs are never revisited.
 test('typing with unchanged editor class and style writes does not rescan its document', () => {
     const env = backgroundFixture()
     env.editor.setAttribute('class', 'editor focused')
@@ -101,6 +121,10 @@ test('typing with unchanged editor class and style writes does not rescan its do
     assert.equal(textVisits, 1, 'only the changed text node needs an eligibility check')
 })
 
+// An <input> appearing inside a blurred background flips it to suppressed so the
+// control stays usable, and removing it flips it back. The ancestor walk marks only
+// registered backgrounds dirty, so each change costs exactly one check there and
+// none for the unrelated background.
 test('adding and removing a control only reevaluates its background container once', () => {
     const env = backgroundFixture()
     const control = env.background.appendChild(env.document.createElement('input'))
@@ -124,6 +148,9 @@ test('adding and removing a control only reevaluates its background container on
     assert.equal(env.checks.get(env.unrelated) || 0, 0)
 })
 
+// contenteditable is inherited, so toggling it on an ancestor makes every background
+// below it an editing surface; those are re-evaluated (_invalidateBackgroundSubtree),
+// the aside outside the ancestor is not.
 test('inherited editability changes reevaluate descendant backgrounds without scanning unrelated ones', () => {
     const env = backgroundFixture()
     env.ancestor.setAttribute('contenteditable', 'true')
@@ -147,6 +174,8 @@ test('inherited editability changes reevaluate descendant backgrounds without sc
     assert.equal(env.checks.get(env.unrelated) || 0, 0)
 })
 
+// role="textbox" turns a plain span into an editing surface without any element
+// being added, so the role attribute must invalidate the containing background.
 test('changing a descendant role updates only the containing background', () => {
     const env = backgroundFixture()
     const control = env.background.firstElementChild
@@ -167,6 +196,10 @@ test('changing a descendant role updates only the containing background', () => 
     assert.equal(env.checks.get(env.unrelated) || 0, 0)
 })
 
+// Four records describe a nested section and paragraph in interleaved order. Both
+// the background scan and the re-index must collapse them to the outermost subtree
+// (minimalRoots) while still noticing that the class change hid, then showed, the
+// text. `hidden` drives the rects the index's visibility check reads.
 test('overlapping class and style mutations scan one subtree and preserve visibility changes', () => {
     const env = createContentHarness()
     const outer = env.body.appendChild(env.document.createElement('section'))

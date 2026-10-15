@@ -12,6 +12,10 @@
         tooltip.hidden = true
         document.body.appendChild(tooltip)
 
+        // One bubble serves every control. activeTarget is the control it currently
+        // describes; hovered/focused remember the inputs so the bubble can fall back
+        // to whichever is still engaged; dismissedTarget suppresses re-showing after
+        // Escape or activation until the pointer or focus deliberately re-enters.
         let activeTarget = null
         let hoveredTarget = null
         let focusedTarget = null
@@ -22,6 +26,8 @@
 
         const findTarget = node => node?.closest?.('[data-tooltip]') || null
 
+        // Adds or removes only the tooltip id in aria-describedby so the control's
+        // own descriptions (and any added while the bubble was open) survive.
         function describe(target, enabled) {
             const ids = (target.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean)
             const descriptions = ids.filter(id => id !== tooltip.id)
@@ -46,6 +52,8 @@
 
         function position() {
             if (!activeTarget) return
+            // A re-render can detach the control, or its disclosure can open, between
+            // show and a later resize/scroll; drop the bubble rather than float it.
             if (!activeTarget.isConnected || activeTarget.getAttribute('aria-expanded') === 'true') {
                 dismiss()
                 return
@@ -53,6 +61,9 @@
             const bounds = activeTarget.getBoundingClientRect()
             const size = tooltip.getBoundingClientRect()
             const viewport = document.documentElement
+            // Centre under the control, clamped to the viewport with an 8 px margin:
+            // the action popup is narrow, so edge controls would otherwise clip.
+            // Prefer below; flip above only when below would overflow the bottom.
             const margin = 8
             const maxLeft = Math.max(margin, viewport.clientWidth - size.width - margin)
             const maxTop = Math.max(margin, viewport.clientHeight - size.height - margin)
@@ -83,8 +94,14 @@
             position()
         }
 
+        // The delay lets the pointer cross the gap between a control and its bubble
+        // (pointerout fires before pointerenter on the tooltip) and lets a pinned or
+        // still-focused control keep its help after the pointer leaves.
         function scheduleHide() {
             clearTimeout(hideTimer)
+            // 150 ms is the conventional tooltip grace period: long enough to move
+            // diagonally into the bubble, short enough not to linger over the next
+            // control. Nothing in the CSS depends on the exact value.
             hideTimer = setTimeout(() => {
                 if (pinned || tooltipHovered) return
                 const target = hoveredTarget || focusedTarget
@@ -93,10 +110,13 @@
             }, 150)
         }
 
+        // pointerover/out also fire when moving between a control's own children;
+        // relatedTarget inside the control means no real enter or leave happened.
         document.addEventListener('pointerover', (event) => {
             const target = findTarget(event.target)
             if (!target || target.contains(event.relatedTarget)) return
             hoveredTarget = target
+            // While pinned the hover is remembered but must not steal the bubble.
             if (pinned) return
             dismissedTarget = null
             show(target)
@@ -113,6 +133,8 @@
             const target = findTarget(event.target)
             if (!target) return
             focusedTarget = target
+            // Focus moving to a different control releases a pin; refocusing the
+            // pinned help button itself keeps it.
             if (target !== activeTarget) pinned = false
             dismissedTarget = null
             show(target)
@@ -139,12 +161,16 @@
                     show(help)
                 }
             } else if (!tooltip.contains(event.target)) {
+                // Clicks inside the bubble (selecting its text) keep it open.
                 // Activation keeps focus on the control. Suppress its tooltip
                 // until deliberate re-entry, before its own click handler runs.
                 dismiss(findTarget(event.target) || activeTarget)
             }
         }, true)
 
+        // In Chrome's toolbar popup Escape also closes the popup itself, so this
+        // path is mainly useful on the settings page; clicking the help button
+        // again is the dismissal that works in both.
         document.addEventListener('keydown', (event) => {
             if (event.key === 'Escape' && activeTarget) dismiss()
         })
@@ -158,6 +184,7 @@
             scheduleHide()
         })
         window.addEventListener('resize', position)
+        // scroll does not bubble; capture catches scrolling inside nested panels.
         document.addEventListener('scroll', position, true)
     }
 

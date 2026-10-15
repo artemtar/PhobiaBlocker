@@ -1,3 +1,6 @@
+// Runs selected cases from the quarantined Puppeteer suites (tests/*.test.js,
+// historical, not a release gate) against scripted page and worker responses, to
+// prove their assertions reject the failure shapes they claim to catch.
 const { test } = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
@@ -10,11 +13,15 @@ async function loadBrowserCase(filename, name, page, helpers = {}, globals = {})
     const cases = new Map()
     const setup = []
     const noop = async () => {}
+    // Any test-utils helper a case calls that the test did not provide resolves to
+    // nothing, so browser setup, storage writes and page loads are inert.
     const utilities = new Proxy({
         launchBrowserWithExtension: async () => ({ newPage: async () => page }),
         ...helpers,
     }, { get: (target, key) => target[key] || noop })
     const source = fs.readFileSync(path.join(__dirname, '..', filename), 'utf8')
+    // describe runs at once so `it` only collects cases; after() is dropped so no
+    // browser is closed, and setTimeout fires immediately so a case never waits.
     vm.runInNewContext(source, {
         require: name => name === 'node:test' ? {
             describe: (_name, callback) => callback(),
@@ -30,6 +37,7 @@ async function loadBrowserCase(filename, name, page, helpers = {}, globals = {})
     return cases.get(name)
 }
 
+// The getAnalysisDebugState response the cases validate field by field.
 const validDebug = {
     pageAnalysisRequests: 3,
     mutationBatches: 5,
@@ -40,6 +48,10 @@ const validDebug = {
     protectionMode: 'ANALYZE',
 }
 
+// Drives one attribute-lifecycle analysis case. The fake page counts evaluate()
+// calls to switch the debug state the worker reports from `before` to `after`
+// (once the mutating evaluate ran) and then to `afterChurn`; `wait` advances a
+// fake Date.now so the case's 8 s polling deadline can expire.
 async function runAnalysisCase(name, { before = validDebug, after = before, afterChurn = after, responseError, tabs } = {}) {
     let evaluations = 0
     let phase = 'before'
@@ -53,12 +65,15 @@ async function runAnalysisCase(name, { before = validDebug, after = before, afte
         waitForFunction: async () => {},
         evaluate: async () => {
             evaluations++
+            // The media case reads class lists first; its mutating evaluate is the second.
             if (evaluations === (mediaCase ? 2 : 1)) phase = 'after'
+            // Evaluate order in that case: insert, read cover count, churn, read final state.
             if (safeInsertion) {
                 if (evaluations === 2) return 4
                 if (evaluations === 3) phase = 'afterChurn'
                 return { coverCount: 4 }
             }
+            // Evaluate order: insert, churn, read final state; its waitForFunction is a stub.
             if (targetInsertion) {
                 if (evaluations === 2) phase = 'afterChurn'
                 return { dynamicCoverCount: 1 }
@@ -66,6 +81,8 @@ async function runAnalysisCase(name, { before = validDebug, after = before, afte
             return { coverCount: 4, pending: false }
         },
     }
+    // tabs.sendMessage reports failure only through lastError during the callback,
+    // as Chrome does; a case that reads it anywhere else misses the error.
     const chrome = {
         runtime: { lastError: null },
         tabs: {
@@ -79,6 +96,8 @@ async function runAnalysisCase(name, { before = validDebug, after = before, afte
     }
     const body = await loadBrowserCase('attribute-lifecycle.test.js', name, page, {
         wait: async milliseconds => { now += milliseconds },
+        // The case serialises its worker callback into the service worker; here it
+        // is re-parsed and run in a context whose only global is the fake chrome.
         getExtensionServiceWorker: async () => ({
             worker: async () => ({
                 evaluate: async (callback, ...args) => vm.runInNewContext(`(${callback})(...args)`, { chrome, args }),
@@ -165,6 +184,10 @@ for (const name of noRerunCases) {
     })
 }
 
+// Models the flash-prevention handoff monitor: the script installed on the new
+// document listens for the early-blur hand-off, inserts a trigger word and samples
+// rendered frames. querySelector hands out the cover only after `uncoveredFrames`
+// rendered frames; the computed-style fakes control text colour, opacity and blur.
 async function runHandoffCase({ uncoveredFrames = 0, opaqueCover = true, hiddenText = true, blurred = false } = {}) {
     let frame = 0
     let target
@@ -205,6 +228,9 @@ async function runHandoffCase({ uncoveredFrames = 0, opaqueCover = true, hiddenT
     }
     const body = await loadBrowserCase('flash-prevention.test.js',
         'should cover words inserted during handoff without CSS-blurring them', page, {
+            // Stands in for navigation: run the installed script, fire the hand-off
+            // event, then pump requestAnimationFrame. 120 is a safety bound above the
+            // monitor's own 60-sample cap.
             loadTestPage: async () => {
                 evaluate(install)
                 listeners.get('phobiablocker:word-cover-manager-ready')()
@@ -222,6 +248,8 @@ test('handoff monitor accepts a protected first rendered frame', async () => {
     await runHandoffCase()
 })
 
+// strictEqual carries actual/expected, so the count of uncovered frames surfaces
+// in the failure rather than a bare boolean.
 test('handoff monitor rejects 20 visible frames before eventual covering', async () => {
     await assert.rejects(runHandoffCase({ uncoveredFrames: 20 }), error => {
         assert.match(error.message, /never appear uncovered in a rendered frame/)

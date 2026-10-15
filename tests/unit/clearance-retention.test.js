@@ -1,3 +1,7 @@
+// Clearance retention: after a committed clear verdict, media that did not change
+// may stay revealed while a re-analysis is pending. These suites pin the limit of
+// that rule: any new vocabulary drops the clearance, because only the offscreen
+// analyser can tell whether a new word is an inflection of a trigger.
 const assert = require('node:assert/strict')
 const test = require('node:test')
 const { createContentHarness } = require('./helpers/content-harness')
@@ -8,6 +12,7 @@ const clean = { shouldBlur: false, matchedWords: [], matchedInputWords: [] }
 // released and recorded as cleared media at the current URL.
 function clearedPageFixture() {
     const env = createContentHarness()
+    // Covers off so the suite observes media alone.
     const settings = { ...env.Policy.DEFAULTS, targetWords: ['spider'], wordCoverEnabled: false }
     env.controller.mode = 'ANALYZE'
     env.controller.setSettings(settings)
@@ -17,6 +22,9 @@ function clearedPageFixture() {
     env.body.appendChild(env.document.createTextNode('ordinary text'))
     env.controller._pageTextIndex.build(env.body)
     env.controller._registerMedia(env.document)
+    // A clear verdict is deferred while the page may still be producing text:
+    // word count changed since the last verdict, or the document still loading.
+    // Satisfying both lets applyPageResult commit this first clear verdict at once.
     env.document.readyState = 'complete'
     env.controller._lastVerdictWordCount = env.controller._pageTextIndex.wordCount
     env.controller.applyPageResult(clean)
@@ -30,6 +38,8 @@ function insertText(env, value) {
     env.controller._handleMutations([{ type: 'childList', target: env.body, addedNodes: [text], removedNodes: [] }])
 }
 
+// 'spiders' is not in targetWords: a literal check in the content script would
+// keep the image revealed while the analyser is about to match the plural.
 for (const word of ['spider', 'spiders']) {
     test(`new vocabulary "${word}" re-blurs cleared media while the verdict is pending`, () => {
         const env = clearedPageFixture()
@@ -51,6 +61,8 @@ async function beginAnalysisRound(env) {
         if (message.type !== 'PB_ANALYZE_WORDS') return Promise.resolve({ ok: true })
         return new Promise(resolve => { resolveAnalysis = resolve })
     }
+    // 200 ms is ANALYSIS_DEBOUNCE_MS. runTimers would await the callback and
+    // deadlock on the held reply, so the timer is taken and started by hand.
     const [id, analysisTimer] = [...env.timers].find(([, timer]) => timer.delay === 200) || []
     assert.ok(analysisTimer, 'a debounced analysis must be scheduled')
     env.timers.delete(id)

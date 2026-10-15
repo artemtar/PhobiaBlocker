@@ -1,6 +1,14 @@
+// The ticket protocol only releases a child whose own verdict is clear. A
+// same-origin rich-text editor must stay readable even while this document's
+// verdict is blur, and blurring the whole iframe would blur the text being
+// typed. The parent instead asks the child controller to protect the media
+// inside and drops its own whole-frame filter only after an acknowledgement.
 (() => {
     'use strict'
 
+    // Same idempotence guard as shared-policy.js: keep the first copy if this file
+    // ever runs twice in one world. js.js captured that copy's class, and the
+    // token prefix and counter below belong to it.
     if (globalThis.PhobiaBlockerEditorFrames) return
 
     const PageTextIndex = globalThis.PhobiaBlockerPageTextIndex
@@ -10,9 +18,18 @@
     const ACK_ATTRIBUTE = 'data-phobiablocker-editor-ack'
     const REQUEST_EVENT = 'phobiablocker:editor-frame-request'
     const READY_EVENT = 'phobiablocker:editor-frame-ready'
+    // The random prefix makes this document's tokens distinct from any ack already
+    // in the markup (a page saved with the extension's attributes, or written by
+    // another content-script world), so a counter restarting at 1 cannot match a
+    // stale ack; the counter makes each request distinct so an older ack from this
+    // document is not mistaken for the current one.
     const TOKEN_PREFIX = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
     let nextToken = 0
 
+    // Both identity checks must agree before the document is trusted: a document
+    // whose browsing context is gone has a null defaultView, and a window this
+    // element does not host (frameElement differs) is not ours. Cross-origin
+    // access throws and simply means "not ours".
     function frameDocument(frame, ownerDocument) {
         try {
             if (frame?.localName !== 'iframe' || frame.ownerDocument !== ownerDocument || !frame.isConnected) return null
@@ -24,6 +41,9 @@
         }
     }
 
+    // Child side. Resolve the hosting <iframe> through frameElement, then confirm
+    // the parent would resolve back to this document, so a request attribute is
+    // only honoured from the element that really hosts us.
     function actualOwner(child) {
         try {
             const owner = child.defaultView?.frameElement
@@ -55,6 +75,9 @@
                 ? applyInheritedProtection : () => false
             this._onFrameReady = typeof onFrameReady === 'function' ? onFrameReady : () => {}
             this._requests = new Map()
+            // Re-entrancy guards. Every step of the handshake is a synchronous DOM
+            // event or attribute write, and the controller callbacks re-apply media,
+            // which calls release() again, so each path must refuse to nest.
             this._dispatching = new Set()
             this._handlingReady = new Set()
             this._inheritedRequest = null
@@ -65,13 +88,23 @@
             this._refreshing = false
             this._clearing = false
             this._notifying = false
+            // Child side: watch our own <iframe> element in the parent document
+            // (same origin, so the observer may cross). A request the parent wrote
+            // before this document was listening is still picked up from the attribute.
             this._ownerObserver = new MutationObserver(() => {
                 if (this._owner?.getAttribute(REQUEST_ATTRIBUTE) !== this._lastOwnerValue) this.refresh()
             })
             this._onRequestEvent = event => {
+                // The parent dispatches the request on the document itself (release, _forget);
+                // a same-named event bubbling up from an element is page traffic and ignored.
                 if (event.target === this._document) this._syncInheritedProtection()
             }
+            // Parent side: a child announced that its controller can now answer
+            // requests. Ignore it while we are the ones dispatching to that frame,
+            // and only for an iframe that this document actually owns.
             this._onReadyEvent = event => {
+                // event.target is retargeted to the shadow host when the iframe sits inside a
+                // shadow root; the composed path still starts at the iframe itself.
                 const frame = event.composedPath()[0]
                 if (this._clearing || this._dispatching.has(frame) || this._handlingReady.has(frame) ||
                     !frameDocument(frame, this._document)) return
@@ -95,6 +128,9 @@
 
         // Release the outer filter only after this exact child document has
         // synchronously applied the parent's requested media protection.
+        // The request and ack live in the shared DOM, so a same-origin page script
+        // could forge the ack. Like frame-clearance.js this is a stale-document and
+        // owner guard, not a boundary against a hostile page of the same origin.
         release(frame, blurred) {
             if (this._clearing || this._dispatching.has(frame)) return false
             const child = frameDocument(frame, this._document)
@@ -104,12 +140,16 @@
             }
 
             let entry = this._requests.get(frame)
+            // The child navigated: the entry describes a dead document, so restore
+            // its attribute and start over against the new one.
             if (entry && entry.document !== child) {
                 this._forget(frame)
                 entry = null
             }
             const previous = frame.getAttribute(REQUEST_ATTRIBUTE)
             if (!entry) entry = { document: child, original: previous, written: null }
+            // The page replaced our attribute meanwhile; that value, not ours, is
+            // what _forget must put back later.
             else if (previous !== entry.written) entry.original = previous
             const token = `${TOKEN_PREFIX}-${++nextToken}`
             entry.written = `${blurred === true ? 'blur' : 'clear'}:${token}`
@@ -118,6 +158,9 @@
             try {
                 frame.setAttribute(REQUEST_ATTRIBUTE, entry.written)
                 child.dispatchEvent(new Event(REQUEST_EVENT))
+                // The child's handler ran synchronously inside dispatchEvent. Re-check
+                // that nothing was swapped underneath and that this request's own
+                // token was acknowledged; an older ack still on <html> must not count.
                 return this._requests.get(frame) === entry &&
                     frameDocument(frame, this._document) === child && isEditable(child) &&
                     frame.getAttribute(REQUEST_ATTRIBUTE) === entry.written &&
@@ -143,6 +186,9 @@
             }
         }
 
+        // Called when this document's controller disables protection. Readiness is
+        // still announced so the parent re-evaluates: a disabled child never acks,
+        // so the parent keeps its own filter over the iframe.
         clear() {
             if (this._clearing) return
             this._clearing = true
@@ -156,6 +202,10 @@
             this._notifyParent()
         }
 
+        // Housekeeping from the mutation handler and the periodic poll: a navigated
+        // child, a document that stopped being editable or a page that rewrote the
+        // request attribute invalidates the entry; _forget restores the attribute
+        // and tells both documents.
         prune() {
             for (const [frame, entry] of this._requests) {
                 if (frameDocument(frame, this._document) !== entry.document || !isEditable(entry.document) ||
@@ -184,6 +234,8 @@
             if (owner) this._ownerObserver.observe(owner, { attributes: true, attributeFilter: [REQUEST_ATTRIBUTE] })
         }
 
+        // Child side of the handshake: read the parent's request from our own
+        // <iframe> element, apply it through the controller and ack on <html>.
         _syncInheritedProtection() {
             if (this._applying || this._clearing) return false
             this._applying = true
@@ -200,6 +252,8 @@
 
                 const request = { owner, value }
                 this._inheritedRequest = request
+                // Drop the previous ack before applying, so a failed application
+                // leaves no stale token for the parent to accept.
                 this._restoreAck()
                 let applied = false
                 try {
@@ -213,6 +267,9 @@
                     return false
                 }
                 const root = this._document.documentElement
+                // The ack is the only thing that lets the parent drop its filter, so
+                // it is written last and only when the controller reports the media
+                // inside as protected (settings applied, background scan succeeded).
                 if (!applied || !root) return false
                 this._ack = { root, original: root.getAttribute(ACK_ATTRIBUTE), written: match[2] }
                 root.setAttribute(ACK_ATTRIBUTE, match[2])
@@ -246,6 +303,9 @@
             if (!owner) return
             this._notifying = true
             try {
+                // Dispatched on our own <iframe> element in the parent document. composed lets
+                // the parent's capture listener on document see it even when the iframe sits
+                // inside a shadow root; that listener recovers the iframe via composedPath().
                 owner.dispatchEvent(new Event(READY_EVENT, { bubbles: true, composed: true }))
             } finally {
                 // Readiness can synchronously produce a fresh parent request.

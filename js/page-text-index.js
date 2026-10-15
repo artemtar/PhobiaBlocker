@@ -1,3 +1,6 @@
+// Incremental index of the visible words on a page, plus the word-cover helpers
+// shared by early-blur.js and the controller. It tracks words, not elements:
+// the verdict is page-wide, so page-wide token counts are all analysis needs.
 (() => {
     'use strict'
 
@@ -9,13 +12,25 @@
     // Text inside these elements is neither indexed nor covered.
     const EXCLUDED_SELECTOR = [
         'script', 'style', 'noscript', 'input', 'textarea', 'select', 'option',
+        // 'form' dates from an input-lag fix (e2819cc) that treated whole forms as
+        // editors: it drops every word inside a <form>, labels included, not only the
+        // controls listed before it. Narrowing it is an open question.
         'form', '[hidden]', '[aria-hidden="true"]',
     ].join(', ')
     const WORD_RE = policy.WORD_RE
+    // validateTargetWord rejects targets with fewer than three letters, so such
+    // tokens can never match; dropping them shrinks the list sent for analysis.
     const HAS_THREE_LETTERS_RE = /(?:\P{L}*\p{L}){3}/u
+    // The attributes most likely to flip _isEligibleTextNode's answer. Visibility
+    // driven by other attributes (CSS attribute selectors, <details open>) is only
+    // picked up when the text or the stylesheets change; a deliberate trade-off.
     const VISIBILITY_ATTRIBUTES = new Set(['class', 'style', 'hidden', 'aria-hidden', 'contenteditable'])
+    // Grapheme boundaries are what let coveredTextRanges map offsets found in
+    // normalized text back onto the original string.
     const TEXT_SEGMENTER = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
 
+    // A node placed directly in a shadow root has no parentElement; its host stands
+    // in as the parent for exclusion, style and editability checks.
     function composedParent(element) {
         return element?.parentElement || element?.getRootNode?.().host || null
     }
@@ -32,6 +47,9 @@
         })
     }
 
+    // isContentEditable follows inheritance from an ancestor's contenteditable and
+    // designMode makes a whole document editable; a literal attribute check
+    // would miss both and leave covers inside an editor.
     function isEditableElement(node) {
         const element = node?.nodeType === Node.TEXT_NODE ? composedParent(node) : node
         return Boolean(element && (element.isContentEditable ||
@@ -42,6 +60,7 @@
         return Boolean(doc && (doc.body?.isContentEditable || doc.designMode?.toLowerCase() === 'on'))
     }
 
+    // Element.closest stops at a shadow root; this keeps walking through the host.
     function closestAcrossRoots(element, selector) {
         for (let current = element; current; current = composedParent(current)) {
             if (current.matches?.(selector)) return current
@@ -54,6 +73,7 @@
     function collectDomRoots(root) {
         if (!root) return []
         const roots = [root]
+        // Index loop on purpose: roots grows while it is being iterated.
         for (let index = 0; index < roots.length; index++) {
             const current = roots[index]
             if (current.shadowRoot) roots.push(current.shadowRoot)
@@ -64,6 +84,9 @@
         return roots
     }
 
+    // The controller hides, rather than blurs, the background of an element that
+    // holds a control: a CSS filter on the container would blur every descendant,
+    // including the text being typed, so VisualNode sets background-image: none.
     function containsEditingSurface(element) {
         const isEditingSurface = candidate => {
             if (isEditableElement(candidate) || candidate.matches?.(
@@ -94,6 +117,8 @@
         return false
     }
 
+    // Same NFKC + lowercase as validateTargetWord, so page tokens and stored
+    // targets compare equal by plain string equality.
     function tokenize(value) {
         const normalized = typeof value === 'string' ? value.normalize('NFKC').toLowerCase() : ''
         return (normalized.match(WORD_RE) || []).filter(word => HAS_THREE_LETTERS_RE.test(word))
@@ -111,11 +136,16 @@
                 }
             })
         } catch (_) {
+            // Defensive: the walker only throws for a torn-down or foreign-realm root.
+            // Returning [] drops that root's words, which is fail-open for indexing;
+            // nothing in history records a case that needed this.
             return []
         }
         return textNodes
     }
 
+    // A cover is a solid bar in the text's own colour so it reads as redaction
+    // rather than a styling glitch; a transparent colour falls back to currentColor.
     function coverColorFor(parentElement) {
         try {
             const color = parentElement ? getComputedStyle(parentElement).color : ''
@@ -135,10 +165,15 @@
         return cover
     }
 
+    // WORD_RE runs on the NFKC-lowercased text, so match offsets are in normalized
+    // units. Normalization can change the length (ligatures, full-width forms,
+    // Hangul), so those offsets must be mapped back onto the original string.
     function coveredTextRanges(text, shouldCover) {
         const normalized = text.normalize('NFKC').toLowerCase()
         const matches = [...normalized.matchAll(WORD_RE)].filter(match => shouldCover(match[0]))
         if (matches.length === 0) return []
+        // ASCII is unchanged by NFKC and keeps its length under toLowerCase, so
+        // the offsets map 1:1 and the grapheme walk below can be skipped.
         if (/^\p{ASCII}*$/u.test(text)) {
             return matches.map(match => ({ start: match.index, end: match.index + match[0].length }))
         }
@@ -156,6 +191,9 @@
             sourceOffset = end
         }
 
+        // Walk the graphemes of the NFKD form, summing each one's NFKC-lowercase
+        // length to track the position in the string the matches were found in.
+        // A match spanning several graphemes keeps `start` until the one that ends it.
         const ranges = []
         let matchIndex = 0
         let normalizedOffset = 0
@@ -199,6 +237,8 @@
         }
 
         for (const { start, end } of coveredTextRanges(text, shouldCover)) {
+            // getComputedStyle forces a style flush; pay it once, and only for
+            // nodes that actually get a cover.
             if (color === null) color = coverColorFor(composedParent(textNode))
             appendPlain(text.slice(lastIndex, start))
             const cover = createWordCover(text.slice(start, end), color)
@@ -232,8 +272,12 @@
             this._targetWords = new Set()
             this._titleTokens = []
             this._root = null
+            // Non-null only while applyMutations runs, so build() and direct
+            // indexTextNode calls record no vocabulary deltas.
             this._recentAdded = null
             this._recentRemoved = null
+            // Lets the owner cover a trigger word the moment its text node is
+            // indexed, independent of the page-wide analysis verdict.
             this._onDirectMatch = typeof options.onDirectMatch === 'function'
                 ? options.onDirectMatch
                 : null
@@ -346,6 +390,7 @@
 
         indexTextNode(node, options = {}) {
             if (!node || node.nodeType !== Node.TEXT_NODE) return false
+            // Title text is tracked by _refreshTitle; indexing it here would count it twice.
             if (this._isInsideTitle(node)) return false
 
             const previous = this._textTokens.get(node) || []
@@ -364,6 +409,8 @@
             this._textTokens.set(node, next)
             this._addTokens(next)
 
+            // Text already inside an owned cover is the trigger word itself; reporting
+            // it would nest a cover in a cover and recurse through the owner's handling.
             if (options.notify !== false && this._onDirectMatch && this._targetWords.size > 0 &&
                 !(this._hasOwnedCovers() && this._findOwnedCover(node))) {
                 const directMatches = new Set(next.filter(word => this._targetWords.has(word)))
@@ -407,6 +454,8 @@
         // and reports no change when the vocabulary is identical, so a class or
         // style toggle that does not alter visible text costs nothing downstream.
         _reindexSubtree(node) {
+            // An element that just became hidden or aria-hidden takes its whole
+            // subtree out of the vocabulary.
             if (node && node.nodeType === Node.ELEMENT_NODE && node.matches(EXCLUDED_SELECTOR)) {
                 this._removeSubtree(node)
                 return
@@ -415,6 +464,8 @@
         }
 
         _addTokens(tokens) {
+            // Deltas are net per batch: a word whose last occurrence was removed and
+            // then re-added in the same batch cancels out instead of looking new.
             tokens.forEach((word) => {
                 const previous = this._tokenCounts.get(word) || 0
                 if (previous === 0 && this._recentAdded && !this._recentRemoved.delete(word)) {
@@ -425,6 +476,7 @@
         }
 
         _removeTokens(tokens) {
+            // Mirror of _addTokens: a removal cancels an addition from the same batch.
             tokens.forEach((word) => {
                 const next = (this._tokenCounts.get(word) || 0) - 1
                 if (next > 0) this._tokenCounts.set(word, next)
@@ -437,6 +489,9 @@
             })
         }
 
+        // <title> sits in <head> and never has a client rect, so its text would
+        // fail the visibility test below. The tab title is still text the user
+        // sees, so it is indexed from document.title as its own token list.
         _refreshTitle() {
             const next = tokenize(document.title || '')
             const unchanged = this._titleTokens.length === next.length &&
@@ -475,10 +530,15 @@
 
         _isEligibleTextNode(node) {
             const parent = composedParent(node)
+            // Only an explicit false counts as disconnected, matching the controller's
+            // checks, so DOM stubs that lack isConnected are still indexed.
             if (!parent || node.isConnected === false) return false
 
             if (this._shouldSkipElement(parent) || closestAcrossRoots(parent, EXCLUDED_SELECTOR)) return false
 
+            // Only text the user can actually see counts, so hidden templates, menus
+            // and SEO text do not blur a page whose visible content is clean. This is
+            // why the controller rebuilds the index whenever stylesheets change.
             try {
                 if (parent.getClientRects().length === 0) return false
                 const style = getComputedStyle(parent)

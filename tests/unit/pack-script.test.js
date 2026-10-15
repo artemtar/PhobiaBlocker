@@ -1,3 +1,5 @@
+// Checks pack.sh's archive against the files the extension actually references, and
+// that the lint gate in package.json covers every shipped hand-written script.
 const assert = require('node:assert/strict')
 const { execFileSync } = require('node:child_process')
 const fs = require('node:fs')
@@ -14,6 +16,8 @@ const read = file => fs.readFileSync(path.join(repoRoot, file), 'utf8')
 function extensionFiles() {
     const manifest = JSON.parse(read('manifest.json'))
     const files = new Set(['manifest.json', ...ROOT_PAGES])
+    // Only http(s) and chrome: URLs are skipped; nothing else in the pages points
+    // outside the package. A leading "./" or "/" is dropped to match zip entry names.
     const add = (file) => {
         if (typeof file === 'string' && file && !/^(?:https?:|chrome)/.test(file)) files.add(file.replace(/^\.?\//, ''))
     }
@@ -24,6 +28,7 @@ function extensionFiles() {
     add(manifest.options_ui?.page)
     add(manifest.background?.service_worker)
     for (const script of manifest.content_scripts || []) {
+        // The leading semicolons stop ASI from joining these lines with the previous one.
         ;(script.js || []).forEach(add)
         ;(script.css || []).forEach(add)
     }
@@ -32,6 +37,9 @@ function extensionFiles() {
         for (const [, src] of html.matchAll(/<script[^>]*\bsrc="([^"]+)"/g)) add(src)
         for (const [, href] of html.matchAll(/<link[^>]*\bhref="([^"]+)"/g)) add(href)
     }
+    // An MV3 service worker is a single manifest entry and pulls shared modules in
+    // with importScripts, so those are shipped files too; they resolve relative to
+    // the worker's own directory.
     const worker = manifest.background?.service_worker
     if (worker) {
         for (const [, list] of read(worker).matchAll(/importScripts\(([^)]*)\)/g)) {
@@ -63,6 +71,8 @@ function createFixture(referenced) {
     const manifest = { ...JSON.parse(read('manifest.json')), version: '0.1.0' }
     writeFile(path.join(dir, 'manifest.json'), JSON.stringify(manifest, null, 4))
 
+    // Two classes of decoy: files inside shipped directories, which pack.sh zips whole
+    // and so are expected in the archive, and root-level tooling that must stay out.
     writeFile(path.join(dir, 'screenshot.png'), 'screenshot')
     writeFile(path.join(dir, 'css/dev-only.css'), 'dev css')
     writeFile(path.join(dir, 'js/dev-only.js'), 'dev js')
@@ -95,6 +105,8 @@ test('every file the extension references exists in the repository', () => {
 test('the lint script covers every hand-written script the extension loads', () => {
     const lintScript = JSON.parse(read('package.json')).scripts.lint
     const linted = new Set(lintScript.split(/\s+/).filter(argument => argument.endsWith('.js')))
+    // Only compromise.min.js needs excluding: natural.js and stopWords.js are loaded by
+    // no page, so they never enter `referenced` in the first place.
     const bundledLibraries = new Set(['js/compromise.min.js'])
 
     const unlinted = referenced.filter(file => file.endsWith('.js') && !bundledLibraries.has(file) && !linted.has(file))
@@ -102,6 +114,8 @@ test('the lint script covers every hand-written script the extension loads', () 
     assert.deepEqual(unlinted, [], 'every shipped script must be part of the lint gate')
 })
 
+// The fixture starts at 0.1.0, so an explicit argument is distinguishable from the
+// default patch bump (0.1.1) that names the archive in the next test.
 test('pack.sh uses an explicit version when one is provided', () => {
     const dir = createFixture(referenced)
     try {

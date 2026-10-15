@@ -1,3 +1,8 @@
+// Historical Puppeteer end-to-end suite, kept for reference. It is not a release gate:
+// root `npm test` fails on purpose and the gate is `npm run test:unit` (tests/README.md).
+// Pages load over file://, whose URL has no hostname, so no site rule can ever match here
+// and the cases below only prove storage round-trips. Matching and mode precedence are
+// covered by tests/unit/policy-analysis.test.js against parseSiteRule / matchesSiteRule.
 const { describe, it, before, beforeEach, after, afterEach } = require('node:test')
 const assert = require('node:assert')
 const {
@@ -52,6 +57,10 @@ describe('PhobiaBlocker - Site Rules (Whitelist/Blacklist)', () => {
     })
 
     describe('Storage Operations', () => {
+        // The helpers write the raw array straight to chrome.storage.sync, bypassing the
+        // parseSiteRule validation the popup and settings pages apply, so values round-trip
+        // verbatim. '*.google.com' is stored as typed; the '*.' is stripped at match time
+        // because a rule already covers every subdomain of its host.
         it('should store and retrieve whitelisted sites', async () => {
             const testSites = ['example.com', 'test.org', '*.google.com']
             await setWhitelistedSites(browser, testSites)
@@ -93,6 +102,9 @@ describe('PhobiaBlocker - Site Rules (Whitelist/Blacklist)', () => {
             await wait(2000)
 
             // Add phobia words that would normally trigger blur
+            // A targetWords change after load reaches the content script through
+            // storage.onChanged and re-runs the whole protection pipeline, so the blur
+            // asserted next does not depend on the words being present at page load.
             await setPhobiaWords(browser, ['spider', 'test'])
             await wait(1000)
 
@@ -104,7 +116,9 @@ describe('PhobiaBlocker - Site Rules (Whitelist/Blacklist)', () => {
             // For file:// URLs, we'll use a simulated domain test
             await setWhitelistedSites(browser, ['example.com'])
 
-            // Navigate to a page with example.com in the title to simulate domain
+            // Rewriting the title does not simulate a domain: matchesSiteRule reads only the
+            // frame URL's hostname, so the whitelist written above is never exercised on this
+            // file:// page and nothing after the first assertion is checked.
             await page.evaluate(() => {
                 document.title = 'Test page - example.com'
             })
@@ -117,6 +131,9 @@ describe('PhobiaBlocker - Site Rules (Whitelist/Blacklist)', () => {
             await loadTestPage(page, 'basic-images.html')
 
             // Enable blur always on
+            // blurIsAlwaysOn resolves to ALWAYS_BLUR mode, which blurs without any verdict.
+            // resolveProtectionMode checks the whitelist before this toggle, which is the
+            // precedence the title refers to; only the toggle half is observable here.
             await setBlurAlwaysOn(browser, true)
             await wait(1000)
 
@@ -145,7 +162,10 @@ describe('PhobiaBlocker - Site Rules (Whitelist/Blacklist)', () => {
 
             let initialBlurCount = await countBlurredImages(page)
 
-            // Open popup (which sends setBlurAmount message)
+            // Open popup. Today it only reads storage and polls the active tab with the
+            // read-only getTriggeredWords query; the setBlurAmount message it once sent on
+            // open no longer exists. This opens popup.html in a tab, not Chrome's native
+            // action popup (tests/live/popup-sizing.js covers that one).
             const popupPage = await openExtensionPopup(browser, page)
             await wait(500)
 
@@ -169,6 +189,9 @@ describe('PhobiaBlocker - Site Rules (Whitelist/Blacklist)', () => {
         it('should blur all content on blacklisted sites regardless of settings', async () => {
             // Disable extension BEFORE loading the page so the content script
             // reads phobiaBlockerEnabled=false on startup (no message needed).
+            // Note the blacklist is never set in this case despite the title: the
+            // "regardless of settings" half (blacklist beats the global off switch) is
+            // only provable with a matching hostname.
             await setExtensionEnabled(browser, false)
             await wait(200)
 
@@ -188,8 +211,10 @@ describe('PhobiaBlocker - Site Rules (Whitelist/Blacklist)', () => {
         })
 
         it('should keep content blurred on blacklist even without phobia words', async () => {
-            // Clear phobia words BEFORE loading the page so the content script
-            // starts with empty targetWords (storage change has no effect after load).
+            // Clear phobia words BEFORE loading the page so the content script starts with
+            // empty targetWords and the first verdict is already clear. A change after load
+            // would also be applied (storage.onChanged re-runs protection), but the empty
+            // list at startup keeps the initial state unambiguous for the count below.
             await setPhobiaWords(browser, [])
             await wait(200)
 
@@ -204,6 +229,9 @@ describe('PhobiaBlocker - Site Rules (Whitelist/Blacklist)', () => {
             // File protocol testing has limitations
         })
 
+        // No assertion at all: with a file:// URL neither list matches, so this case only
+        // documents the rule. resolveProtectionMode tests the blacklist first, and
+        // tests/unit/policy-analysis.test.js proves it with both lists holding one rule.
         it('blacklist should take precedence over whitelist', async () => {
             await loadTestPage(page, 'basic-images.html')
 
@@ -243,6 +271,9 @@ describe('PhobiaBlocker - Site Rules (Whitelist/Blacklist)', () => {
             await setWhitelistedSites(browser, [])
         })
 
+        // A path rule covers that directory and everything below it, never a sibling that
+        // merely shares the prefix (example.com/path2). That is matchesSiteRule behaviour;
+        // here only the storage write is observed.
         it('should match domain with path patterns', async () => {
             const sites = ['example.com/path', 'test.org/admin']
             await setWhitelistedSites(browser, sites)
@@ -254,7 +285,8 @@ describe('PhobiaBlocker - Site Rules (Whitelist/Blacklist)', () => {
         })
 
         it('should handle base domain matching subdomains', async () => {
-            // The improved matchesSitePattern should make google.com match www.google.com
+            // matchesSiteRule makes google.com match www.google.com: a rule covers its exact
+            // host and every subdomain (hostname === host || hostname.endsWith('.' + host)).
             const sites = ['google.com']
             await setWhitelistedSites(browser, sites)
 
@@ -290,11 +322,15 @@ describe('PhobiaBlocker - Site Rules (Whitelist/Blacklist)', () => {
             let blurredCount = await countBlurredImages(page)
 
             // Verify consistent behavior
+            // countBlurredImages cannot return a negative number, so this assertion is
+            // vacuous; the enable/disable toggle itself is only exercised, not checked.
             assert.ok(blurredCount >= 0, 'Extension toggle should work correctly')
 
             await setWhitelistedSites(browser, [])
         })
 
+        // blurCount1 and blurCount2 are read but never compared: without a matching host
+        // the page is in ANALYZE mode, where a word change legitimately may change the count.
         it('should respect blacklist when phobia words change', async () => {
             await loadTestPage(page, 'basic-images.html')
 
@@ -354,7 +390,8 @@ describe('PhobiaBlocker - Site Rules (Whitelist/Blacklist)', () => {
 
     describe('Edge Cases', () => {
         it('should handle case-insensitive domain matching', async () => {
-            // Domains are normalized to lowercase in matchesSitePattern
+            // parseSiteRule lowercases the rule host and matchesSiteRule lowercases the URL
+            // hostname, so case never affects a match; the stored strings keep their case.
             await setWhitelistedSites(browser, ['Example.COM', 'TEST.org'])
 
             const retrieved = await getWhitelistedSites(browser)
@@ -365,6 +402,9 @@ describe('PhobiaBlocker - Site Rules (Whitelist/Blacklist)', () => {
             await setWhitelistedSites(browser, [])
         })
 
+        // '*.co.uk' passes parseSiteRule (host 'co.uk' after the wildcard is stripped, one
+        // dot is enough) and would match every .co.uk site: there is no public-suffix check,
+        // which is a trap for users, not a bug this suite guards.
         it('should handle special characters in domain patterns', async () => {
             const specialPatterns = [
                 '*.co.uk',
@@ -416,6 +456,9 @@ describe('PhobiaBlocker - Site Rules (Whitelist/Blacklist)', () => {
             await wait(500)
 
             // Simulate toggle in popup by changing storage
+            // This is faithful: the popup's own switch writes blurIsAlwaysOn to storage and
+            // the content script reacts to storage.onChanged, so the popup page being open
+            // adds nothing to the mechanism.
             await setBlurAlwaysOn(browser, true)
             await wait(500)
 
@@ -443,6 +486,8 @@ describe('PhobiaBlocker - Site Rules (Whitelist/Blacklist)', () => {
             // On blacklisted sites, blur should be maintained
             // This test verifies popup doesn't interfere with blacklist
 
+            // Vacuous: the count is never negative and blurredBefore is not compared. The
+            // popup never sends a command on close, so there is no mechanism to interfere.
             assert.ok(blurredAfter >= 0, 'Blur state should be consistent')
         })
     })

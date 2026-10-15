@@ -1,3 +1,6 @@
+// Content-script controller: owns the blur projection of every media element
+// and trigger word in this frame, the mutation-driven re-analysis, and the
+// frame protocols that decide when an iframe may be released.
 'use strict'
 
 const Policy = globalThis.PhobiaBlockerPolicy
@@ -6,6 +9,10 @@ const PageTextIndex = globalThis.PhobiaBlockerPageTextIndex
 const EditorFrames = globalThis.PhobiaBlockerEditorFrames
 const FrameClearance = globalThis.PhobiaBlockerFrameClearance
 
+// This script is last in its manifest content_scripts entry; the earlier
+// ones publish these globals. Failing loudly is safer than running without a
+// policy: protection.css keeps the page fail-closed (early-blur.js bails out
+// the same way when these are missing).
 if (!Policy || !Storage || !PageTextIndex || !EditorFrames || !FrameClearance) {
     throw new Error('PhobiaBlocker: required shared modules are unavailable')
 }
@@ -16,36 +23,65 @@ const {
     DEFAULTS, PROTECTION_MODE, STORAGE_KEYS, FAIL_CLOSED_RESULT, FRAME_MESSAGES, CSS_VARS, ROOT_ATTRS,
     computeBlurPixels, isTopFrameContext, withTimeout,
 } = Policy
+// Bound on one round trip to the service worker, for the word analysis and
+// the frame aggregate request alike. Expiry yields the fail-closed answer.
 const ANALYZE_TIMEOUT_MS = 3000
+// Element media registered directly; CSS backgrounds are found separately by
+// computed-style scans and registered with kind 'background'.
 const MEDIA_SELECTOR = 'img, video, iframe'
 const BACKGROUND_READY_ATTR = ROOT_ATTRS.backgroundReady
 const BACKGROUND_SCANNING_ATTR = ROOT_ATTRS.backgroundScanning
+// Per-element markers. protection.css keys off three of them: a background
+// node is blurred unless marked suppressed (root and editor backdrops hide the
+// image instead of filtering it, so the page text stays readable), and a
+// registered media element loses the startup pointer-events:none that
+// unregistered media carry.
 const BACKGROUND_MARKER_ATTR = 'data-phobiablocker-background'
+// Legacy: protection.css used to key its root-background exception on this
+// before the suppressed marker replaced it. Nothing reads it any more; it is
+// still written and restored so VisualNode's attribute bookkeeping stays
+// complete.
 const ROOT_BACKGROUND_MARKER_ATTR = 'data-phobiablocker-root-background'
 const SUPPRESSED_BACKGROUND_MARKER_ATTR = 'data-phobiablocker-suppressed-background'
 const MEDIA_MARKER_ATTR = 'data-phobiablocker-media'
 const POLICY_STORAGE_KEYS = new Set(Object.values(STORAGE_KEYS))
 // Popup accordion state never affects a page.
 const UI_ONLY_STORAGE_KEYS = new Set([STORAGE_KEYS.detectedWordsCollapsed, STORAGE_KEYS.supportedWordsCollapsed])
-// Keys that only change how media is rendered, never whether it is blurred.
+// Keys whose change never alters the protection mode or verdict (blur
+// strength, preview, debug logging): setSettings re-styles without
+// re-applying policy.
 const VISUAL_STORAGE_KEYS = new Set([
     STORAGE_KEYS.blurAmount, STORAGE_KEYS.previewEnabled, STORAGE_KEYS.previewStrength, STORAGE_KEYS.debugMode,
 ])
+// Element -> snapshot of the attribute values this script last wrote, alive
+// for one task; isInternalMutation compares records against it.
 const INTERNAL_ATTRIBUTE_STATE = new WeakMap()
 // The only observed attributes this script writes itself.
 const INTERNAL_SNAPSHOT_ATTRIBUTES = Object.freeze(['class', 'style', BACKGROUND_READY_ATTR, BACKGROUND_SCANNING_ATTR])
+// Attribute records the observer asks for. class/style/hidden/aria-hidden and
+// contenteditable change text visibility or editability; src..sandbox change
+// what a media element or iframe shows; href/rel/media/disabled/type change
+// stylesheets and <source> selection; slot/name/role move slotted content or
+// mark an editing surface. Anything else is ignored to keep batches small.
 const OBSERVED_ATTRIBUTES = Object.freeze([
     'class', 'style', 'hidden', 'aria-hidden', 'contenteditable', 'role', 'slot', 'name',
     'src', 'srcset', 'sizes', 'poster', 'srcdoc', 'sandbox',
     'href', 'rel', 'media', 'disabled', 'type',
     BACKGROUND_READY_ATTR, BACKGROUND_SCANNING_ATTR,
 ])
+// CSSOM edits (insertRule, adoptedStyleSheets, sheet.disabled) produce no
+// mutation records, so stylesheets are fingerprinted on a timer instead.
 const STYLESHEET_POLL_INTERVAL_MS = 2000
+// The fallback shadow-root sweep walks the whole page one element at a time.
+// Each slice stops after this many nodes or ~4 ms (well inside a 60 Hz frame)
+// and resumes a frame later, so a large page never sees a long task from it.
 const SHADOW_DISCOVERY_NODE_BUDGET = 250
 const SHADOW_DISCOVERY_TIME_BUDGET_MS = 4
 const SHADOW_DISCOVERY_YIELD_MS = 16
-// Custom-element hosts still waiting for a declarative shadow root while the
-// document is parsed. Bounded; anything dropped is found by the discovery poll.
+// Hosts still waiting for a declarative shadow root while the document is
+// parsed: custom elements, elements holding a shadowrootmode template and
+// the elements the parser left open. Bounded; anything dropped is found by
+// the discovery sweep.
 const MAX_PENDING_SHADOW_HOSTS = 256
 // Coalesce analysis across a burst of mutations instead of re-analysing the
 // whole page once per batch.
@@ -55,8 +91,13 @@ const RESIZE_DEBOUNCE_MS = 200
 // Stylesheet edits arrive in bursts (CSS-in-JS inserts one <style> per
 // component). Rebuild the visible-text index once per burst, off the observer.
 const STYLESHEET_REINDEX_DEBOUNCE_MS = 200
+// Each storage read attempt is bounded so a read that never settles cannot
+// leave the page in the shim's fail-closed state forever; after the last
+// attempt the controller applies conservative settings itself.
 const SETTINGS_READ_TIMEOUT_MS = 3000
 const SETTINGS_READ_ATTEMPTS = 3
+// A failed full background scan keeps the page-wide background-image:none
+// rule in force; after this many failures the page is accepted as ready.
 const MAX_BACKGROUND_SCAN_RETRIES = 3
 // Throttle for the pointer hit test that drives hover previews.
 const HOVER_HIT_TEST_INTERVAL_MS = 30
@@ -67,12 +108,29 @@ const MAX_DEFERRED_CLEAR_VERDICTS = 4
 // strength. Until the first settings read is applied the controller must not
 // weaken that, so its own projection starts from the same value.
 const FAIL_CLOSED_BLUR_PIXELS = '40px'
+// Events on img/video that can swap the displayed picture under an existing
+// verdict (new src, poster, srcObject). Each re-applies the current result
+// unless the user's explicit reveal still matches what the element shows.
 const MEDIA_RESOURCE_EVENTS = Object.freeze(['load', 'loadstart', 'loadedmetadata', 'loadeddata', 'emptied'])
+// Attributes that navigate an iframe or change its origin rules. The guard
+// events fire inside the child window: pagehide/unload announce a navigation
+// before the new document exists, pageshow(persisted) brings an old document
+// back from the back/forward cache with no load event.
 const IFRAME_NAVIGATION_ATTRIBUTES = Object.freeze(['src', 'srcdoc', 'sandbox'])
 const IFRAME_NAVIGATION_START_EVENTS = Object.freeze(['pagehide', 'unload'])
 const IFRAME_RESTORATION_EVENT = 'pageshow'
 const IFRAME_GUARD_EVENTS = Object.freeze([...IFRAME_NAVIGATION_START_EVENTS, IFRAME_RESTORATION_EVENT])
+// Guards of documents parked in the back/forward cache are kept per iframe so
+// a restored document is recognised; the bound stops a frame that navigates
+// endlessly from retaining every cached window. Two is an arbitrary small
+// allowance, not a browser or back/forward-cache limit.
 const MAX_SUSPENDED_IFRAME_GUARDS = 2
+// Only <iframe> is registered as media and bound to a ticket by its
+// contentWindow, so only it can be blurred and released on its own. frame,
+// object, embed and fencedframe can also host documents, but the controller
+// never projects onto them: their presence is reported as an unsupported
+// owner and the worker refuses the whole-tree verdict (per-iframe tickets
+// may still be issued).
 const FRAME_OWNER_SELECTOR = 'iframe'
 const UNSUPPORTED_FRAME_OWNER_SELECTOR = 'frame, object, embed, fencedframe'
 const TRACKED_FRAME_OWNER_SELECTOR = `${FRAME_OWNER_SELECTOR}, ${UNSUPPORTED_FRAME_OWNER_SELECTOR}`
@@ -82,10 +140,15 @@ const FRAME_AGGREGATE_REFRESH_DEBOUNCE_MS = 100
 // (a navigation, a child status change, a topology change) asks again.
 const FRAME_AGGREGATE_MAX_RETRIES = 3
 const FRAME_AGGREGATE_INITIAL_RETRY_MS = 1000
+// attributeOldValue is required: style records are diffed against the old
+// text to tell a page edit from our own projection.
 const DOM_OBSERVER_OPTIONS = Object.freeze({
     childList: true, characterData: true, subtree: true,
     attributes: true, attributeOldValue: true, attributeFilter: OBSERVED_ATTRIBUTES,
 })
+// A second observer that stays connected in every mode, including while the
+// main one is torn down between analyses, so iframe navigations and owner
+// changes always invalidate the frame aggregate.
 const FRAME_OBSERVER_OPTIONS = Object.freeze({
     attributes: true, childList: true, subtree: true, attributeFilter: IFRAME_NAVIGATION_ATTRIBUTES,
 })
@@ -94,6 +157,9 @@ const FRAME_OBSERVER_OPTIONS = Object.freeze({
 const STARTUP_OBSERVER_OPTIONS = Object.freeze({ childList: true, subtree: true })
 // The document stylesheet cannot cross a shadow boundary. Keep its initial
 // media protection and word-cover appearance in an owned sheet in each root.
+// Unlike protection.css's literal 40px, unregistered shadow media follow the
+// root blur variable once settings are projected (40px until then);
+// registered media in either tree carry an inline filter that outranks both.
 const SHADOW_PROTECTION_CSS = `
     :host-context(html:not([data-phobiablocker-background-ready]):not([data-phobiablocker-background-scanning])) * {
         background-image: none !important;
@@ -121,6 +187,8 @@ const SHADOW_PROTECTION_CSS = `
         cursor: help !important;
     }
 `
+// Counters exposed through getAnalysisDebugState for the test suites;
+// nothing reads them to make a decision.
 const ANALYSIS_DEBUG_STATE = {
     pageAnalysisRequests: 0,
     mutationBatches: 0,
@@ -131,6 +199,9 @@ const ANALYSIS_DEBUG_STATE = {
 const SIGNATURE_STYLE_PROBE = document.createElement('span').style
 const PREVIOUS_STYLE_PROBE = document.createElement('span').style
 
+// Where the user right-clicked, captured on contextmenu so the "unblur"
+// message that the service worker sends later can find the media element or
+// covered word under the menu.
 let lastElementContext = null
 let lastContextMenuPoint = null
 let iconStatusTimer = null
@@ -173,7 +244,10 @@ function currentPolicyUrl() {
     return stripUrlFragment(location.href)
 }
 
+// Ours only if the attribute still holds the value snapshotted after our
+// write; a page edit in between leaves a different value and is processed.
 function isInternalMutation(mutation) {
+    // A record without a target carries nothing to act on and is dropped as ours.
     if (!mutation || !mutation.target) return true
     if (mutation.type !== 'attributes' || !(mutation.target instanceof Element)) return false
     const snapshot = INTERNAL_ATTRIBUTE_STATE.get(mutation.target)
@@ -190,6 +264,9 @@ function sendToBackground(message) {
     } catch (_) { /* See above. */ }
 }
 
+// The toolbar icon belongs to the tab, so only the top frame reports. Idle and
+// detected are delayed 250 ms because verdicts flip quickly during a page load
+// and the icon would flicker; processing is shown at once.
 function reportIconStatus(status) {
     if (!isTopFrameContext()) return
     clearTimeout(iconStatusTimer)
@@ -202,6 +279,8 @@ function reportIconStatus(status) {
     iconStatusTimer = setTimeout(send, 250)
 }
 
+// Identical writes are skipped: each one would produce a style record the
+// observer then has to recognise as ours.
 function setRootCssVar(name, value, priority = '') {
     const root = document.documentElement
     if (!root || !root.style) return
@@ -210,6 +289,7 @@ function setRootCssVar(name, value, priority = '') {
     root.style.setProperty(name, value, priority)
 }
 
+// Both the namespaced and the legacy variable names; see CSS_VARS.
 function setBlurCssValue(value) {
     setRootCssVar(CSS_VARS.blurNs, value)
     setRootCssVar(CSS_VARS.blurLegacy, value)
@@ -220,6 +300,8 @@ function setPreviewBlurCssValue(value) {
     setRootCssVar(CSS_VARS.previewLegacy, value)
 }
 
+// Serialises an inline style with our projected properties and root variables
+// removed, so two style strings compare equal when only our own writes differ.
 function getUnownedStyleSignature(styleText, projectedProperties) {
     const probe = SIGNATURE_STYLE_PROBE
     probe.cssText = styleText || ''
@@ -250,6 +332,10 @@ async function analyzePageWordsWithOffscreen(words) {
     }
 }
 
+// Identity of what an element displays, used to decide whether an explicit
+// reveal, a committed clearance or a completed iframe navigation still refers
+// to the same content. An empty string means "no identity": callers then
+// refuse to retain a reveal or clearance for the element.
 function getMediaFingerprint(element, knownBackgroundImage = null) {
     try {
         if (element instanceof HTMLImageElement) {
@@ -299,14 +385,23 @@ function getMediaFingerprint(element, knownBackgroundImage = null) {
     }
 }
 
+// Whether an iframe's document must go through the cross-origin frame
+// protocol before it may be released. Any doubt answers true (stay blurred);
+// false is returned only once the child document is known to be same-origin
+// and to be the one the markup asked for, not a transitional about:blank.
 function isCrossOriginIframe(iframe, navigationComplete = false) {
     try {
         if (!(iframe instanceof HTMLIFrameElement)) return true
+        // Any sandbox value counts, even one with allow-same-origin: a sandboxed
+        // document takes the protocol path like a cross-origin one.
         if (iframe.hasAttribute('sandbox')) return true
 
         const hasSourceDocument = iframe.hasAttribute('srcdoc')
         const source = iframe.getAttribute('src')
         let declared = null
+        // A declared src other than about:blank (or a srcdoc) must actually have
+        // been navigated to. Until then the frame still shows the initial blank
+        // document, which says nothing about the page it is about to load.
         let requiresDeclaredNavigation = hasSourceDocument
         if (source && !hasSourceDocument) {
             declared = new URL(source, document.baseURI)
@@ -324,11 +419,15 @@ function isCrossOriginIframe(iframe, navigationComplete = false) {
         const effective = new URL(effectiveSource, document.baseURI)
         const isInitialBlankDocument = effective.protocol === 'about:' && effective.pathname === 'blank'
         const isSourceDocument = effective.protocol === 'about:' && effective.pathname === 'srcdoc'
+        // A still-loading document may yet be replaced by the declared one.
         if (frameDocument.readyState !== 'complete' && requiresDeclaredNavigation) return true
         if (hasSourceDocument) return !isSourceDocument
         if (requiresDeclaredNavigation && (isInitialBlankDocument || isSourceDocument)) return true
         if (isInitialBlankDocument || isSourceDocument) return false
         if (!effective.origin || effective.origin === 'null' || effective.origin !== location.origin) return true
+        // The frame shows a URL other than its src (redirect or in-frame
+        // navigation). Only a load the controller observed, passed in as
+        // navigationComplete, proves this is the settled document.
         if (declared && effective.href !== declared.href && !navigationComplete) {
             return true
         }
@@ -338,12 +437,17 @@ function isCrossOriginIframe(iframe, navigationComplete = false) {
     }
 }
 
+// Only url() images count as media; gradients are decoration and never blur.
 function getComputedBackgroundImage(element) {
     if (!(element instanceof Element)) return ''
     const value = getComputedStyle(element).backgroundImage
     return value && value !== 'none' && value.includes('url(') ? value : ''
 }
 
+// One registered element's blur projection: classes, marker attributes and an
+// inline filter or background-image, each written with !important so page CSS
+// cannot undo it. Everything the page had before registration is recorded so
+// the element can be handed back untouched when the node is released.
 class VisualNode {
     constructor(element, kind, controller) {
         this.element = element
@@ -368,12 +472,17 @@ class VisualNode {
             ['background-image', this._readStyleProperty(element.style, 'background-image')],
         ])
         this._styleProjections = new Map()
+        // Filtering <html> or <body> would blur the whole page, and filtering
+        // the backdrop of an editing surface would blur the text being typed.
+        // Such nodes hide their background-image instead of blurring it.
         this.isRootBackground = kind === 'background' &&
             (element === document.documentElement || element === document.body)
         this.suppressesBackground = this.isRootBackground ||
             (kind === 'background' && PageTextIndex.containsEditingSurface(element))
         this._backgroundModeDirty = false
         this.backgroundImage = ''
+        // A node is born blurred: registering never reveals anything, the
+        // controller applies the current verdict afterwards.
         this.isBlurred = true
         // Last projection actually written to the DOM. Repeated requests for the
         // same state become no-ops, which is what stops mutation batches from
@@ -387,6 +496,7 @@ class VisualNode {
         this.blur()
     }
 
+    // Never strips a projection class the page itself had on the element.
     _setProjectionClass(name, enabled) {
         if (enabled) this.element.classList.add(name)
         else if (!this._originalClasses.has(name)) this.element.classList.remove(name)
@@ -412,6 +522,8 @@ class VisualNode {
     _setStyleProjection(name, value, priority = '') {
         const current = this._readStyleProperty(this.element.style, name)
         const previousProjection = this._styleProjections.get(name)
+        // A current value that is not our last projection was written by the
+        // page since then; remember it as the value to restore.
         if (!previousProjection || !this._stylePropertyMatches(current, previousProjection)) {
             this._pageStyles.set(name, current)
         }
@@ -444,6 +556,11 @@ class VisualNode {
         else this.element.style.removeProperty(name)
     }
 
+    // Called for a style record on a registered element. Returns whether the
+    // page changed anything (an unowned property, or one of ours to a value we
+    // did not write) and re-asserts any projection the page overwrote (a
+    // framework rewriting cssText drops our filter), so a style rewrite can
+    // never leave media revealed.
     captureStyleMutation(oldStyleText) {
         const previous = PREVIOUS_STYLE_PROBE
         previous.cssText = oldStyleText || ''
@@ -467,12 +584,18 @@ class VisualNode {
         return pageChanged
     }
 
+    // Before a computed-style read: our background-image:none would otherwise
+    // be read back as "no background" and the node dropped from the registry.
     prepareBackgroundScan() {
         if (!this.suppressesBackground) return
         this._restorePageStyle('background-image')
         this.invalidateRendering()
     }
 
+    // An editing surface can appear or disappear beneath an element
+    // (contenteditable toggled, slot reassigned), switching it between blur
+    // and suppress. Both projections are restored first so the old mode's
+    // write does not linger under the new one.
     refreshBackgroundMode() {
         if (this.kind !== 'background' || !this._backgroundModeDirty) return
         this._backgroundModeDirty = false
@@ -495,6 +618,8 @@ class VisualNode {
         this._renderState = null
     }
 
+    // isBlurred is updated before the render-state short-circuit so hover and
+    // preview logic see the requested state even when nothing was rewritten.
     blur() {
         if (!this.element || this.element.isConnected === false) return
         this.isBlurred = true
@@ -518,6 +643,9 @@ class VisualNode {
         if (this._previewActive) this._applyPreviewFilter()
     }
 
+    // "explicit" is the user's own reveal (context menu, unblur all). It has
+    // its own render state and class so a later automatic release does not
+    // collapse into the same no-op and the DOM shows which kind applies.
     unblur(options = {}) {
         if (!this.element || this.element.isConnected === false) return
         const nextState = options.explicit === true ? 'unblur-explicit' : 'unblur'
@@ -539,6 +667,9 @@ class VisualNode {
         this._previewActive = false
     }
 
+    // Hands the element back exactly as found. Used when the node leaves the
+    // registry (removed, no longer a background, protection disabled), never
+    // as a way to unblur.
     clearRendering() {
         if (!this.element) return
         this._renderState = null
@@ -557,6 +688,8 @@ class VisualNode {
         this._styleProjections.clear()
     }
 
+    // With previews disabled the "preview" is the full blur, so hovering never
+    // reveals more than the page-wide setting allows.
     _applyPreviewFilter() {
         if (!this.element) return
         const settings = this.controller.settings
@@ -634,6 +767,7 @@ class VisualRegistry {
     prune() {
         this._nodes.forEach((node) => {
             if (!node.element || node.element.isConnected === false) {
+                // A removed iframe still has our listeners on its child window.
                 if (node.kind === 'iframe' && node.element) {
                     this._controller._disarmIframeNavigationGuard(node.element)
                 }
@@ -659,6 +793,9 @@ class VisualRegistry {
     }
 }
 
+// Wraps matched words in .phobia-word-cover spans and owns their lifecycle.
+// While inactive no new covers are made. A wrapper the user revealed stays a
+// wrapper (so its text remains indexed) but is projected as uncovered.
 class WordCoverManager {
     constructor() {
         this._pageTextIndex = null
@@ -672,6 +809,9 @@ class WordCoverManager {
         this._pageTextIndex = pageTextIndex
     }
 
+    // Covering needs a non-disabled mode, the toggle and at least one valid
+    // target; otherwise every existing cover is unwrapped. DISABLED mode leaves
+    // words readable on purpose.
     configure(settings, mode) {
         this._targets = new Set(Policy.normalizeTargetWords(settings.targetWords).valid)
         this._active = mode !== PROTECTION_MODE.DISABLED &&
@@ -697,6 +837,9 @@ class WordCoverManager {
         return null
     }
 
+    // Re-asserts the cover classes after the page rewrote a wrapper's class
+    // attribute. A wrapper that became editable is removed instead: a span
+    // inside an editor breaks the caret and the editor's own model.
     repairProjection(element) {
         if (!this._ownedWrappers.has(element)) return false
         if (PageTextIndex.isEditableElement(element)) {
@@ -717,6 +860,9 @@ class WordCoverManager {
         if (PageTextIndex.isEditableElement(parentElement)) return false
         if (this._findOwnedWrapper(parentElement)) return false
 
+        // directMatches is what the index found in this node; a word is covered
+        // only if it is also a current target, since the set may predate a
+        // configure() that removed it.
         const matchesToCover = directMatches instanceof Set ? directMatches : this._targets
         const split = PageTextIndex.splitTextNodeByWords(textNode, word => (
             matchesToCover.has(word) && this._targets.has(word)
@@ -776,6 +922,7 @@ class WordCoverManager {
         this._unwrap(wrapper, { notify: true })
     }
 
+    // Drops covers the page removed and covers an editor has since grown over.
     prune() {
         Array.from(this._ownedWrappers).forEach((wrapper) => {
             if (wrapper.isConnected === false || PageTextIndex.isEditableElement(wrapper)) this._unwrap(wrapper)
@@ -805,26 +952,57 @@ class WordCoverManager {
 
 class Controller {
     constructor() {
+        // Fail-closed until applyProtectionMode installs the real settings:
+        // the stylesheet's 40px blur and ALWAYS_BLUR, never the defaults'
+        // weaker blur or hover preview.
         this.settings = this._cloneDefaults()
         this.blurPixels = FAIL_CLOSED_BLUR_PIXELS
         this.blurFilter = `blur(${this.blurPixels})`
         this.mode = PROTECTION_MODE.ALWAYS_BLUR
+        // Bumped by every policy application, scheduled analysis and manual
+        // command. An async verdict whose generation is stale is dropped, so an
+        // older answer can never overwrite a newer state.
         this._policyGeneration = 0
+        // The committed verdict. applyProtectionMode resets it to fail-closed;
+        // only applyPageResult commits an analysis result into it.
         this._pageAnalysisResult = { ...FAIL_CLOSED_RESULT }
+        // Media identities as of the last committed clear verdict on this URL.
+        // While a re-analysis is pending, unchanged media keep their release
+        // instead of flashing blurred; anything new or changed does not.
         this._clearedMedia = new WeakMap()
         this._clearedUrl = null
         this._policyUrl = currentPolicyUrl()
         this._registry = new VisualRegistry(this)
+        // Element -> fingerprint of what the user revealed; the reveal lapses
+        // as soon as the element starts showing something else.
         this._explicitReveals = new WeakMap()
+        // _loadedIframeFingerprints: src/srcdoc identity at the load this
+        // controller observed; a later attribute change no longer matches and
+        // reads as 'not loaded yet'. _iframeEditorStates: last-seen editability
+        // of each child document, so a flip re-evaluates the backgrounds above
+        // the frame.
         this._loadedIframeFingerprints = new WeakMap()
         this._iframeEditorStates = new WeakMap()
+        // Iframes in _pendingIframeNavigations have a new document that has
+        // not loaded yet: they stay blurred and no ticket can clear them. The
+        // guards are listeners inside each child window for the guard events.
         this._pendingIframeNavigations = new WeakSet()
         this._iframeNavigationGuards = new WeakMap()
+        // _frameAggregateClear: the service worker confirmed every frame under
+        // this document is clear. _verifiedClearIframes: the subset released
+        // one by one through tickets when only some are. The epoch stamps each
+        // request so a late answer to an earlier question is ignored.
         this._frameAggregateClear = false
         this._frameAggregateEpoch = 0
         this._frameAggregateRefreshTimer = null
         this._frameAggregateRetryAttempt = 0
         this._verifiedClearIframes = new Set()
+        // Parent side of the per-iframe tickets. The worker arms this document
+        // with fresh tokens, each clear child posts its token to the parent
+        // window, and onClear releases exactly the iframe whose contentWindow
+        // sent it. isCurrent ties tickets to the epoch they were minted for,
+        // canClear refuses a frame mid-navigation, fingerprint catches an
+        // owner whose content changed between arming and the posted message.
         this._frameClearance = new FrameClearance({
             frames: () => this._registry.all().filter(node => node.kind === 'iframe').map(node => node.element),
             fingerprint: element => JSON.stringify([
@@ -837,13 +1015,25 @@ class Controller {
                 this._applyResultToNode(this._registry.get(element), this._currentVisualResult())
             },
         })
+        // This document's own back/forward-cache trip: child frames may have
+        // navigated while it was frozen, so the aggregate is dropped on hide
+        // (nothing to refresh while frozen) and asked again on restore.
         window.addEventListener('pagehide', () => this._invalidateFrameAggregate({ refresh: false }))
         window.addEventListener('pageshow', event => {
             if (event.persisted) this._invalidateFrameAggregate()
         })
+        // Pending from birth: no verdict exists, so the visual result is
+        // fail-closed until applyPageResult commits one.
         this._analysisPending = true
         this._lastFrameStatusSignature = ''
+        // protection.css blurs every img/video/iframe unconditionally, DISABLED
+        // mode included, so the controller counters it with an inline
+        // filter:none !important per element. This remembers the page's own
+        // inline filter so it can be put back.
         this._disabledMediaFilters = new WeakMap()
+        // "Blur media" from the popup or hotkey, and the blur a child editor
+        // iframe inherits from its parent through the EditorFrames handshake.
+        // Both override any clear verdict until withdrawn.
         this._manualBlurAllActive = false
         this._inheritedEditorBlur = false
         this._editorDocumentEditable = PageTextIndex.isEditableDocument(document)
@@ -855,6 +1045,10 @@ class Controller {
         this._stylesheetIds = new WeakMap()
         this._nextStylesheetId = 0
         this._backgroundLinks = new WeakSet()
+        // pending -> scanning -> ready, projected onto <html> for protection.css:
+        // pending hides every background-image page-wide, scanning makes the
+        // page invisible (opacity 0) while the page's own backgrounds are read
+        // back, ready releases all but the registered ones.
         this._backgroundPhase = 'pending'
         this._backgroundRetries = 0
         this._hasCompletedBackgroundScan = false
@@ -867,10 +1061,18 @@ class Controller {
         this._onMediaResourceEvent = event => this._handleMediaResourceEvent(event)
         this._onIframeLifecycleLoad = event => this._handleIframeLifecycleLoad(event)
         this._globalRescanTimer = null
+        // Bound to window resize and hashchange: resize changes layout and media
+        // queries, a hash change re-evaluates :target, and either can alter
+        // computed backgrounds and text visibility with no DOM record. Rescan,
+        // and re-run the hover hit test since content may have moved under the
+        // pointer.
         this._onGlobalBackgroundStateEvent = () => {
             this._scheduleDebouncedRescan()
             this._scheduleHoverPreviewUpdate()
         }
+        // Slot reassignment moves light content under a different rendered
+        // ancestor, which can put a registered background above or below an
+        // editing surface; re-evaluate those backgrounds, then rescan.
         this._onSlotChange = event => {
             if (this.mode === PROTECTION_MODE.DISABLED) return
             const touched = new Set()
@@ -884,6 +1086,9 @@ class Controller {
         // re-style the page must not pre-empt that first application.
         this.protectionApplied = false
         this._wordCoverManager = new WordCoverManager()
+        // The index reports matched words per text node for covering, and page
+        // edits inside our own wrappers so a cover is rebuilt rather than left
+        // half-covering a changed word.
         this._pageTextIndex = new PageTextIndex({
             onDirectMatch: (node, matches) => this._wordCoverManager.coverTextNode(node, matches),
             onOwnedCoverChange: wrapper => this._wordCoverManager.reconcileCover(wrapper),
@@ -891,6 +1096,9 @@ class Controller {
             hasOwnedCovers: () => this._wordCoverManager.ownedCount > 0,
         })
         this._wordCoverManager.attachIndex(this._pageTextIndex)
+        // Both ends of the same-origin editor handshake: as a child, the
+        // parent's blur/clear request arrives as inherited protection; as a
+        // parent, a child that announces readiness is registered as media.
         this._editorFrames = new EditorFrames({
             applyInheritedProtection: blurred => this._applyInheritedEditorProtection(blurred),
             onFrameReady: frame => {
@@ -904,10 +1112,15 @@ class Controller {
         this._hoverPoint = null
         this._lastHoverUpdateAt = 0
         this._hoverTrailingTimer = null
+        // -1 never equals a real word count, so the first clear verdict is
+        // deferred at least once while there is media to protect and the page
+        // may still be rendering.
         this._lastVerdictWordCount = -1
         this._deferredClearVerdicts = 0
         this._startHoverTracking()
         this._startIframeLifecycleTracking()
+        // Capture phase: a page listener on the host cannot stop the event
+        // before the controller has seen it.
         document.addEventListener('phobiablocker:shadow-root-attached', event => {
             const host = event.composedPath()[0]
             // The page can dispatch this event too. Only inspect the actual DOM;
@@ -934,10 +1147,14 @@ class Controller {
         )))
     }
 
+    // Roots whose host has left the document are skipped until
+    // _pruneShadowRoots drops them.
     _documentRoots() {
         return [document, ...this._shadowRoots].filter(root => !root.host || root.host.isConnected)
     }
 
+    // querySelectorAll stops at shadow boundaries; this spans every known open
+    // root beneath `root` as well.
     _queryAll(root, selector) {
         const roots = root === document ? this._documentRoots() : PageTextIndex.collectDomRoots(root)
         return roots.flatMap(tree => Array.from(tree.querySelectorAll?.(selector) || []))
@@ -948,6 +1165,10 @@ class Controller {
         this._iframeLifecycleObserver?.observe(root, FRAME_OBSERVER_OPTIONS)
     }
 
+    // One constructed sheet shared by every root: adoptedStyleSheets is the
+    // only way to style inside a shadow root without touching its DOM. The
+    // array is replaced rather than pushed to because older Chrome exposes it
+    // as a frozen array.
     _ensureShadowStyles(root) {
         if (!this._shadowStyleSheet) {
             this._shadowStyleSheet = new CSSStyleSheet()
@@ -983,6 +1204,9 @@ class Controller {
         if (root && this._shadowRoots.has(root)) this._ensureShadowStyles(root)
     }
 
+    // A hyphenated name is a custom element, the usual host of a declarative
+    // template; any element can also already hold the <template shadowrootmode>
+    // the parser inserted but has not yet turned into a root.
     _mayGainDeclarativeShadowRoot(element) {
         if (element.shadowRoot) return false
         if (element.localName.includes('-')) return true
@@ -1079,9 +1303,15 @@ class Controller {
         // simultaneous CSSOM change elsewhere before the next polling tick.
         this._stylesheetFingerprints.set(root, this._computeStylesheetFingerprint(root))
         this._observeRoot(root)
+        // load, scroll, slotchange and the media resource events are not
+        // composed, so the document-level capture listeners never see them from
+        // inside a shadow tree; every root needs its own. _pruneShadowRoots must
+        // remove exactly this set.
         root.addEventListener('load', this._onIframeLifecycleLoad, true)
         root.addEventListener('scroll', this._onHoverScroll, { capture: true, passive: true })
         root.addEventListener('slotchange', this._onSlotChange)
+        // Resource listeners exist only while protection is enabled; a root
+        // registered in DISABLED mode gets them from _attachMediaResourceListeners.
         if (this._mediaEventListenersAttached) {
             MEDIA_RESOURCE_EVENTS.forEach(type => root.addEventListener(type, this._onMediaResourceEvent, true))
         }
@@ -1116,6 +1346,9 @@ class Controller {
         this._shadowDiscovery = null
     }
 
+    // Fallback sweep, run from the stylesheet poll, for open roots that neither
+    // the attachShadow notification nor the declarative re-checks reported.
+    // Incremental: one bounded slice per timer tick, see the discovery budgets.
     _scheduleShadowDiscovery() {
         if (this.mode === PROTECTION_MODE.DISABLED || this._shadowDiscovery) return
         const roots = this._documentRoots()
@@ -1176,6 +1409,8 @@ class Controller {
             MEDIA_RESOURCE_EVENTS.forEach(type => root.removeEventListener(type, this._onMediaResourceEvent, true))
         })
         if (pruned.length === 0) return
+        // Flush records already queued against the dropped roots before the
+        // disconnect below discards them.
         this._handleIframeMutations(this._iframeLifecycleObserver.takeRecords())
         // MutationObserver has no unobserve(root). Reconnect to release detached
         // component trees rather than retaining them for the document lifetime.
@@ -1185,6 +1420,11 @@ class Controller {
         if (this._rootsContainFrameOwners(pruned)) this._handleFrameTopologyChange({ force: false })
     }
 
+    // What this document reports to the service worker. The worker compares
+    // frameElementCount with the direct children it sees in the frame tree and
+    // refuses the whole-tree verdict on a mismatch (an owner with no reachable
+    // document) or when an unsupported owner is present; per-iframe tickets
+    // for the clear children can still be issued.
     _frameOwnerState() {
         return {
             frameElementCount: this._queryAll(document, FRAME_OWNER_SELECTOR).length,
@@ -1192,6 +1432,10 @@ class Controller {
         }
     }
 
+    // Whether this document would release its own media. A child reports it so
+    // a parent can release an iframe only once every frame inside has reached
+    // this state. DISABLED counts as clear: a whitelisted or switched-off child
+    // must not keep its parent blurred.
     _allowsFrameRelease() {
         if (this.mode === PROTECTION_MODE.DISABLED) return true
         return this.mode === PROTECTION_MODE.ANALYZE && !this._manualBlurAllActive && !this._inheritedEditorBlur &&
@@ -1205,6 +1449,9 @@ class Controller {
         }
     }
 
+    // Child side of the frame protocol: tells the worker this frame's status
+    // changed so ancestors re-ask for their aggregate. The top frame has no
+    // parent to inform. The signature dedupes bursts unless forced.
     _notifyFrameStatusChanged(force = false) {
         if (isTopFrameContext()) return
         const status = this.getFrameProtectionStatus()
@@ -1218,6 +1465,8 @@ class Controller {
         const next = pending === true
         if (this._analysisPending === next) return
         this._analysisPending = next
+        // Going pending drops the aggregate without re-asking: the answer
+        // depends on this document's own verdict, which is unknown again.
         if (next) this._invalidateFrameAggregate({ refresh: false })
         this._notifyFrameStatusChanged()
     }
@@ -1238,6 +1487,8 @@ class Controller {
 
     _setFrameAggregateClear(clear) {
         const next = clear === true
+        // Individually cleared iframes are revoked with the aggregate, so a
+        // changed answer re-blurs them even when the flag itself is unchanged.
         const hadIndividualClearance = this._verifiedClearIframes.size > 0
         this._verifiedClearIframes.clear()
         if (this._frameAggregateClear === next && !hadIndividualClearance) return
@@ -1245,6 +1496,9 @@ class Controller {
         this._applyCurrentResultToIframes()
     }
 
+    // Bumping the epoch orphans any in-flight request and any armed tickets.
+    // Protocol-governed iframes go back to blurred at once; only a fresh
+    // answer releases them.
     _invalidateFrameAggregate({ refresh = true } = {}) {
         this._frameAggregateEpoch++
         this._frameClearance.reset()
@@ -1290,11 +1544,14 @@ class Controller {
             response = null
         }
 
+        // A newer invalidation happened while waiting; its refresh owns the
+        // state now and this answer describes a question no longer asked.
         if (epoch !== this._frameAggregateEpoch) return
         if (!this._shouldRefreshFrameAggregate()) {
             this._setFrameAggregateClear(false)
             return
         }
+        // The owner set changed in flight: the answer is about another document.
         const currentOwnerState = this._frameOwnerState()
         if (currentOwnerState.frameElementCount !== ownerState.frameElementCount ||
             currentOwnerState.hasUnsupportedFrameOwner !== ownerState.hasUnsupportedFrameOwner) {
@@ -1302,6 +1559,8 @@ class Controller {
             return
         }
 
+        // Only an answer carrying this epoch counts. A timeout, a wrong epoch or
+        // ok:false all read as "not clear"; tokens are approved only when verified.
         const verified = response?.ok === true && response.epoch === epoch
         const clear = verified && response.clear === true
         this._verifiedClearIframes = this._frameClearance.approve(epoch, verified ? response.clearTokens : [])
@@ -1323,6 +1582,8 @@ class Controller {
     }
 
     setSettings(settings) {
+        // Arrays are copied so a later storage event cannot mutate the settings
+        // this page has already applied.
         this.settings = {
             ...this._cloneDefaults(),
             ...(settings || {}),
@@ -1351,6 +1612,10 @@ class Controller {
         this._scheduleHoverPreviewUpdate()
     }
 
+    // Stops the analysis, background, rescan and stylesheet timers plus the
+    // main observer. The iframe lifecycle observer, the hover tracking, the
+    // frame guards and the frame-aggregate refresh stay up: they do not depend
+    // on settings and must keep invalidating state while a new policy is applied.
     cancelPendingAnalysis() {
         this._cancelShadowDiscovery()
         clearTimeout(this._analysisTimer)
@@ -1367,6 +1632,11 @@ class Controller {
         this._detachMediaResourceListeners()
     }
 
+    // The single entry point for a (re)applied policy: first load, settings
+    // change, SPA URL change. Every automatic release from the previous policy
+    // or URL (clearance snapshot, frame aggregate, armed tickets) is dropped;
+    // explicit user reveals are fingerprint-bound and kept, as is a manual
+    // blur-all.
     async applyProtectionMode(mode, settings) {
         const generation = ++this._policyGeneration
         const url = currentPolicyUrl()
@@ -1378,7 +1648,13 @@ class Controller {
         this.mode = mode
         debug('protection.mode', () => ({ mode }))
         this._invalidateFrameAggregate({ refresh: false })
+        // Pending only when a verdict will actually be sought; ALWAYS_BLUR,
+        // DISABLED and a manual blur-all already have their answer.
         this._setAnalysisPending(mode === PROTECTION_MODE.ANALYZE && !this._manualBlurAllActive)
+        // Hand-off from early-blur.js, which unwraps its covers and stops its
+        // observers on this event, synchronously. enableProtection below
+        // re-covers in the same turn, so the words are never painted bare; in
+        // DISABLED mode they stay uncovered on purpose.
         this._releaseEarlyWordCover()
 
         if (mode === PROTECTION_MODE.DISABLED) {
@@ -1387,6 +1663,8 @@ class Controller {
             return
         }
 
+        // Media registered by enableProtection are projected against this
+        // fail-closed result until analysis commits a verdict.
         this._pageAnalysisResult = { ...FAIL_CLOSED_RESULT }
         this.enableProtection()
         this.protectAllKnownVisuals()
@@ -1398,6 +1676,8 @@ class Controller {
         }
 
         const result = await this.analyzeCurrentPage(generation)
+        // The page may have navigated or re-applied policy while analysis ran;
+        // a verdict for the old state is discarded, never applied.
         if (generation !== this._policyGeneration || url !== currentPolicyUrl()) return
         this.applyPageResult(result)
     }
@@ -1406,17 +1686,26 @@ class Controller {
         const root = document.documentElement
         if (!root) return
         this._discoverShadowRoots(document)
+        // Leaving DISABLED mode: take back the inline filter:none before the
+        // elements are registered, or VisualNode would record it as the page's.
         this._restoreDisabledMedia(document)
+        // 'pending' hides every background page-wide until the full scan below
+        // decides which elements actually carry an image.
         this._setBackgroundPhase('pending')
         this._syncRootProjection()
         this._ensureFrameMarker()
 
+        // stop() before configure(): covers made for the previous targets are
+        // unwrapped so build() indexes clean text and re-covers against the
+        // current ones in this same synchronous turn.
         this._wordCoverManager.stop()
         this._wordCoverManager.configure(this.settings, this.mode)
         this._pageTextIndex.build(document.body || root)
         this._registerMedia(document)
         this._scanBackgrounds(document, { full: true })
         this._queryAll(document, 'link[rel~="stylesheet"]').forEach(link => this._watchStylesheetLink(link))
+        // Observation starts only after the initial build: every record from
+        // the writes above would be our own.
         this._resumeObservation()
     }
 
@@ -1427,25 +1716,38 @@ class Controller {
         this._observerInit()
     }
 
+    // DISABLED is not "do nothing": the stylesheet blur and the adopted shadow
+    // sheet still apply, so media need an inline counter-projection, and new
+    // media and shadow roots must keep being tracked for it.
     disableProtection() {
         this._cancelShadowDiscovery()
         this._editorFrames.clear()
         this._discoverShadowRoots(document)
         const root = document.documentElement
         if (root) {
+            // 'ready' plus the phobia-disabled class: backgrounds come back and
+            // protection.css restores pointer events and cursors.
             this._setBackgroundPhase('ready')
             this._syncRootProjection()
         }
         this._clearHoverPreview()
         this._wordCoverManager.stop()
         this._pageTextIndex.clear()
+        // Registry nodes hand their elements back to the page's own styling
+        // first; only then is the DISABLED filter:none written over them.
         this._registry.clear()
         this._showMediaWhileDisabled(document)
         this._observerInit()
         reportIconStatus('idle')
     }
 
+    // Child side of the editor handshake: the parent's blur/clear request lands
+    // here. The return value decides whether the child acks, so it is true only
+    // when the whole document was re-registered and the full background scan
+    // succeeded; on false the parent keeps its own filter over the iframe.
     _applyInheritedEditorProtection(blurred) {
+        // Recorded even before protection is applied or in DISABLED mode, so a
+        // later applyProtectionMode projects the parent's request as well.
         this._inheritedEditorBlur = blurred === true
         if (!this.protectionApplied || this.mode === PROTECTION_MODE.DISABLED) return false
         this._wordCoverManager.prune()
@@ -1456,6 +1758,10 @@ class Controller {
         return scan.success
     }
 
+    // The document itself can become an editing surface (designMode, a
+    // contenteditable <body>) without a record on any element the observer
+    // watches, so both the mutation handler and the poll re-check it. A flip
+    // changes which backgrounds suppress instead of blur and what is indexed.
     _refreshEditorState() {
         const editable = PageTextIndex.isEditableDocument(document)
         if (editable === this._editorDocumentEditable) return
@@ -1475,6 +1781,10 @@ class Controller {
         return elements
     }
 
+    // protection.css blurs img/video/iframe with !important in every mode, so
+    // in DISABLED mode the page's own inline filter (or none) is re-asserted
+    // over it with !important. appliedValue is what this script last wrote; on
+    // a style record (refreshOriginal) a differing filter is the page's new value.
     _showMediaWhileDisabled(root, options = {}) {
         const refreshOriginal = options.refreshOriginal === true
         this._mediaElements(root).forEach((element) => {
@@ -1536,6 +1846,9 @@ class Controller {
         })
     }
 
+    // Removed iframes keep our listeners on their child window until disarmed.
+    // The registry may never have held them (guards are also armed on load in
+    // DISABLED mode), so the removed subtree itself is walked.
     _disarmDetachedIframeGuards(root) {
         this._mediaElements(root).forEach((element) => {
             if (element instanceof HTMLIFrameElement && element.isConnected === false) {
@@ -1544,6 +1857,10 @@ class Controller {
         })
     }
 
+    // Mutation handling while DISABLED: shadow roots keep being tracked so a
+    // later enable finds them, new media get the filter:none counter-projection,
+    // and frame-owner changes are still reported because an ancestor frame's
+    // aggregate counts this document's children.
     _handleDisabledMutations(records) {
         let elementsChanged = false
         const newRoots = []
@@ -1575,6 +1892,8 @@ class Controller {
                 return
             }
             if (mutation.type !== 'attributes' || !(mutation.target instanceof Element)) return
+            // A page rewriting <html>'s class would drop phobia-disabled and let
+            // protection.css blur again.
             if (mutation.target === document.documentElement) this._syncRootProjection()
             if (mutation.target.matches(MEDIA_SELECTOR)) {
                 this._showMediaWhileDisabled(mutation.target, {
@@ -1584,6 +1903,9 @@ class Controller {
         })
     }
 
+    // Whether a style record on counter-projected media was the page's doing:
+    // either the filter is no longer what this script wrote, or something other
+    // than the filter changed. Our own filter write alone is not a page edit.
     _disabledStyleMutationIsExternal(element, oldStyleText) {
         const state = this._disabledMediaFilters.get(element)
         if (!state) return false
@@ -1605,6 +1927,8 @@ class Controller {
         const root = document.documentElement
         if (!root) return
         const disabled = this.mode === PROTECTION_MODE.DISABLED
+        // DISABLED always reads as ready: the page-wide background-image:none
+        // and the scanning opacity:0 must never apply while the extension is off.
         const shouldScan = !disabled && this._backgroundPhase === 'scanning'
         const isReady = disabled || this._backgroundPhase === 'ready'
 
@@ -1615,6 +1939,9 @@ class Controller {
         else root.removeAttribute(BACKGROUND_READY_ATTR)
     }
 
+    // Blurs every registered node against the fail-closed result. Explicit
+    // reveals and retained clearance still win inside _applyResultToNode, so
+    // "all" means everything without a user- or verdict-backed release.
     protectAllKnownVisuals() {
         this._registry.prune()
         this._registry.all().forEach(node => this._applyResultToNode(node, FAIL_CLOSED_RESULT))
@@ -1625,6 +1952,10 @@ class Controller {
         this._clearedUrl = null
     }
 
+    // Retention is the one path that leaves media released while a verdict is
+    // pending, so every condition is a reason to refuse: iframes are governed
+    // by the frame protocol, any mode or override other than a plain ANALYZE
+    // clear verdict, a different URL, or media whose content changed since.
     _canRetainClearance(node) {
         if (node.kind === 'iframe' || this.mode !== PROTECTION_MODE.ANALYZE ||
             this._manualBlurAllActive || this._inheritedEditorBlur || this._pageAnalysisResult.shouldBlur ||
@@ -1681,6 +2012,10 @@ class Controller {
 
         this._deferredClearVerdicts = 0
         this._lastVerdictWordCount = wordCount
+        // Commit point. The clearance snapshot is rebuilt from scratch for a
+        // clear verdict so only media as they are right now may be retained
+        // later; pending is cleared before the nodes are applied, or each one
+        // would still read as fail-closed.
         this._pageAnalysisResult = result
         this._invalidateClearance()
         if (!result.shouldBlur) {
@@ -1701,6 +2036,10 @@ class Controller {
         this._scheduleHoverPreviewUpdate()
     }
 
+    // User action (context menu, unblur all). The reveal is tied to the media
+    // fingerprint, so an element that later shows different content goes back
+    // to the verdict; an element with no fingerprint cannot be revealed at
+    // all rather than being revealed for whatever it shows next.
     rememberExplicitReveal(element) {
         if (!element) return false
         const node = this._registry.get(element)
@@ -1725,6 +2064,9 @@ class Controller {
         return true
     }
 
+    // Only a load this controller observed counts as complete, and only for the
+    // src/srcdoc it saw: a later attribute change makes the fingerprint differ,
+    // which _isIframeNavigationComplete reads as "not loaded yet".
     _markIframeNavigationComplete(element) {
         const fingerprint = getMediaFingerprint(element)
         if (!fingerprint) return
@@ -1751,6 +2093,10 @@ class Controller {
         this._setAnalysisPending(false)
     }
 
+    // "Blur media": withdraws every explicit reveal. The override survives
+    // settings changes and same-document URL changes; only unblurAll clears
+    // it. Word covers are not re-activated here; after an unblurAll they
+    // return with the next configure().
     blurAll() {
         this._beginManualCommand(true)
         this._invalidateFrameAggregate({ refresh: false })
@@ -1763,6 +2109,10 @@ class Controller {
         reportIconStatus('detected')
     }
 
+    // "Reveal current content": every registered node becomes an explicit
+    // reveal tied to its current content, covers are dropped and covering is
+    // switched off. The pending analysis is cancelled so a late verdict cannot
+    // re-blur what the user just revealed; media added later still follow it.
     unblurAll() {
         this._beginManualCommand(false)
         this._registerMedia(document)
@@ -1782,9 +2132,17 @@ class Controller {
         return this._registry.get(element)
     }
 
+    // The single decision point for one node. Order matters: an acknowledged
+    // editor iframe is released because the child protects its own media; an
+    // explicit reveal beats every verdict; retained clearance may hold through
+    // a pending analysis; everything else blurs unless the verdict is clear.
     _applyResultToNode(node, result) {
         if (!node || !node.element || node.element.isConnected === false) return
         node.refreshBackgroundMode()
+        // Same-origin editable iframe whose current document is the one the
+        // guard knows (loaded, not mid-navigation). release() asks the child to
+        // apply this document's state and is true only on a matching ack; the
+        // outer filter then drops so the editor text stays readable.
         if (node.kind === 'iframe' && !this._pendingIframeNavigations.has(node.element) &&
             this._iframeNavigationGuards.get(node.element)?.active?.frameDocument === node.element.contentDocument &&
             this._editorFrames.release(node.element, !this.isExplicitlyRevealed(node.element) &&
@@ -1804,6 +2162,10 @@ class Controller {
             node.blur()
             return
         }
+        // A clear verdict for this document is not enough for a cross-origin
+        // iframe: it stays blurred until the worker has confirmed the whole
+        // aggregate or this exact frame holds a verified ticket, and never
+        // while a navigation is pending.
         if (node.kind === 'iframe' && this.settings.keepCrossOriginIframesBlurred) {
             const navigationPending = this._pendingIframeNavigations.has(node.element)
             if (navigationPending || (!this._frameAggregateClear && !this._verifiedClearIframes.has(node.element) &&
@@ -1841,6 +2203,9 @@ class Controller {
         return touched
     }
 
+    // A mutation on <source> or <picture> changes what the owning <img> or
+    // <video> displays without a record on the media element itself, so the
+    // owner is (re)registered and re-applied instead.
     _addOwningMedia(element, touched) {
         if (!(element instanceof Element)) return
         const owners = []
@@ -1861,6 +2226,9 @@ class Controller {
         })
     }
 
+    // A background node blurs or suppresses depending on whether an editing
+    // surface sits beneath it, so a change anywhere in a subtree marks every
+    // background ancestor for re-evaluation in refreshBackgroundMode.
     _invalidateBackgroundAncestors(element, touched) {
         const pending = [element]
         const seen = new Set()
@@ -1879,6 +2247,9 @@ class Controller {
         }
     }
 
+    // An iframe whose document turns editable (or stops being so) changes how
+    // its own node and the backgrounds above it are projected, with no record
+    // in the parent document. The first look only records the state.
     _refreshIframeEditorState(frame, touched) {
         let editable = false
         try {
@@ -1902,6 +2273,9 @@ class Controller {
         touched.forEach(node => this._applyResultToNode(node, this._currentVisualResult()))
     }
 
+    // Counterpart of _invalidateBackgroundAncestors for an editability change
+    // on root itself: every registered background inside it may now sit above
+    // (or no longer above) an editing surface.
     _invalidateBackgroundSubtree(root, touched) {
         this._registry.all().forEach(node => {
             if (node.kind !== 'background') return
@@ -1974,6 +2348,8 @@ class Controller {
             }
             return { nodes: touched, success: true }
         } catch (error) {
+            // Whatever the scan found so far is untrustworthy; fail closed on
+            // every background already registered.
             this._registry.all().forEach((node) => {
                 if (node.kind === 'background') node.blur()
             })
@@ -1994,6 +2370,8 @@ class Controller {
         }
     }
 
+    // What nodes are projected against right now: fail-closed whenever any
+    // override or a pending analysis applies, otherwise the committed verdict.
     _currentVisualResult() {
         if (this._analysisPending || this.mode === PROTECTION_MODE.ALWAYS_BLUR ||
             this._manualBlurAllActive || this._inheritedEditorBlur) {
@@ -2053,6 +2431,9 @@ class Controller {
             this.protectAllKnownVisuals()
             return
         }
+        // Removing words can only turn a blur verdict into a clear one, so a
+        // re-analysis is needed only when a matched word left or the pending
+        // analysis was fed text that is gone; media stay as they are meanwhile.
         const pendingInputRemoved = removed.size > 0 && this._analysisPending
         const matchedWordRemoved = removed.size > 0 && this._pageAnalysisResult.shouldBlur === true &&
             this._pageAnalysisResult.matchedInputWords.some(word => removed.has(word))
@@ -2077,6 +2458,10 @@ class Controller {
         }, 0)
     }
 
+    // A <link> stylesheet arriving from the network changes visibility with no
+    // DOM record; its load event is the only signal. rel is read when the event
+    // fires, not when the link was found, since pages flip preload links to
+    // stylesheet once they have loaded.
     _watchStylesheetLink(element) {
         if (!(element instanceof HTMLLinkElement) || this._backgroundLinks.has(element)) return
         this._backgroundLinks.add(element)
@@ -2114,6 +2499,8 @@ class Controller {
     }
 
     _computeStylesheetFingerprint(root) {
+        // 32-bit FNV-1a. A collision only means one stylesheet change goes
+        // unnoticed until the next one changes the hash again.
         let hash = 2166136261
         let itemCount = 0
         const update = (value) => {
@@ -2150,6 +2537,10 @@ class Controller {
         return `${itemCount}:${hash >>> 0}`
     }
 
+    // The 2 s tick is also the catch-all for state that produces no mutation
+    // record: designMode flips, editable child documents, shadow roots the
+    // notifier missed and protection sheets a component dropped from
+    // adoptedStyleSheets.
     _startStylesheetPolling() {
         clearInterval(this._stylesheetPollTimer)
         this._stylesheetFingerprints = this._captureStylesheetFingerprints()
@@ -2172,6 +2563,9 @@ class Controller {
         }, STYLESHEET_POLL_INTERVAL_MS)
     }
 
+    // load, loadeddata and the rest do not bubble, so they are caught in the
+    // capture phase; and a non-composed event never leaves its shadow root, so
+    // every known root gets its own listener rather than only the document.
     _attachMediaResourceListeners() {
         if (this._mediaEventListenersAttached) return
         this._mediaEventListenersAttached = true
@@ -2236,6 +2630,9 @@ class Controller {
         let frameWindow = null
         let frameDocument = null
         try {
+            // Guards live inside the child window, so only a same-origin, fully
+            // loaded document can be guarded. A sandboxed frame is treated as
+            // cross-origin by isCrossOriginIframe and gets no guard at all.
             if (!(element instanceof HTMLIFrameElement) || element.isConnected === false ||
                 element.hasAttribute('sandbox')) {
                 this._disarmIframeNavigationGuard(element)
@@ -2243,6 +2640,8 @@ class Controller {
             }
             frameWindow = element.contentWindow
             frameDocument = element.contentDocument
+            // Still loading: the load listener re-arms once the document has
+            // settled. A guard left over from a previous document is stale.
             if (!frameWindow || !frameDocument || frameDocument.readyState !== 'complete') {
                 const state = this._iframeNavigationGuards.get(element)
                 if (state?.active && state.active.frameDocument !== frameDocument) {
@@ -2250,6 +2649,8 @@ class Controller {
                 }
                 return
             }
+            // Reading location.href throws for a cross-origin document; the
+            // catch below turns that into "no guard".
             if (typeof frameWindow.location.href !== 'string') throw new Error('Inaccessible iframe location')
         } catch (_) {
             const state = this._iframeNavigationGuards.get(element)
@@ -2262,6 +2663,8 @@ class Controller {
         if (state?.active) this._disarmIframeNavigationGuard(element, state.active)
 
         state = this._iframeNavigationGuards.get(element) || { active: null, suspended: [] }
+        // The document came back from the back/forward cache: its parked guard
+        // becomes active again and gets its navigation-start listeners back.
         const restoredGuard = state.suspended.find(guard => guard.frameDocument === frameDocument)
         if (restoredGuard) {
             state.suspended = state.suspended.filter(guard => guard !== restoredGuard)
@@ -2298,6 +2701,10 @@ class Controller {
         this._blurForIframeNavigation(element)
         this._markIframeNavigationPending(element)
 
+        // pagehide with persisted=true means the document is going into the
+        // back/forward cache and may return via pageshow, so its guard is
+        // parked (keeping only the pageshow listener) instead of dropped; the
+        // oldest parked guard is evicted past the bound. Anything else ends it.
         if (event.type === 'pagehide' && event.persisted === true) {
             this._removeIframeNavigationGuardListeners(guard, IFRAME_NAVIGATION_START_EVENTS)
             state.active = null
@@ -2317,6 +2724,9 @@ class Controller {
             event.type !== IFRAME_RESTORATION_EVENT || event.persisted !== true) return
 
         guard.eventWindow = event.currentTarget || guard.eventWindow
+        // The restored document must still be the frame's current one and
+        // fully loaded; otherwise this pageshow is for a document the frame
+        // has already moved on from.
         try {
             if (element.isConnected === false || element.hasAttribute('sandbox') ||
                 element.contentDocument !== guard.frameDocument ||
@@ -2327,6 +2737,8 @@ class Controller {
             return
         }
 
+        // A restored document is re-judged like a fresh load: blur, re-arm, and
+        // only if this guard is the active one again mark the navigation done.
         const node = this._blurForIframeNavigation(element)
         this._armIframeNavigationGuard(element)
         const currentState = this._iframeNavigationGuards.get(element)
@@ -2426,6 +2838,8 @@ class Controller {
         try {
             const elements = []
             const seen = new Set()
+            // document.elementsFromPoint stops at shadow hosts; each open root
+            // is asked for its own stack so media inside components are found.
             const visit = (root) => {
                 for (const element of root.elementsFromPoint(point.x, point.y)) {
                     if (seen.has(element)) continue
@@ -2470,6 +2884,9 @@ class Controller {
         this._invalidateFrameAggregate()
     }
 
+    // Runs from construction in every mode: iframe loads and src/srcdoc/sandbox
+    // changes must blur the frame and invalidate the aggregate even while the
+    // main observer is disconnected. load does not bubble, hence capture.
     _startIframeLifecycleTracking() {
         document.addEventListener('load', this._onIframeLifecycleLoad, true)
         this._iframeLifecycleObserver = new MutationObserver(mutations => this._handleIframeMutations(mutations))
@@ -2511,6 +2928,9 @@ class Controller {
         if (frameTopologyChanged) this._handleFrameTopologyChange()
     }
 
+    // A trusted load on an iframe means a new document settled: re-judge the
+    // frame, then the backgrounds above it, whose editing-surface state may
+    // have changed with the document.
     _handleIframeLifecycleLoad(event) {
         const element = event?.composedPath?.()[0] || event?.target
         if (!(element instanceof HTMLIFrameElement) || !event.isTrusted) return
@@ -2528,7 +2948,11 @@ class Controller {
         if (!(element instanceof HTMLImageElement) && !(element instanceof HTMLVideoElement)) return
         const node = this._registry.get(element)
         if (!node) return
+        // A video that just gained a frame or poster can now preview, and the
+        // pointer may already be resting on it.
         if (element instanceof HTMLVideoElement) this._scheduleHoverPreviewUpdate()
+        // The picture may have changed under the verdict; re-apply unless the
+        // user's reveal still matches what the element shows.
         if (this._explicitReveals.has(element) && this.isExplicitlyRevealed(element)) return
         this._applyResultToNode(node, this._currentVisualResult())
     }
@@ -2689,6 +3113,9 @@ class Controller {
         PageTextIndex.minimalRoots(addedSubtrees).forEach(element => {
             if (!element.isConnected) return
             newRoots.push(...this._collectNewShadowRoots(element))
+            // A media element detached while DISABLED can still carry the
+            // filter:none counter-projection if its removal record was lost
+            // with the observer; take it back before registration snapshots it.
             this._restoreDisabledMedia(element)
             this._registerMedia(element).forEach(visual => touched.add(visual))
             this._watchStylesheetLink(element)
@@ -2710,6 +3137,9 @@ class Controller {
         // moving, so re-run the hit test rather than waiting for another event.
         this._scheduleHoverPreviewUpdate()
 
+        // A host whose shadow root was discovered in this batch is fed to the
+        // index as an insertion, so the text inside the root is indexed and
+        // covered even though no record described it.
         const { added, removed } = this._pageTextIndex.applyMutations([
             ...records,
             ...[...discoveredHosts].map(host => ({
@@ -2725,6 +3155,8 @@ class Controller {
             this._handleStylesheetChange()
         }
 
+        // No verdict is sought in these states, so vocabulary changes are
+        // irrelevant and touched nodes simply blur.
         if (this.mode === PROTECTION_MODE.ALWAYS_BLUR || this._manualBlurAllActive) {
             touched.forEach(node => this._applyResultToNode(node, FAIL_CLOSED_RESULT))
             return
@@ -2734,6 +3166,10 @@ class Controller {
         touched.forEach(node => this._applyResultToNode(node, this._currentVisualResult()))
     }
 
+    // Debounced. The generation and URL captured here must still be current
+    // when the verdict returns, and the mode must still be ANALYZE; otherwise
+    // the verdict describes a page state that no longer exists and is dropped
+    // (whatever changed that state has already blurred the media).
     _scheduleAnalysis() {
         clearTimeout(this._analysisTimer)
         const generation = ++this._policyGeneration
@@ -2748,6 +3184,9 @@ class Controller {
         }, ANALYSIS_DEBOUNCE_MS)
     }
 
+    // protection.css keys its startup pointer-events rule on this attribute.
+    // early-blur.js writes it first; it is re-asserted here because pages
+    // rewrite <html> attributes while booting.
     _ensureFrameMarker() {
         const root = document.documentElement
         if (!root) return
@@ -2768,6 +3207,8 @@ const controller = new Controller()
 let settingsReadGeneration = 0
 let settingsInitialized = false
 
+// Applied when every settings read failed: blur everything (always-on) and,
+// with the trigger list unknown, cover nothing rather than guess.
 function conservativeSettings() {
     return {
         ...controller._cloneDefaults(),
@@ -2810,6 +3251,7 @@ async function readAndApplySettings({ visualOnly = false } = {}) {
     const readGeneration = ++settingsReadGeneration
     try {
         const settings = await readSettingsWithRetry()
+        // A later storage change started a newer read; its result wins.
         if (readGeneration !== settingsReadGeneration) return
         settingsInitialized = true
         const mode = Policy.resolveProtectionMode(settings, location.href)
@@ -2833,6 +3275,9 @@ async function readAndApplySettings({ visualOnly = false } = {}) {
     }
 }
 
+// Same-document navigation (popstate, hashchange, the worker's PB_URL_CHANGED
+// relay). Nothing happens before the first settings read: the first
+// applyProtectionMode resolves the mode for whatever URL is current by then.
 function applyCurrentUrlPolicy() {
     if (!settingsInitialized) return
     const mode = Policy.resolveProtectionMode(controller.settings, location.href)
@@ -2846,6 +3291,10 @@ function applyCurrentUrlPolicy() {
 window.addEventListener('popstate', applyCurrentUrlPolicy)
 window.addEventListener('hashchange', applyCurrentUrlPolicy)
 
+// Context-menu target resolution. The click point is tried first and the
+// smallest registered node containing it wins, so an overlay or a wrapper
+// with a background does not swallow the reveal meant for the image under
+// it; the composed ancestor chain of the right-clicked node is the fallback.
 function contextPointInside(element, point) {
     if (!point || typeof point.clientX !== 'number' || typeof point.clientY !== 'number') return false
     try {
@@ -2858,6 +3307,7 @@ function contextPointInside(element, point) {
     }
 }
 
+// Unmeasurable or zero-size elements sort last.
 function elementArea(element) {
     try {
         const rect = element.getBoundingClientRect()
@@ -2884,11 +3334,17 @@ function resolveContextVisual() {
     return null
 }
 
+// composedPath()[0] is the real target inside an open shadow root, where
+// event.target has been retargeted to the host.
 document.addEventListener('contextmenu', (event) => {
     lastElementContext = event.composedPath?.()[0] || event.target
     lastContextMenuPoint = { clientX: event.clientX, clientY: event.clientY }
 }, true)
 
+// Trigger-word cover toggle from the page itself; the worker dedupes it
+// against the chrome.commands delivery of the same press. Only a trusted,
+// unmodified Alt+Shift+W outside editable fields counts, so a page script
+// cannot switch covers off by synthesising the event.
 document.addEventListener('keydown', (event) => {
     if (!event || !event.isTrusted || event.defaultPrevented || event.repeat) return
     if (!event.altKey || !event.shiftKey || event.ctrlKey || event.metaKey) return
@@ -2899,6 +3355,8 @@ document.addEventListener('keydown', (event) => {
     sendToBackground({ type: 'toggleWordCover', source: 'keyboard' })
 }, true)
 
+// Any sync change makes the shared document_start read stale, even one to a
+// key this page ignores. Visual-only changes take the re-style shortcut.
 chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== 'sync') return
     initialSettingsRead = null
@@ -2940,6 +3398,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: true })
         return true
 
+    // Every frame in the tab receives the popup's message; only the top
+    // document answers so Chrome delivers exactly one response.
     case 'getAnalysisDebugState':
         if (!isTopFrameContext()) return false
         sendResponse({
@@ -2954,6 +3414,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'getTriggeredWords': {
         if (!isTopFrameContext()) return false
         const result = controller._pageAnalysisResult
+        // Nothing is listed unless the committed verdict is a blur: in DISABLED
+        // mode or on a clear page the popup must not show detected words.
         const hidden = controller.mode === PROTECTION_MODE.DISABLED || !result.shouldBlur
         // matchedInputWords are the words as they actually appear on the page,
         // so they can be counted against the token index. matchedWords are
@@ -2979,6 +3441,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: true })
         return true
 
+    // Context-menu "Unblur": a covered word under the menu takes precedence
+    // over media behind it.
     case 'unblur': {
         let unblurred = controller._wordCoverManager.revealContextWord(lastElementContext)
         if (!unblurred) {
@@ -2996,6 +3460,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 })
 
+// The first application waits for the parsed document so the initial index
+// and media registration see the whole static page rather than an empty
+// <html>. Until then protection.css and early-blur.js keep the page
+// fail-closed.
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => void readAndApplySettings(), { once: true })
 } else {

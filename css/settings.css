@@ -2,6 +2,8 @@
 body { font-size: 14px; }
 button, input, select { font: inherit; }
 .settings-container {
+    /* Derived from the text and surface tokens so it tracks both colour schemes without */
+    /* a third token. color-mix() needs Chrome 111+, the newest requirement in this sheet. */
     --settings-description-color: color-mix(in srgb, var(--pb-text) 68%, var(--pb-surface));
     max-width: 1100px;
     min-height: 100vh;
@@ -29,12 +31,18 @@ button, input, select { font: inherit; }
 .nav-link { display: flex; align-items: center; gap: 10px; padding: 11px 12px; border-radius: var(--pb-radius); color: var(--pb-text-2); text-decoration: none; font-size: 13px; }
 .nav-link svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .nav-link:hover { color: var(--pb-text); background: var(--pb-surface-2); }
+/* settings.js moves aria-current to the link of the section it shows; the `active` class */
+/* still present in the markup is not styled. */
 .nav-link[aria-current="page"] { color: var(--pb-accent-text); background: var(--pb-accent-bg); font-weight: 600; }
 .nav-link:focus-visible, summary:focus-visible { outline: none; box-shadow: var(--pb-focus); border-radius: var(--pb-radius); }
 .settings-content { min-width: 0; padding: 32px 36px 52px; }
 .settings-page-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 30px; }
+/* The heading has tabindex="-1" and settings.js focuses it after a sidebar change so */
+/* screen readers announce the new section; that programmatic focus should not draw a ring. */
 .settings-page-heading h1 { font-size: 26px; font-weight: 600; line-height: 1.2; letter-spacing: -.035em; outline: none; }
 .settings-save-status { padding-top: 6px; white-space: nowrap; color: var(--pb-text-2); font-size: 12px; }
+/* :has() (Chrome 105+) adds the gap only while the error text or retry button is shown; */
+/* both start hidden and settings.js toggles them. */
 .settings-notices:has(:not([hidden])) { margin-bottom: 20px; }
 .settings-notices .settings-error { margin: 0; }
 #retry-settings-btn { margin-top: 10px; }
@@ -50,20 +58,27 @@ button, input, select { font: inherit; }
 .setting-note { margin-top: 12px; }
 .protection-modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 15px 0 8px; }
 .protection-modes .pb-btn { padding: 11px; }
+/* settings.js sets aria-pressed on the selected mode button; there is no selected class. */
 .protection-modes .pb-btn[aria-pressed="true"] { background: var(--pb-accent-bg); border-color: var(--pb-accent); color: var(--pb-accent-text); font-weight: 600; }
+/* Slider readouts. Tabular figures keep the width steady while the value changes. */
 .settings-section output { color: var(--pb-text-2); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .settings-section .pb-range { display: block; margin: 15px 0 12px; }
+/* settings.js writes an inline filter on the inner #blur-demo / #preview-blur-demo so the */
+/* user sees the chosen strength; overflow:hidden clips the blur halo to the sample box. */
 .blur-sample { height: 78px; overflow: hidden; border-radius: var(--pb-radius); background: var(--pb-bg); }
 .sample-shapes { display: flex; align-items: center; justify-content: center; gap: 18px; height: 100%; }
 .sample-shapes span { width: 48px; height: 38px; border-radius: 7px; background: var(--pb-accent); }
 .sample-shapes span:nth-child(2) { border-radius: 50%; }
 .sample-shapes span:nth-child(3) { transform: rotate(15deg); }
+/* settings.js sets hidden on this block while hover preview is off. */
 .preview-strength-item { margin-top: 22px; }
 .site-input-container, .word-input-container { display: flex; align-items: center; gap: 9px; margin-top: 15px; }
 .site-input-container .pb-input, .word-input-container .pb-input { height: 39px; flex: 1 1 180px; }
 .site-input-container select.pb-input { flex: 0 1 225px; padding-right: 24px; }
 .site-input-container .pb-btn, .word-input-container .pb-btn { flex: none; white-space: nowrap; }
 .site-lists { margin-top: 24px; }
+/* One row per rule from settings.js: site name, rule label, remove button. The remove */
+/* button reuses theme.css's .site-item-remove and is resized below. */
 .site-rule { display: grid; grid-template-columns: minmax(0, 1fr) minmax(160px, .9fr) 28px; gap: 12px; align-items: center; padding: 15px 0; border-bottom: 1px solid var(--pb-border); }
 .site-rule-name { overflow-wrap: anywhere; font-weight: 500; }
 .site-rule-mode { color: var(--pb-text-2); font-size: 12px; }
@@ -108,6 +123,8 @@ button, input, select { font: inherit; }
     .settings-page-heading { flex-wrap: wrap; gap: 8px; margin-bottom: 25px; }
     .settings-page-heading h1 { font-size: 24px; }
     .settings-save-status { padding-top: 0; }
+    /* Narrow layout: the rule label moves under the name and the remove button spans */
+    /* both rows so it stays vertically centred on the pair. */
     .site-rule { grid-template-columns: minmax(0, 1fr) 28px; gap: 4px 12px; }
     .site-rule-mode { grid-column: 1; grid-row: 2; }
     .site-rule .site-item-remove { grid-column: 2; grid-row: 1 / 3; }
@@ -115,6 +132,7 @@ button, input, select { font: inherit; }
     .shortcut-item { flex-wrap: wrap; gap: 8px; }
     .settings-footer { padding-inline: 18px; flex-wrap: wrap; gap: 4px 14px; }
 }
+/* 44px is the touch-target minimum. */
 @media (pointer: coarse) {
     .settings-content button, .nav-link, summary { min-height: 44px; }
     .settings-content input[type="text"], .settings-content select { min-height: 44px; font-size: 16px; }

@@ -1,3 +1,6 @@
+// Historical Puppeteer suite, not a release gate (tests/README.md). The header
+// below predates the current layout: the manifest stylesheet is css/protection.css,
+// the fail-closed shim is js/early-blur.js and the class is phobia-blur.
 /**
  * Flash Prevention Test Cases
  *
@@ -35,6 +38,8 @@ describe('PhobiaBlocker - Flash Prevention', () => {
         await clearExtensionStorage(browser)
 
         // Set default settings
+        // 3 predates the 0-100 slider: computeBlurPixels(3) is about 0.15px, still
+        // > 0 for isElementBlurred and for the `includes('blur')` checks below.
         await setExtensionEnabled(browser, true)
         await setBlurAmount(browser, 3)
     })
@@ -53,6 +58,10 @@ describe('PhobiaBlocker - Flash Prevention', () => {
         await page.waitForSelector('#spider-image', { timeout: 5000 })
 
         // Check blur state IMMEDIATELY - CSS should have applied before JS
+        // "Immediately" is after document_start, so the early shim has run too. Both
+        // layers are fail-closed: protection.css blurs every img/video/iframe at 40px
+        // and hides background images until the scan marks the root ready, while
+        // early-blur.js projects ALWAYS_BLUR if its settings read fails.
         const results = await page.evaluate(() => {
             const img = document.querySelector('#spider-image')
             const bgImg = document.querySelector('#bg-image-snake')
@@ -74,6 +83,9 @@ describe('PhobiaBlocker - Flash Prevention', () => {
         await page.waitForSelector('#spider-image', { timeout: 5000 })
 
         // Check immediately and after brief wait
+        // The second sample lands after the controller has replaced the stylesheet's
+        // 40px with its own inline value; the page mentions "spider", so a committed
+        // verdict can only keep the blur. A clear verdict would itself be deferred.
         const initialBlur = await isElementBlurred(page, '#spider-image')
         await new Promise(r => setTimeout(r, 1000))
         const afterWaitBlur = await isElementBlurred(page, '#spider-image')
@@ -81,9 +93,17 @@ describe('PhobiaBlocker - Flash Prevention', () => {
         assert.ok(initialBlur && afterWaitBlur, 'Image should remain blurred throughout execution')
     })
 
+    // Models the hand-off from early-blur.js to the controller. applyProtectionMode
+    // dispatches phobiablocker:word-cover-manager-ready once per page; early-blur
+    // unwraps its covers on that event and the controller re-covers in the same
+    // synchronous turn. Text inserted by a listener on that very event is the
+    // worst case: it arrives after early-blur stopped observing and before the
+    // controller's observer has delivered anything, so only the rebuilt index can
+    // cover it. The invariant is that no rendered frame ever shows the word.
     it('should cover words inserted during handoff without CSS-blurring them', async () => {
         await setPhobiaWords(browser, ['spider'])
 
+        // Installed before any page or content script runs on the next navigation.
         await page.evaluateOnNewDocument(() => {
             window.__phobiaHandoffWordCoverState = {
                 inserted: false,
@@ -103,6 +123,9 @@ describe('PhobiaBlocker - Flash Prevention', () => {
                 ;(document.body || document.documentElement).appendChild(p)
                 window.__phobiaHandoffWordCoverState.inserted = true
 
+                // A cover must hide the word with an opaque box, never by blurring the
+                // text: a blurred word is still partly legible. protection.css sets
+                // text-shadow: none on covers for exactly this reason.
                 const isCssBlurred = (element) => {
                     if (!element) return false
                     const style = window.getComputedStyle(element)
@@ -124,6 +147,9 @@ describe('PhobiaBlocker - Flash Prevention', () => {
                     return true
                 }
 
+                // Chrome serialises computed colours as rgb() when opaque and rgba()
+                // otherwise; anything else (a system colour keyword) becomes NaN and
+                // fails the cover check, which is the fail-closed outcome.
                 const colorAlpha = (color) => {
                     if (color === 'transparent') return 0
                     if (/^rgb\(/.test(color)) return 1
@@ -131,6 +157,9 @@ describe('PhobiaBlocker - Flash Prevention', () => {
                     return rgba ? Number(rgba[1]) : NaN
                 }
 
+                // What protection.css guarantees for .phobia-word-cover: transparent text
+                // (both color and -webkit-text-fill-color), an opaque background and no
+                // inherited fade. A cover that has lost its stylesheet would fail here.
                 const isProtectedCover = (cover) => {
                     if (!cover || !isRendered(cover) || cover.textContent.toLowerCase() !== 'spider') return false
                     const style = window.getComputedStyle(cover)
@@ -139,6 +168,9 @@ describe('PhobiaBlocker - Flash Prevention', () => {
                         colorAlpha(style.backgroundColor) === 1 && Number(style.opacity) === 1
                 }
 
+                // Samples one paint per animation frame; 60 frames is about a second at
+                // 60 Hz. Frames in which the target has no layout box are skipped, so
+                // uncoveredFrames counts only frames a user could actually have seen.
                 let sampledFrames = 0
                 const checkFrame = () => {
                     const state = window.__phobiaHandoffWordCoverState
@@ -196,6 +228,9 @@ describe('PhobiaBlocker - Flash Prevention', () => {
 
         const cssChecks = await page.evaluate(() => {
             // Check manifest CSS variables are loaded
+            // --blurValueAmount is the legacy name (CSS_VARS.blurLegacy); protection.css
+            // seeds it with 40px and early-blur.js / js.js overwrite it with
+            // computeBlurPixels(blurValueAmount), so a value is present either way.
             const blurAmount = getComputedStyle(document.documentElement)
                 .getPropertyValue('--blurValueAmount')
             const hasManifestCSS = blurAmount !== ''
@@ -231,6 +266,11 @@ describe('PhobiaBlocker - Flash Prevention', () => {
         await new Promise(r => setTimeout(r, 3000))
 
         // Extension's !important rules should win over site's !important
+        // The page declares `img { filter: none !important }`. Two things beat it:
+        // protection.css's `:root :is(img, video, iframe)` is more specific at equal
+        // importance, and once registered the controller writes the filter as an
+        // inline !important declaration, which outranks any author stylesheet.
+        // 'test' is the trigger because the page text says "test content".
         const isBlurred = await isElementBlurred(page, '#override-test')
         assert.ok(isBlurred, 'Extension blur CSS should have correct specificity to override site styles')
     })

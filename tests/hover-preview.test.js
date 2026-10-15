@@ -1,3 +1,6 @@
+// Historical Puppeteer end-to-end suite, kept for reference. It is not a release gate:
+// root `npm test` fails on purpose and the gate is `npm run test:unit` (tests/README.md).
+// Some cases still describe pre-1.3.1 behaviour; the notes below mark where that is so.
 /**
  * Hover Preview Test Cases
  *
@@ -55,6 +58,9 @@ describe('PhobiaBlocker - Hover Preview', () => {
         browser = await launchBrowserWithExtension()
         await clearExtensionStorage(browser)
         await setExtensionEnabled(browser, true)
+        // Slider 60 is about 14.9px under the current curve (101^0.6 - 1, computeBlurPixels);
+        // every preview strength used below (0-12) stays under it, so "reduced blur" holds.
+        // The pre-1.3.1 curve rendered the same value at roughly 42px.
         await setBlurAmount(browser, 60)
         page = await browser.newPage()
         page.setDefaultTimeout(5000)
@@ -65,6 +71,9 @@ describe('PhobiaBlocker - Hover Preview', () => {
     })
 
     describe('Storage Operations', () => {
+        // getSyncStorage reads the raw key, not Storage.getWithDefaults, so a fresh store
+        // yields undefined even though DEFAULTS.previewEnabled is true. Only the content
+        // scripts and the UI pages apply defaults.
         it('should return undefined for previewEnabled when storage is fresh', async () => {
             await clearExtensionStorage(browser)
             const enabled = await getPreviewEnabled(browser)
@@ -99,6 +108,8 @@ describe('PhobiaBlocker - Hover Preview', () => {
             assert.strictEqual(await getPreviewBlurStrength(browser), 0)
         })
 
+        // 20 is the settings slider's max (settings.html). Storage validation only requires
+        // a finite number, so the bound is enforced by the UI, not by isValidStoredValue.
         it('should store previewBlurStrength at maximum value (20)', async () => {
             await setPreviewBlurStrength(browser, 20)
             assert.strictEqual(await getPreviewBlurStrength(browser), 20)
@@ -112,6 +123,10 @@ describe('PhobiaBlocker - Hover Preview', () => {
         })
     })
 
+    // --previewBlurAmount is the legacy name of --phobiablocker-previewBlurAmount; both are
+    // written on <html> by early-blur.js and the controller (CSS_VARS in shared-policy.js).
+    // No stylesheet consumes it today: the hover filter is written inline per element, so
+    // these cases check the projection, not what the user sees.
     describe('CSS Variable --previewBlurAmount', () => {
         it('should set --previewBlurAmount to the configured strength when preview is enabled', async () => {
             await setExtensionEnabled(browser, true)
@@ -132,6 +147,8 @@ describe('PhobiaBlocker - Hover Preview', () => {
             assert.strictEqual(previewAmount, '6px', `--previewBlurAmount should be 6px, got: "${previewAmount}"`)
         })
 
+        // 5 is DEFAULTS.previewBlurStrength in shared-policy.js, applied by getWithDefaults
+        // when the key is missing after clearExtensionStorage.
         it('should set --previewBlurAmount to 5px by default when previewBlurStrength is not stored', async () => {
             await clearExtensionStorage(browser)
             await setExtensionEnabled(browser, true)
@@ -149,6 +166,10 @@ describe('PhobiaBlocker - Hover Preview', () => {
             assert.strictEqual(previewAmount, '5px', `Default --previewBlurAmount should be 5px, got: "${previewAmount}"`)
         })
 
+        // With previews off, previewBlurCssValue falls back to the page-wide blur variable
+        // (ultimately the 40px stylesheet default), never to the stored strength, so a hover
+        // can never reveal more than the full blur allows. Only that negative is asserted;
+        // blurAmount and normalFilter are collected for diagnostics.
         it('should override --previewBlurAmount to full blur value when preview is disabled', async () => {
             await setExtensionEnabled(browser, true)
             await setBlurAmount(browser, 60)
@@ -177,6 +198,10 @@ describe('PhobiaBlocker - Hover Preview', () => {
     })
 
     describe('Pointer Events', () => {
+        // protection.css gives blurred media `pointer-events: auto !important` under
+        // :root:not(.phobia-disabled). The preview is driven by elementsFromPoint, which
+        // skips pointer-events:none elements, so a page that disables pointer events on
+        // its images (lightboxes, galleries) would otherwise make them un-previewable.
         it('detected images with [data-phobia-blur] attribute should have pointer-events: auto', async () => {
             await setExtensionEnabled(browser, true)
             await setBlurAmount(browser, 60)
@@ -225,7 +250,10 @@ describe('PhobiaBlocker - Hover Preview', () => {
                 return {
                     hasBlurClass: img.classList.contains('blur'),  // site-owned class
                     hasDataPhobiaBlur: img.hasAttribute('data-phobia-blur'),
-                    // pointer-events for a non-phobia img: driven by img:not(.noblur) rule = none
+                    // The current protection.css only forces pointer-events:none on unregistered
+                    // media until the root is marked background-ready, so after the 2 s wait this
+                    // reads the UA default (auto). The assertion below reflects the pre-1.3.1
+                    // `img:not(.noblur) { pointer-events: none }` rule, which no longer exists.
                     pointerEvents: window.getComputedStyle(img).pointerEvents
                 }
             })
@@ -237,6 +265,9 @@ describe('PhobiaBlocker - Hover Preview', () => {
                 'Site-owned .blur class alone must not grant pointer-events: auto from the extension')
         })
 
+        // A clear verdict may be deferred while the page is still producing text
+        // (MAX_DEFERRED_CLEAR_VERDICTS in js.js), whereas a blur verdict is applied at once,
+        // so this case waits longer than the blur cases before reading the class.
         it('safe images with .noblur class should remain interactive', async () => {
             await setExtensionEnabled(browser, true)
             await setBlurAmount(browser, 60)
@@ -264,6 +295,10 @@ describe('PhobiaBlocker - Hover Preview', () => {
     })
 
     describe('Hover Blur Behavior', () => {
+        // The preview is VisualNode.showPreview: the phobia-preview class plus an inline
+        // `filter: blur(<previewBlurStrength>px) !important`. The hit test runs on the
+        // pointermove event with a 30 ms throttle (HOVER_HIT_TEST_INTERVAL_MS) and the
+        // stylesheet transition is 0.2 s, so 300 ms is enough for a settled read.
         it('hovering a blurred image should show reduced blur when preview is enabled', async () => {
             await setExtensionEnabled(browser, true)
             await setBlurAmount(browser, 60)
@@ -316,6 +351,9 @@ describe('PhobiaBlocker - Hover Preview', () => {
             assert.strictEqual(extractBlurPx(hoverBlur), 5, `Hover blur should be exactly 5px, got ${extractBlurPx(hoverBlur)}px`)
         })
 
+        // Fail-closed: _updateHoverPreview bails out when previewEnabled !== true, so no
+        // preview class or filter is ever written. The <1px tolerance absorbs CSSOM rounding
+        // of the inline px value, not a real difference.
         it('hover should not change blur amount when preview is disabled', async () => {
             await setExtensionEnabled(browser, true)
             await setBlurAmount(browser, 60)
@@ -376,6 +414,9 @@ describe('PhobiaBlocker - Hover Preview', () => {
             assert.ok(blurAt12 > blurAt2, `Strength 12 (${blurAt12}px) should produce more blur than strength 2 (${blurAt2}px)`)
         })
 
+        // Strength 0 writes blur(0px): the media is fully visible while hovered. That is the
+        // user's explicit choice; the invariant is only that the full blur returns on leave,
+        // which the next case covers.
         it('previewBlurStrength of 0 should show no blur on hover', async () => {
             await setExtensionEnabled(browser, true)
             await setBlurAmount(browser, 60)
@@ -421,6 +462,8 @@ describe('PhobiaBlocker - Hover Preview', () => {
             await wait(300)
 
             // Move mouse away from image
+            // (10, 10) lands on the page heading. The hit test only reacts to pointer events,
+            // so the move itself is what triggers hidePreview; nothing is polled.
             await page.mouse.move(10, 10)
             await wait(400)
 
@@ -435,6 +478,11 @@ describe('PhobiaBlocker - Hover Preview', () => {
             )
         })
 
+        // Regression for the old per-container listeners: mouseenter/mouseleave on the
+        // positioned ancestor kept the preview alive anywhere inside the card. The hit test
+        // previews only what is under the pointer, so an empty zone in the same card must
+        // restore the blur. blurAll first puts the node in the manual-blur state, which
+        // the hit test must treat exactly like a verdict blur.
         it('moving off media inside the same positioned card should restore full blur after blurAll', async () => {
             await setExtensionEnabled(browser, true)
             await setBlurAmount(browser, 60)
@@ -488,6 +536,10 @@ describe('PhobiaBlocker - Hover Preview', () => {
         })
     })
 
+    // The content script reacts to chrome.storage.onChanged; the preview keys are
+    // visual-only, so readAndApplySettings runs the visualOnly path and setSettings clears
+    // and re-schedules the hover preview without re-analysing the page. The 800 ms waits
+    // cover the storage read round trip after the helper's own 300 ms settle.
     describe('Live Settings Update (no page reload)', () => {
         it('increasing previewBlurStrength updates hover blur immediately', async () => {
             await setExtensionEnabled(browser, true)
@@ -524,6 +576,9 @@ describe('PhobiaBlocker - Hover Preview', () => {
             )
         })
 
+        // Two mechanisms are in play: _updateHoverPreview stops selecting a node once
+        // previewEnabled is false, and _applyPreviewFilter would use the full blurPixels
+        // anyway, so even a preview still active at the moment of the change collapses.
         it('disabling preview mid-session removes hover effect', async () => {
             await setExtensionEnabled(browser, true)
             await setBlurAmount(browser, 60)
@@ -641,6 +696,10 @@ describe('PhobiaBlocker - Hover Preview', () => {
             await setBlurAmount(browser, 20)
             await wait(800)
 
+            // Background nodes carry their own inline filter (VisualNode kind 'background'),
+            // so refreshBlurFilter must reach them too; checking only the <img> would miss a
+            // refresh that walked a media-only list. The 0.01px tolerance is tight because
+            // both reads come from the same computeBlurPixels output.
             const afterImg = await readBlurPx('#spider-image')
             const afterBg = await readBlurPx('#bg-image-snake')
             assert.ok(
@@ -654,6 +713,10 @@ describe('PhobiaBlocker - Hover Preview', () => {
         })
     })
 
+    // Guardian-style markup: an <a> with inset:0 sits over the <picture>, so no pointer
+    // event ever reaches the <img>. elementsFromPoint returns the whole stack under the
+    // pointer and the controller previews the first registered, blurred node in it, which
+    // is why listening on the media element itself was abandoned.
     describe('Sibling Overlay Hover (picture + overlay structure)', () => {
         it('hovering sibling overlay of <picture> should show preview blur on the img', async () => {
             await setExtensionEnabled(browser, true)
@@ -775,6 +838,10 @@ describe('PhobiaBlocker - Hover Preview', () => {
     })
 
     describe('Hover After Unblur All', () => {
+        // unblurAll records every registered element as an explicit reveal and renders it
+        // with unblur({ explicit: true }): phobia-permanent-unblur is added and
+        // data-phobia-blur is restored to what the page had (absent). An explicit reveal
+        // is the user's action, so unlike an automatic clear it survives later re-blurs.
         it('images should have permamentUnblur class after unblurAll and data-phobia-blur removed', async () => {
             await setExtensionEnabled(browser, true)
             await setBlurAmount(browser, 60)
@@ -817,6 +884,8 @@ describe('PhobiaBlocker - Hover Preview', () => {
             assert.ok(!result.hasDataPhobiaBlur, 'image should not have data-phobia-blur attribute after unblurAll')
         })
 
+        // The hit test only previews nodes whose isBlurred is true; a revealed node is
+        // skipped entirely, so no preview filter (which would look like a re-blur) is written.
         it('hovering after unblurAll should not re-blur the image', async () => {
             await setExtensionEnabled(browser, true)
             await setBlurAmount(browser, 60)
@@ -852,9 +921,10 @@ describe('PhobiaBlocker - Hover Preview', () => {
 
     describe('Absolute-Positioned Sibling Overlay Hover (IMDB-style)', () => {
         // In IMDB-style cards, an absolutely-positioned <a> overlay covers the image
-        // container and intercepts all pointer events. The container's own mouseenter
-        // never fires. _attachContainerListeners must detect the overlay as a sibling
-        // and attach listeners directly to it.
+        // container and intercepts all pointer events, so no event reaches the image or
+        // its container. The controller attaches no per-element listeners: it hit-tests
+        // the pointer position with elementsFromPoint and previews the first blurred
+        // registered node in the stack, so the overlay's shape and nesting do not matter.
 
         it('hovering the absolute overlay should show preview blur on the image', async () => {
             await setExtensionEnabled(browser, true)
@@ -946,6 +1016,9 @@ describe('PhobiaBlocker - Hover Preview', () => {
             )
         })
 
+        // The verdict is page-wide, so #safe-image is blurred as well and hovering its
+        // overlay previews that image. The invariant is that a preview never leaks to a
+        // node that is not under the pointer.
         it('safe image overlay should not trigger preview on unrelated card', async () => {
             await setExtensionEnabled(browser, true)
             await setBlurAmount(browser, 60)
@@ -975,6 +1048,9 @@ describe('PhobiaBlocker - Hover Preview', () => {
             )
         })
 
+        // _updateHoverPreview prefers img/video over a background node and uses the
+        // background only as a fallback when no real media is in the stack; the poster is
+        // a plain div, not a root or editing-surface background, so it may be previewed.
         it('hovering reel-style overlay should show preview blur on a background poster', async () => {
             await setExtensionEnabled(browser, true)
             await setBlurAmount(browser, 60)
@@ -1012,6 +1088,11 @@ describe('PhobiaBlocker - Hover Preview', () => {
             )
         })
 
+        // The outer overlay shell has pointer-events:none and only the inner control is
+        // hit-testable; elementsFromPoint still returns the <video> beneath it. Note the
+        // current controller previews a <video> only when it has a poster or loaded frame
+        // data (_canRenderPreview, YouTube's empty hover layer); this fixture's video has
+        // neither, so this case predates that guard.
         it('hovering nested Instagram-style video overlay control should show preview blur on the video', async () => {
             await setExtensionEnabled(browser, true)
             await setBlurAmount(browser, 60)
@@ -1051,13 +1132,16 @@ describe('PhobiaBlocker - Hover Preview', () => {
     })
 
     describe('Blur All on Disabled/Whitelisted Site', () => {
-        // When the extension is disabled (or site is whitelisted), html.phobia-disabled is set.
-        // The CSS rule `html.phobia-disabled img:not(.phobia-noblur) { filter: none !important }`
-        // has specificity (0,2,2) which overrides class-based blur (0,1,1).
-        // The blurAll handler compensates by forcing an inline `filter: blur(Xpx) !important`
-        // on each [data-phobia-blur] element. Hover preview is handled in
-        // _attachContainerListeners which also sets/restores inline style when phobia-disabled.
+        // Disabled extension or whitelisted site means DISABLED mode: <html> carries
+        // phobia-disabled and _showMediaWhileDisabled writes `filter: none !important` inline
+        // on every media element to cancel the stylesheet blur. blurAll still registers the
+        // media and VisualNode.blur() overwrites that inline filter, so the manual command
+        // works on a disabled page. Hover preview does not: _updateHoverPreview returns early
+        // in DISABLED mode, so the three preview cases below describe pre-1.3.1 behaviour.
 
+        // Fail-closed is not at stake here (blurAll only ever adds blur). The regression
+        // guarded is the opposite one: a disabled page silently ignoring the user's
+        // explicit blur command from the popup, hotkey or context menu.
         it('blurAll should visibly blur images even when extension is disabled', async () => {
             await setExtensionEnabled(browser, false)
             await setBlurAmount(browser, 60)
@@ -1208,6 +1292,9 @@ describe('PhobiaBlocker - Hover Preview', () => {
         })
     })
 
+    // video-iframe.html mentions spiders, so the page-wide verdict blurs the video and the
+    // "safe" about:blank iframe alike. The not-found branches assert nothing; they only keep
+    // the case from failing if the element was never registered.
     describe('Video and Iframe Pointer Events', () => {
         it('blurred video elements should have pointer-events: auto', async () => {
             await setExtensionEnabled(browser, true)

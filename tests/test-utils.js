@@ -1,3 +1,6 @@
+// Helpers for the historical Puppeteer suites (tests/*.test.js). They drive a
+// headed Chrome with the unpacked extension and are not part of the release gate;
+// the unit suite under tests/unit/ is. See tests/README.md before reviving them.
 const puppeteer = require('puppeteer')
 const path = require('path')
 const fs = require('fs')
@@ -31,6 +34,10 @@ function findExtensionIdFromFilesystem(userDataDir) {
     // Default/Extensions/. Each entry has a "path" field pointing to the extension dir
     // and optionally a "manifest" dict. Match by path first (always present for
     // --load-extension), then fall back to manifest.name.
+    // Trap: the manifest name is now "PhobiaBlur — Blur Images & Videos", so the
+    // 'PhobiaBlocker' comparisons in strategies A and D never match any more. The
+    // lookup only succeeds through strategies B and C, which need exactly one
+    // extension directory and therefore rely on --disable-extensions-except.
     const prefsPath = path.join(userDataDir, 'Default', 'Preferences')
     if (fs.existsSync(prefsPath)) {
         try {
@@ -135,6 +142,8 @@ async function launchBrowserWithExtension(options = {}) {
     // The MV3 service worker may have started and already been killed by Chrome's
     // 5-second idle timer before puppeteer.launch() returned, so waitForTarget()
     // (which only catches *new* target events) would miss it entirely.
+    // A bare "chrome-extension://" is 19 characters; a real extension URL carries a
+    // 32-letter id, so the length check skips targets that have no id to read yet.
     const immediateExt = browser.targets().find(t => {
         const url = t.url()
         return url.startsWith('chrome-extension://') && url.length > 30
@@ -244,6 +253,8 @@ async function getExtensionServiceWorker(browser, timeout = 10000) {
         { timeout }
     ).catch(() => null)
 
+    // The wake-up page is closed again at once so it does not stay open as a tab
+    // beside the page under test; the waitForTarget above already observes the worker.
     // Now wake the service worker by opening the popup
     if (_cachedExtensionId) {
         const wakeupPage = await browser.newPage()
@@ -370,6 +381,9 @@ function getSyncStorage(browser, key) {
 
 // Settle delays reflect how long each setting takes to propagate: target words
 // trigger NLP expansion and a full re-analysis; the rest only re-style.
+// These are fixed sleeps, not condition waits: storage.onChanged re-reads the
+// settings in every open frame, and nothing here confirms that the re-read landed.
+// The suites add their own waits after navigation for the same reason.
 const setPhobiaWords = (browser, words) => setSyncStorage(browser, { targetWords: words }, 1000)
 const setExtensionEnabled = (browser, enabled) => setSyncStorage(browser, { phobiaBlockerEnabled: enabled }, 200)
 const setBlurAmount = (browser, amount) => setSyncStorage(browser, { blurValueAmount: amount })
@@ -441,6 +455,9 @@ async function loadTestPage(page, filename) {
         await page.goto(fileUrl, { waitUntil: 'domcontentloaded', timeout: 10000 })
     } catch (err) {
         // If goto fails, try setContent as fallback
+        // Trap: setContent leaves the page at about:blank, so the content scripts run
+        // against that URL instead of the file URL. Site rules keyed on the test page's
+        // host or path and queryTriggeredWords' URL match no longer apply to it.
         const filePath = path.join(TEST_PAGES_PATH, filename)
         const content = fs.readFileSync(filePath, 'utf8')
         await page.setContent(content, { waitUntil: 'domcontentloaded' })
@@ -452,6 +469,9 @@ async function loadTestPage(page, filename) {
  * @param {Page} page - Page to check
  * @returns {Promise<number>} Number of blurred images
  */
+// Only inline-style backgrounds are counted. The controller also blurs elements
+// whose background comes from a stylesheet, but those are invisible to this
+// selector, so the count is a lower bound on what the extension protects.
 async function countBlurredImages(page) {
     const filters = await page.evaluate(() => [
         ...document.querySelectorAll('img, video, iframe'),
@@ -498,6 +518,10 @@ async function getAllVisualElements(page) {
  * @param {string} className - Class to wait for
  * @param {number} timeout - Max wait in ms (default 8000)
  */
+// The class appears in the same synchronous turn as the inline filter write, but
+// protection.css transitions filter over 0.2 s, so a computed blur radius read
+// right after this resolves can still be mid-transition (or frozen at the
+// stylesheet's 40px while the tab is hidden). Bring the page to front and wait.
 async function waitForPhobiaClass(page, selector, className, timeout = 8000) {
     await page.waitForFunction(
         (sel, name) => {
@@ -522,6 +546,9 @@ function broadcastToTabs(msg) {
             if (pending === 0) { resolve(); return }
             tabs.forEach(tab => {
                 chrome.tabs.sendMessage(tab.id, msg, () => {
+                    // Tabs without a content script (chrome://, the popup tab itself)
+                    // reject the message; reading lastError marks it handled so Chrome
+                    // does not log "Unchecked runtime.lastError" for each of them.
                     void chrome.runtime.lastError
                     if (--pending === 0) resolve()
                 })
@@ -535,6 +562,9 @@ function broadcastToTabs(msg) {
  * @param {Browser} browser - Puppeteer browser instance
  * @param {Object} message - Message object to send
  */
+// Messages carry no target, so the content script's `target !== 'content'` filter
+// lets them through. The 300 ms outlasts protection.css's 0.2 s filter transition,
+// so a computed filter read afterwards is the settled value, not an interpolation.
 async function sendMessageToAllContentScripts(browser, message) {
     await withExtensionPage(browser, page => page.evaluate(broadcastToTabs, message))
     await wait(300)
@@ -564,6 +594,10 @@ async function queryTriggeredWords(browser, page) {
     const pageUrl = page.url()
     const swWorker = await getServiceWorkerHandle(browser)
 
+    // Trap: tab.url is only populated for hosts the extension has permission for.
+    // The manifest grants http(s) host permissions and no "tabs" permission, and the
+    // test pages are file:// URLs, so tab.url is undefined there and this resolves []
+    // even though the content script would answer. Match by active tab to fix it.
     return swWorker.evaluate((targetUrl) => new Promise((resolve) => {
         chrome.tabs.query({}, (tabs) => {
             const tab = tabs.find(t => t.url === targetUrl)

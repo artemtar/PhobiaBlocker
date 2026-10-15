@@ -1,3 +1,7 @@
+// The 1.3.1 blur curve renders a stored slider value weaker than before, so the
+// service worker converts stored values once on update. These suites run the real
+// background.js in node:vm against a faked chrome.storage and check that the
+// conversion preserves pixels, runs exactly once and never runs on a guess.
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
@@ -7,6 +11,8 @@ const vm = require('node:vm')
 const repositoryRoot = path.resolve(__dirname, '../..')
 const clone = value => JSON.parse(JSON.stringify(value))
 const settle = () => new Promise(resolve => setImmediate(resolve))
+// The converted slider value is rounded to tenths; the pixel drift that rounding
+// introduces stays under half a pixel across the whole range.
 const PIXEL_TOLERANCE = 0.5
 
 // The curve every release before 1.3.1 rendered: slider 50 gave 30px.
@@ -28,6 +34,8 @@ function browserEvent() {
     }
 }
 
+// Every synced key present and valid, so the only write the migration can make is
+// the slider value itself.
 const fullyStoredSettings = Object.freeze({
     targetWords: ['spider'],
     phobiaBlockerEnabled: true,
@@ -44,6 +52,10 @@ const fullyStoredSettings = Object.freeze({
     supportedWordsCollapsed: false,
 })
 
+// Runs background.js (and the files it importScripts) against a fake Chrome.
+// `stored` is sync storage; `local` is chrome.storage.local, where the migration
+// marker lives. readError fails only reads that include the slider key, so the
+// worker's own startup reads (the trigger-word cache) still succeed.
 function loadBackground({
     stored = fullyStoredSettings,
     readError = null,
@@ -71,6 +83,7 @@ function loadBackground({
             sync: {
                 get(keys, callback) {
                     const names = Array.isArray(keys) ? keys : [keys]
+                    // As in Chrome, lastError exists only for the duration of the callback.
                     if (readError && names.includes('blurValueAmount')) {
                         runtime.lastError = { message: readError }
                         callback(undefined)
@@ -126,12 +139,14 @@ function loadBackground({
     )
     context = vm.createContext({
         chrome,
+        // console.error is captured so a test can assert which failures were reported.
         console: { ...console, error: (...args) => errors.push(args) },
         crypto: require('node:crypto').webcrypto,
         URL,
         setTimeout,
         clearTimeout,
         importScripts(...files) { files.forEach(runScript) },
+        // Icon preloading fetches the PNGs at startup; failing it does not touch storage.
         fetch: async () => { throw new Error('Icon rendering is unavailable in Node') },
     })
     runScript('background.js')
@@ -141,6 +156,8 @@ function loadBackground({
         localWrites,
         errors,
         policy: context.PhobiaBlockerPolicy,
+        // Two macrotask turns: the marker read, the sync read and the two writes all
+        // resolve through synchronous fake callbacks, so this drains the whole chain.
         async install(details) {
             runtime.onInstalled.emit(details)
             await settle()
@@ -149,6 +166,7 @@ function loadBackground({
     }
 }
 
+// Isolates the migration's write from anything else the worker might store.
 function blurWrites(background) {
     return background.writes.filter(values => Object.prototype.hasOwnProperty.call(values, 'blurValueAmount'))
 }
@@ -194,6 +212,7 @@ test('updating from 1.3.0 maps a slider at the maximum onto the new maximum', as
 })
 
 test('updating from 1.3.0 without a stored slider value keeps the legacy default strength', async () => {
+    // Destructuring drops the key; void marks the discarded binding as intentional.
     const { blurValueAmount, ...withoutBlur } = fullyStoredSettings
     void blurValueAmount
     const background = loadBackground({ stored: withoutBlur })
@@ -211,6 +230,8 @@ test('a fresh install never rewrites the blur strength', async () => {
     assert.deepEqual(background.writes, [])
 })
 
+// Versions at or above 1.3.1, including a multi-digit component (1.10.0) that a
+// string comparison would place below 1.3.1.
 for (const previousVersion of ['1.3.1', '1.3.2', '1.4.0', '1.10.0', '2.0.0']) {
     test(`updating from ${previousVersion} leaves the already-migrated slider value alone`, async () => {
         const background = loadBackground()
@@ -236,6 +257,8 @@ test('a failed storage read logs and leaves the stored slider value untouched', 
     assert.match(String(background.errors[0][0]), /blur/i)
 })
 
+// storage.js rejects a stored value of the wrong type, so the read throws before
+// any conversion; every reader then fails closed on that same invalid value.
 test('an unreadable stored slider value logs and is left for the fail-closed readers', async () => {
     const background = loadBackground({ stored: { ...fullyStoredSettings, blurValueAmount: 'strong' } })
     await background.install({ reason: 'update', previousVersion: '1.3.0' })
@@ -263,6 +286,8 @@ test('the migration marker lives in local storage, never in the synced settings'
     assert.deepEqual(blurWrites(background), background.writes, 'sync storage only receives the slider value')
 })
 
+// A service worker restart loses every global; only storage survives, so the
+// second instance is seeded with exactly the marker the first one wrote.
 test('a marker left by an earlier service worker blocks the conversion on a fresh worker', async () => {
     const first = loadBackground()
     await first.install({ reason: 'update', previousVersion: '1.3.0' })

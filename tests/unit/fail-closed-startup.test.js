@@ -25,6 +25,8 @@ function childListRecord(target, ...addedNodes) {
     return { type: 'childList', target, addedNodes, removedNodes: [] }
 }
 
+// Six rounds outlast the deferred-clear chain: MAX_DEFERRED_CLEAR_VERDICTS (4)
+// re-analyses plus the commit, each needing a settle and the 200 ms debounce.
 async function flushAnalysis(env) {
     for (let round = 0; round < 6; round++) {
         await env.settle()
@@ -42,6 +44,8 @@ test('a URL change before the settings read cannot analyse the page with the def
     env.context.location.href = 'https://example.com/safe/normalized'
 
     // Act
+    // Only the startup observer is connected; its handler finds shadow roots and
+    // never re-resolves the URL policy, so the default trigger list is never used.
     env.dispatchMutations([childListRecord(env.body, image)])
     await flushAnalysis(env)
 
@@ -58,10 +62,12 @@ test('media that arrive before the settings read keep the stylesheet blur and ne
     const env = createContentHarness()
     recordAnalyses(env)
     const image = env.image()
+    // The harness has no layout; the hit test is stubbed to put the image under the pointer.
     env.document.elementsFromPoint = () => [image, env.body, env.html]
 
     // Act: the parser inserts the image, the pointer rests on it.
     env.dispatchMutations([childListRecord(env.body, image)])
+    // The pointer event runs a leading hit test at once and arms a 30 ms trailing one.
     env.document.dispatchEvent({ type: 'pointermove', clientX: 50, clientY: 50 })
     await env.runTimers(HOVER_HIT_TEST_INTERVAL_MS)
 
@@ -75,6 +81,8 @@ test('media that arrive before the settings read keep the stylesheet blur and ne
         blurValueAmount: 100, previewEnabled: false,
     })
     await env.readAndApplySettings()
+    // performance.now is frozen in the harness, so the throttle skips the leading
+    // hit test and only the 30 ms trailing timer runs it.
     env.document.dispatchEvent({ type: 'pointermove', clientX: 51, clientY: 50 })
     await env.runTimers(HOVER_HIT_TEST_INTERVAL_MS)
 
@@ -159,6 +167,8 @@ function shadowImage(env, root) {
     return image
 }
 
+// Lets both immediate re-checks (microtask and setTimeout 0) run and find no root,
+// so only the pending-host path remains to catch the next chunk's root.
 async function parserYieldsAfter(env, records) {
     env.dispatchMutations(records)
     await env.settle()
@@ -285,6 +295,8 @@ test('early-blur covers trigger words until the controller applies the first set
     // Arrange: manifest order (early-blur.js before js.js) with a settings read
     // that resolves only after both scripts have run, as on a real page.
     let resolveRead
+    // This read is the one early-blur.js issues at document_start and publishes
+    // for js.js, so a single promise gates both scripts.
     const env = createContentHarness({
         earlyBlur: true,
         getWithDefaults: () => new Promise((resolve) => { resolveRead = resolve }),
@@ -303,6 +315,8 @@ test('early-blur covers trigger words until the controller applies the first set
     const earlyCovers = paragraph.querySelectorAll('.phobia-word-cover')
     assert.equal(earlyCovers.length, 1, 'early-blur must cover trigger words before the controller takes over')
     assert.equal(earlyCovers[0].textContent, 'spider')
+    // The shim writes the user's blur strength onto <html> as the shared CSS
+    // variable, the same one the controller projects once it takes over.
     const blurPixels = `${env.Policy.computeBlurPixels(settings.blurValueAmount)}px`
     assert.equal(env.html.style.getPropertyValue(env.Policy.CSS_VARS.blurNs), blurPixels)
 
@@ -332,6 +346,8 @@ test('early-blur still covers words streamed in after its settings read while th
     // Act: the parser streams another paragraph before DOMContentLoaded.
     const paragraph = env.body.appendChild(env.document.createElement('p'))
     paragraph.appendChild(env.document.createTextNode('another spider'))
+    // dispatchMutations reaches every observer of the document, the shim's own
+    // included; the controller's startup observer still registers nothing.
     env.dispatchMutations([childListRecord(env.body, paragraph)])
 
     // Assert

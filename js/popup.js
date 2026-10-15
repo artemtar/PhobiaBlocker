@@ -1,3 +1,7 @@
+// Toolbar popup: edits the shared settings, shows the active tab's protection
+// status and matched words, and sends manual blur/reveal actions to every
+// frame of the active tab. It never reveals anything itself; only the content
+// script does.
 const popupPolicy = globalThis.PhobiaBlockerPolicy
 const popupStorage = globalThis.PhobiaBlockerStorage
 const popupUi = globalThis.PhobiaBlockerSettingsUi
@@ -15,15 +19,26 @@ const MODE_VALUES = {
     always: { phobiaBlockerEnabled: true, blurIsAlwaysOn: true },
     off: { phobiaBlockerEnabled: false, blurIsAlwaysOn: false },
 }
+// The content script re-analyses as the page mutates but never pushes results
+// to the popup, so matched words are polled. The timeout bounds a content
+// script that keeps the reply channel open but never answers (a missing
+// script fails fast through lastError; a suspended frame does not).
 const ANALYSIS_REFRESH_INTERVAL_MS = 1000
 const ANALYSIS_RESPONSE_TIMEOUT_MS = 3000
 const popupReader = popupUi.createRevisionedReader(popupStorage)
+// Three per-key locks guard edits. pendingWrites: a write is in flight.
+// refreshRequired: storage.onChanged reported a change not yet re-read.
+// keyVersions: bumped on every onChanged, including the popup's own writes,
+// so a write callback only paints its value if nothing newer landed (see
+// saveSettings).
 const pendingWrites = new Set()
 const refreshRequired = new Set()
 const keyVersions = new Map()
 let popupSettings = {}
 let targetWords = []
 let popupSettingsLoaded = false
+// Monotonic tokens: an async status or analysis request renders its result
+// only if no newer request started while it was in flight.
 let popupStatusRevision = 0
 let popupAnalysisRevision = 0
 let popupAnalysisRefreshTimer = null
@@ -37,19 +52,28 @@ let popupError = ''
 let refreshFailed = false
 
 const byId = id => document.getElementById(id)
+// Editing waits for the initial read and for every involved key to settle, so
+// a write never overwrites a value this popup has not seen yet.
 const canEdit = keys => popupSettingsLoaded && keys.every(key => !pendingWrites.has(key) && !refreshRequired.has(key))
 
 document.addEventListener('DOMContentLoaded', () => {
+    // Chrome tears the popup document down on close; stop the poll and drop
+    // any in-flight analysis reply so nothing renders into a dying document.
     window.addEventListener('pagehide', () => {
         popupClosed = true
         popupAnalysisRevision += 1
         clearTimeout(popupAnalysisRefreshTimer)
     }, { once: true })
     void initializePopup().then(() => {
+        // No settings, no poll: status and matched words would be meaningless and
+        // the only recovery from a failed initial read is reopening the popup.
         if (popupSettingsLoaded) scheduleAnalysisRefresh()
     })
 })
 
+// Both wrappers resolve null instead of rejecting. Reading lastError inside
+// the callback also marks it handled; otherwise Chrome logs an
+// "Unchecked runtime.lastError" for every tab without a content script.
 function queryTabs(query) {
     return new Promise(resolve => chrome.tabs.query(query, tabs => {
         const error = chrome.runtime.lastError
@@ -68,6 +92,10 @@ function sendTabMessage(tabId, message, options) {
     })
 }
 
+// Page actions and site rules are offered only on http(s) pages, the one
+// scheme where a content script is guaranteed (chrome://, extension pages and
+// the Web Store never get one; file:// only with the optional file-access
+// grant). Preferences stay editable everywhere.
 function supportedPage(url) {
     try {
         const parsed = new URL(url)
@@ -121,10 +149,14 @@ function renderTags() {
 
 function renderControls() {
     const selected = !popupSettings.phobiaBlockerEnabled ? 'off' : popupSettings.blurIsAlwaysOn ? 'always' : 'smart'
+    // No tile is pressed before the first read, so defaults are never shown
+    // as if they were the user's saved choice.
     for (const mode of Object.keys(MODE_VALUES)) {
         byId(`mode-${mode}`).setAttribute('aria-pressed', String(popupSettingsLoaded && selected === mode))
         byId(`mode-${mode}`).disabled = !canEdit(MODE_KEYS)
     }
+    // A two-state switch has no neutral rendering; it shows Off until the first
+    // read but stays disabled, so the user cannot act on the placeholder.
     for (const [name, key] of [['cover', POPUP_KEYS.wordCover], ['preview', POPUP_KEYS.previewEnabled]]) {
         const enabled = popupSettings[key] === true
         byId(`${name}-toggle`).setAttribute('aria-pressed', String(enabled))
@@ -132,10 +164,14 @@ function renderControls() {
         byId(`${name}-state`).textContent = enabled ? 'On ✓' : 'Off −'
     }
     const domain = currentDomain()
+    // Hosts the rule parser rejects (e.g. 'localhost', no dot) get no rule
+    // editor even though page actions still work there.
     const canEditRule = popupPolicy.parseSiteRule(domain).valid && canEdit(RULE_KEYS)
     byId('change-site-rule').disabled = !canEditRule
     byId('site-rule-select').disabled = !canEditRule
     byId('site-rule-label').textContent = domain ? `Rule for ${domain}` : 'Rule for this domain'
+    // The select edits only a rule for exactly this host. A parent-domain or
+    // path rule that also applies is reported by renderSiteStatus, not here.
     const hasExactRule = key => popupSettings[key]?.some(rule => popupPolicy.parseSiteRule(rule).normalized === domain)
     byId('site-rule-select').value = hasExactRule(POPUP_KEYS.blacklist) ? 'always' : hasExactRule(POPUP_KEYS.whitelist) ? 'off' : 'default'
     const actionsDisabled = !popupSettingsLoaded || !supportedPage(activeTab?.url) || pageActionPending
@@ -167,6 +203,9 @@ async function saveSettings(values) {
         applySettings(Object.fromEntries(keys
             .filter(key => versions.get(key) === keyVersions.get(key))
             .map(key => [key, saved[key]])))
+        // A hover-preview change only restyles media the content script has already
+        // decided about, so it is the one save that skips the status and matched-word
+        // re-read; everything else may change what the page reports.
         if (keys.some(key => key !== POPUP_KEYS.previewEnabled)) {
             popupAnalysisRevision += 1
             void updateSiteStatus()
@@ -189,6 +228,10 @@ async function addTag(rawWord) {
     showWordError('')
     const validation = popupPolicy.validateTargetWord(rawWord)
     if (!validation.valid) return showWordError(validation.reason)
+    // The 20-word cap is a product limit inherited from the original Tagify
+    // maxTags setting and documented in README.md; it is not a storage-quota
+    // bound. The settings page, README and settings-races test enforce the same
+    // number; change them together.
     if (targetWords.length >= 20) return showWordError('You can store up to 20 trigger words.')
     if (targetWords.some(word => popupPolicy.validateTargetWord(word).normalized === validation.normalized)) {
         return showWordError('That trigger word is already in your list.')
@@ -204,6 +247,9 @@ async function removeTag(index) {
 async function saveSiteRule(value) {
     const domain = currentDomain()
     if (!popupPolicy.parseSiteRule(domain).valid || !canEdit(RULE_KEYS) || !['default', 'always', 'off'].includes(value)) return
+    // Replace only the rule for exactly this host so parent-domain, path and
+    // other-host rules survive. Both lists are written in one call so a host
+    // can never end up on both at once.
     const keepOtherRules = rules => rules.filter(rule => popupPolicy.parseSiteRule(rule).normalized !== domain)
     const blacklistedSites = keepOtherRules(popupSettings.blacklistedSites)
     const whitelistedSites = keepOtherRules(popupSettings.whitelistedSites)
@@ -250,6 +296,8 @@ function renderSiteStatus() {
 
 async function updateSiteStatus() {
     const revision = ++popupStatusRevision
+    // Also abandon the result if any settings read started meanwhile: the
+    // status must describe the newest settings, not the ones at call time.
     const settingsRevision = popupReader.revision
     const isCurrent = () => revision === popupStatusRevision && settingsRevision === popupReader.revision
     const tabs = await queryTabs({ active: true, currentWindow: true })
@@ -313,6 +361,9 @@ function setupEventListeners() {
     byId('open-settings-btn').addEventListener('click', () => chrome.runtime.openOptionsPage())
 }
 
+// Manual page actions act on the active tab only and never touch stored
+// preferences; unlike a mode or site-rule change they do not survive a reload
+// and do not affect other tabs. Revealing is still done by the content script.
 async function runActiveTabCommand(type) {
     if (!popupSettingsLoaded || pageActionPending || !supportedPage(activeTab?.url)) return
     pageActionPending = true
@@ -321,6 +372,8 @@ async function runActiveTabCommand(type) {
     result.hidden = false
     result.textContent = 'Applying to this page…'
     try {
+        // Re-query rather than trust activeTab: the user may have switched tabs
+        // since the last status read, and the action must hit the tab they see.
         const tabs = await queryTabs({ active: true, currentWindow: true })
         const tab = tabs?.[0]
         if (!supportedPage(tab?.url)) throw new Error('Unsupported page')
@@ -337,6 +390,7 @@ async function runActiveTabCommand(type) {
     }
 }
 
+// Re-arms only after the previous query settles, so polls never overlap.
 function scheduleAnalysisRefresh() {
     if (popupClosed) return
     popupAnalysisRefreshTimer = setTimeout(async () => {
@@ -354,8 +408,13 @@ async function queryActiveTabAnalysis() {
     try {
         const request = queryTabs({ active: true, currentWindow: true }).then(tabs => {
             if (!isCurrent() || !supportedPage(tabs?.[0]?.url)) return null
+            // Only the top frame answers getTriggeredWords (js.js returns false
+            // elsewhere). Without frameId Chrome delivers to every frame and the
+            // first reply wins. Words found only inside an iframe are not listed.
             return sendTabMessage(tabs[0].id, { target: 'content', type: 'getTriggeredWords' }, { frameId: 0 })
         })
+        // A timeout resolves to null ("analysis unavailable") instead of
+        // rejecting, so a slow tab does not log an error on every poll.
         const timeout = new Promise(resolve => {
             timeoutId = setTimeout(() => resolve(null), ANALYSIS_RESPONSE_TIMEOUT_MS)
         })
@@ -373,6 +432,8 @@ async function queryActiveTabAnalysis() {
 function renderDetectedWords(response) {
     analysisResponse = response
     renderSiteStatus()
+    // This runs every poll; rebuild the list only when the words changed so
+    // the DOM is not churned under the user's pointer or screen reader.
     const signature = JSON.stringify(response?.words ?? null)
     if (signature === detectedWordsSignature) return
     detectedWordsSignature = signature
@@ -391,6 +452,8 @@ async function initializePopup() {
     renderTags()
     renderControls()
     setupEventListeners()
+    // Both disclosures start collapsed; the legacy *Collapsed storage keys
+    // are no longer read or written.
     toggleWordPanel('detected', true)
     toggleWordPanel('supported', true)
     try {
@@ -409,12 +472,17 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
     if (namespace !== 'sync') return
     const keys = EDITABLE_KEYS.filter(key => changes[key])
     if (!keys.length) return
+    // A mode, word, cover or rule change makes the content script re-resolve
+    // protection, so an analysis reply already in flight may describe the old
+    // settings; drop it. (A preview-only change just restyles; the bump is cheap.)
     popupAnalysisRevision += 1
     keys.forEach(key => keyVersions.set(key, (keyVersions.get(key) ?? 0) + 1))
     if (!popupSettingsLoaded) {
         popupReader.invalidate()
         return
     }
+    // Lock the changed keys until a fresh read of them lands; an edit based on
+    // the old value would overwrite what the other page just saved.
     keys.forEach(key => refreshRequired.add(key))
     renderControls()
     if (keys.includes(POPUP_KEYS.targetWords)) renderTags()

@@ -1,3 +1,6 @@
+// Historical placeholder, not a release gate: a single assert.ok(true) that points
+// to a manual checklist (SITE_COMPATIBILITY_FIX.md) which is not tracked in this
+// repository. Launches no browser and exercises no extension code.
 /**
  * Framework Compatibility Test Cases
  *

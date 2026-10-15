@@ -1,9 +1,21 @@
+// The fallback sweep for open shadow roots that neither the attachShadow notifier
+// nor the declarative re-checks reported: it runs from the stylesheet poll in
+// bounded slices. These tests measure how much of the page each slice touches and
+// check that a root found late is protected and indexed without rebuilding the page.
 const assert = require('node:assert/strict')
 const test = require('node:test')
 const { createContentHarness } = require('./helpers/content-harness')
 
+// Mirrors SHADOW_DISCOVERY_YIELD_MS in js.js. It is the only 16 ms timer the
+// controller arms, so a pending timer with this delay is a discovery continuation.
 const DISCOVERY_YIELD_MS = 16
 
+// `size` plain divs whose shadowRoot getter records the visit and advances a fake
+// clock by `readCost` ms; performance.now reads that clock (the harness default is
+// frozen), so the 4 ms time budget is consumed purely by shadowRoot reads.
+// _startStylesheetPolling arms the interval that schedules discovery and poll()
+// fires it; wholePageQueries counts querySelectorAll('*'), the signature of a
+// collectDomRoots sweep over the document.
 function pollingFixture(size = 1000, readCost = 0) {
     const env = createContentHarness()
     const visited = []
@@ -35,6 +47,9 @@ function pollingFixture(size = 1000, readCost = 0) {
     return { ...env, elements, visited, poll, hasSlice, wholePageQueries: () => wholePageQueries }
 }
 
+// The interval callback only arms the first slice; every slice then visits at most
+// SHADOW_DISCOVERY_NODE_BUDGET (250) elements. html, body and the 1000 divs take
+// five slices, and a resumed walk must continue where it stopped.
 test('ordinary polling yields between bounded discovery slices and resumes instead of restarting', async () => {
     const env = pollingFixture()
     env.poll()
@@ -55,6 +70,8 @@ test('ordinary polling yields between bounded discovery slices and resumes inste
     assert.equal(env.wholePageQueries(), 0)
 })
 
+// Each shadowRoot read now costs 1 ms, so the 4 ms SHADOW_DISCOVERY_TIME_BUDGET_MS
+// stops a slice after four elements, long before the 250-element limit.
 test('slow discovery checks yield on the time budget before the element limit', async () => {
     const env = pollingFixture(1000, 1)
     env.poll()
@@ -68,6 +85,11 @@ test('slow discovery checks yield on the time budget before the element limit', 
     assert.ok(env.visited.length - before <= 4, 'the resumed task must retain its time budget')
 })
 
+// A component that populated its root before discovery reached it (the host is the
+// last element, so the walk takes several slices). The three controller assignments
+// simulate a committed clear verdict in ANALYZE, so the test can see the new trigger
+// text flip _analysisPending back to true: a clean page must not stay cleared once a
+// trigger appears inside a late root.
 test('fallback discovery initializes prepopulated shadow media and trigger text without rebuilding the page', async () => {
     const env = pollingFixture()
     const outside = env.body.appendChild(env.document.createElement('p'))
@@ -81,6 +103,7 @@ test('fallback discovery initializes prepopulated shadow media and trigger text 
     const index = env.controller._pageTextIndex
     index.build(env.body)
     const host = env.elements.at(-1)
+    // The fixture's recording getter must go before attachShadow can assign the property.
     delete host.shadowRoot
     const root = host.attachShadow({ mode: 'open' })
     const paragraph = root.appendChild(env.document.createElement('p'))
@@ -104,11 +127,18 @@ test('fallback discovery initializes prepopulated shadow media and trigger text 
     assert.equal(env.controller._analysisPending, true, 'new trigger text must invalidate a clean page verdict')
     assert.equal(rebuilds, 0, 'a newly discovered component must not rebuild the unrelated page text')
 
+    // 200 ms is STYLESHEET_REINDEX_DEBOUNCE_MS: a fingerprint change on this poll
+    // would rebuild the index then. The root was baselined when it was registered.
     env.poll()
     await env.runTimers(200)
     assert.equal(rebuilds, 0, 'the next stylesheet poll must not mistake a new root for a page stylesheet edit')
 })
 
+// A page stylesheet hides 'spider' (modelled by the paragraph's rects). While the
+// discovery walk is paused between slices the page inserts a rule that shows it,
+// which changes that sheet's fingerprint (rule count). Registering the root found
+// afterwards must baseline only that root; snapshotting every sheet there would
+// swallow the document edit and the text would stay out of the index.
 test('a document stylesheet edit during shadow discovery still refreshes visible page text', async () => {
     const env = pollingFixture()
     const paragraph = env.body.appendChild(env.document.createElement('p'))
@@ -118,6 +148,7 @@ test('a document stylesheet edit during shadow discovery still refreshes visible
     const sheet = new env.context.CSSStyleSheet()
     sheet.replaceSync('p { display: none }')
     env.document.styleSheets.push(sheet)
+    // Re-armed so the baseline fingerprint includes the sheet just added.
     env.controller._startStylesheetPolling()
     const index = env.controller._pageTextIndex
     index.build(env.body)
@@ -149,6 +180,9 @@ test('a document stylesheet edit during shadow discovery still refreshes visible
     assert.equal(index.getTokenCount('spider'), 1)
 })
 
+// Ten elements, so discovery finishes in one slice. The root's own styleSheets must
+// be part of the baseline taken at registration; otherwise a rule inserted later
+// would not read as a change and the text it reveals would never be indexed.
 test('a stylesheet edit in a newly initialized root is detected on its next poll', async () => {
     const env = pollingFixture(10)
     const host = env.elements.at(-1)
@@ -183,6 +217,10 @@ test('a stylesheet edit in a newly initialized root is detected on its next poll
     assert.equal(index.getTokenCount('spider'), 1)
 })
 
+// Shadow styles reach outside the root: :host can give the host a background and
+// ::slotted rules can hide or show light-DOM children. Both are modelled as depending
+// on host.shadowRoot existing. _initializeShadowRoot therefore reconciles the host
+// subtree (register its background, re-index its light text), not just the root.
 test('new shadow styles update host backgrounds and the visibility of light content without rebuilding the page', async () => {
     const env = pollingFixture(10)
     const host = env.elements.at(-1)
@@ -223,6 +261,9 @@ test('new shadow styles update host backgrounds and the visibility of light cont
     assert.equal(rebuilds, 0, 'the affected host subtree can be updated without rebuilding the document')
 })
 
+// Component libraries (Lit, FAST, Stencil) assign adoptedStyleSheets after attach,
+// dropping the protection sheet. The poll must put it back for every known root
+// while keeping the page's sheet, and without walking the page to find roots.
 test('polling repairs protection CSS in a known shadow root without a whole-page discovery sweep', () => {
     const env = createContentHarness()
     const host = env.body.appendChild(env.document.createElement('div'))
@@ -233,6 +274,7 @@ test('polling repairs protection CSS in a known shadow root without a whole-page
     const pageSheet = new env.context.CSSStyleSheet()
     root.adoptedStyleSheets.push(pageSheet)
     env.controller._startStylesheetPolling()
+    // The replacement a library's adoptStyles performs: our sheet is gone.
     root.adoptedStyleSheets = [pageSheet]
     let wholePageQueries = 0
     const querySelectorAll = env.document.querySelectorAll.bind(env.document)
@@ -248,6 +290,11 @@ test('polling repairs protection CSS in a known shadow root without a whole-page
     assert.equal(wholePageQueries, 0)
 })
 
+// The paused TreeWalker's currentNode is the last element the slice visited. If the
+// page removes it, a walker that kept going would traverse the detached subtree (a
+// retained copy of the page, here 500 instrumented spans) and never reach the rest of
+// the document. The slice must detect the detached cursor, give up that walk, and the
+// next poll must start a fresh one that reaches the host at the end.
 test('removing a paused discovery cursor releases that walk and the next poll reaches later hosts', async () => {
     const env = pollingFixture()
     const host = env.elements.at(-1)
@@ -283,6 +330,10 @@ test('removing a paused discovery cursor releases that walk and the next poll re
     assert.match(image.style.getPropertyValue('filter'), /^blur\(/)
 })
 
+// The MAIN-world notifier's event, with a committed clear verdict already in place
+// (same simulation as above). The harness has no bubbling, so the event is dispatched
+// on the document, where the controller listens in the capture phase; the controller
+// reads only composedPath()[0] and then inspects the real DOM, never the event.
 test('a shadow-root notification immediately initializes its media and trigger text', () => {
     const env = createContentHarness()
     const settings = { ...env.Policy.DEFAULTS, targetWords: ['spider'], wordCoverEnabled: true }
@@ -309,6 +360,10 @@ test('a shadow-root notification immediately initializes its media and trigger t
     assert.equal(env.controller._analysisPending, true)
 })
 
+// The host was indexed before it had a root and no notification ever arrives (as
+// with a declarative root). The only signal is a childList record on the host whose
+// added node is text; the mutation path must notice the unknown root on the record's
+// target, index it once, and still index the text that produced the record.
 test('a text-only host mutation initializes an unnotified prepopulated shadow root', () => {
     const env = createContentHarness()
     const settings = { ...env.Policy.DEFAULTS, targetWords: ['spider'], wordCoverEnabled: true }
@@ -338,6 +393,9 @@ test('a text-only host mutation initializes an unnotified prepopulated shadow ro
     assert.equal(env.controller._analysisPending, true)
 })
 
+// Both paths run _cancelShadowDiscovery: cancelPendingAnalysis directly, and
+// applyProtectionMode through cancelPendingAnalysis and disableProtection. The
+// settings passed with DISABLED only keep them consistent with the explicit mode.
 for (const action of ['cancel', 'disable']) {
     test(`${action} stops a pending discovery walk`, async () => {
         const env = pollingFixture()

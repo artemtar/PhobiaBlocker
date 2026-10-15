@@ -41,9 +41,13 @@
 
     --pb-radius: 9px;
     --pb-radius-lg: 13px;
+    /* Two rings: a gap in the page colour, then the accent, so the ring stays visible */
+    /* on a control whose own background matches either colour. Applied as box-shadow */
+    /* with outline:none wherever a control is rounded. */
     --pb-focus: 0 0 0 2px var(--pb-bg), 0 0 0 4px var(--pb-accent);
 }
 
+/* Follows Chrome's own light/dark setting; the pages have no theme toggle of their own. */
 @media (prefers-color-scheme: dark) {
     :root {
         --pb-bg: #121419;
@@ -103,7 +107,7 @@ h1, h2, h3 {
     font-weight: 500;
 }
 
-/* popup.js and settings.js toggle these; Bootstrap used to provide them. */
+/* popup.js toggles .show on the two word disclosures; Bootstrap used to provide them. */
 .collapse {
     display: none;
 }
@@ -112,10 +116,14 @@ h1, h2, h3 {
     display: block;
 }
 
+/* Both pages show and hide elements through the hidden property. Many of those */
+/* elements also carry a display:flex or display:grid class, which would otherwise */
+/* beat the browser's own [hidden] rule and keep them visible. */
 [hidden] {
     display: none !important;
 }
 
+/* Unused since the 1.3.1 page rewrite: no markup or script produces .pb-card. */
 .pb-card {
     background: var(--pb-surface);
     border: 1px solid var(--pb-border);
@@ -172,7 +180,7 @@ h1, h2, h3 {
     flex-shrink: 0;
 }
 
-/* popup.js adds this briefly after a successful action */
+/* Unused since the 1.3.1 rewrite: popup.js no longer flashes a success state on buttons. */
 .pb-btn.btn-success {
     background: var(--pb-success-bg);
     border-color: var(--pb-success-dot);
@@ -180,6 +188,7 @@ h1, h2, h3 {
 }
 
 /* Icon-only button */
+/* Unused since the 1.3.1 rewrite: no markup or script produces .pb-icon-btn. */
 .pb-icon-btn {
     display: inline-flex;
     align-items: center;
@@ -238,6 +247,9 @@ h1, h2, h3 {
     opacity: 0.6;
 }
 
+/* A native range has no filled-track styling in Chrome, so appearance:none hands the */
+/* track and thumb to the -webkit- pseudo-elements below. Only those prefixes are needed: */
+/* extension pages run in Chromium alone. */
 /* Range slider. --pb-progress is set by script to fill the track. */
 .pb-range {
     -webkit-appearance: none;
@@ -264,6 +276,7 @@ h1, h2, h3 {
     appearance: none;
     width: 15px;
     height: 15px;
+    /* (4px track - 15px thumb) / 2 centres the thumb on the track. */
     margin-top: -5.5px;
     border: 1px solid var(--pb-border-strong);
     border-radius: 50%;
@@ -297,6 +310,8 @@ h1, h2, h3 {
     height: 22px;
 }
 
+/* The real checkbox stays in the tree, invisible but full-size, so labels, keyboard */
+/* focus and assistive tech keep working; the track is decoration and lets clicks through. */
 .pb-switch input {
     position: absolute;
     inset: 0;
@@ -332,6 +347,7 @@ h1, h2, h3 {
     background: var(--pb-accent);
 }
 
+/* 38px switch minus 3px inset on each side minus the 16px knob leaves 16px of travel. */
 .pb-switch input:checked ~ .pb-switch-track::after {
     transform: translateX(16px);
 }
@@ -344,7 +360,9 @@ h1, h2, h3 {
     opacity: 0.5;
 }
 
-/* Removable chip, shared by trigger words and site rules */
+/* Removable chip for trigger words. Site rules render as .site-rule rows (settings.css) */
+/* and reuse only the remove button below; nothing produces .site-item any more. */
+/* popup.css and settings.css restyle .tag later in the cascade (squarer, neutral). */
 .tag,
 .site-item {
     display: inline-flex;
@@ -402,7 +420,8 @@ h1, h2, h3 {
     cursor: default;
 }
 
-/* Square add button beside the trigger-word and site-rule inputs */
+/* Unused since the 1.3.1 rewrite: the add buttons are now .pb-btn.pb-btn-primary and */
+/* only keep add-word-btn / add-site-rule-btn as ids. */
 .add-word-btn,
 .add-site-btn {
     display: inline-flex;
@@ -460,7 +479,8 @@ h1, h2, h3 {
     font-weight: 500;
 }
 
-/* Tooltip element is created by popup.js and positioned in viewport coords. */
+/* Legacy tooltip, unused since 1.3.1: ui-help.js now creates #pb-ui-tooltip.pb-tooltip, */
+/* styled in css/ui-help.css. */
 .tooltip {
     position: fixed;
     z-index: 50;
@@ -482,6 +502,7 @@ h1, h2, h3 {
     visibility: visible;
 }
 
+/* Unused since 1.3.1; the .pb-help button in css/ui-help.css replaced the inline icon. */
 .info-icon {
     display: inline-flex;
     align-items: center;
@@ -499,6 +520,7 @@ h1, h2, h3 {
     height: 9px;
 }
 
+/* Transparent border plus content-box clipping insets the thumb from the track edges. */
 ::-webkit-scrollbar-thumb {
     border: 2px solid transparent;
     border-radius: 999px;

@@ -1,3 +1,7 @@
+// The document stylesheet cannot reach into a shadow root, so the controller
+// adopts a constructed protection sheet into every open root it knows. These
+// suites cover the ways a root can lose or gain that sheet without an
+// attachShadow notification, and what a new shadow root must not disturb.
 const assert = require('node:assert/strict')
 const test = require('node:test')
 const { createContentHarness } = require('./helpers/content-harness')
@@ -10,6 +14,8 @@ const FRAME_MESSAGE_TYPES = ['PB_FRAME_AGGREGATE_REQUEST', 'PB_FRAME_STATUS_CHAN
 function clearedPageFixture() {
     const env = createContentHarness()
     const settings = { ...env.Policy.DEFAULTS, targetWords: ['spider'], wordCoverEnabled: true }
+    // Hand-built committed state instead of the async settings read: protection
+    // applied, nothing pending, clear verdict; the handlers are then called directly.
     env.controller.mode = 'ANALYZE'
     env.controller.protectionApplied = true
     env.controller._analysisPending = false
@@ -20,6 +26,9 @@ function clearedPageFixture() {
     return env
 }
 
+// The MAIN-world notifier does not run here. The event is dispatched on the
+// document, where the controller's capture listener is, with the host first in
+// composedPath as a real composed event would report it.
 function notifyShadowRoot(env, host) {
     env.document.dispatchEvent({
         type: 'phobiablocker:shadow-root-attached',
@@ -192,6 +201,8 @@ test('once parsing has ended, a host without a root is not re-inspected by later
     env.document.readyState = 'complete'
     const host = env.body.appendChild(env.document.createElement('x-late'))
     let reads = 0
+    // The getter counts every inspection of the host; after parsing, no host is
+    // remembered as pending, so later batches have no reason to look again.
     Object.defineProperty(host, 'shadowRoot', { get() { reads++; return undefined } })
     env.controller._handleMutations([heroRecord(env, host)])
     await env.settle()
@@ -244,6 +255,7 @@ test('before the settings read, content rendered into a root that dropped its sh
     const image = root.appendChild(new env.context.HTMLImageElement())
     image.setAttribute('src', 'picture.jpg')
 
+    // The record targets the root itself and is delivered to that root's observers.
     env.dispatchMutations([{ type: 'childList', target: root, addedNodes: [image], removedNodes: [] }], root)
 
     assert.equal(env.controller.protectionApplied, false)
@@ -270,11 +282,14 @@ test('ordinary inserted elements are not re-inspected for shadow roots later', a
 
 function releasedIframeFixture() {
     const env = clearedPageFixture()
+    // A sub-frame context: the top frame never sends PB_FRAME_STATUS_CHANGED, and
+    // these suites must prove that message is not sent either.
     env.window.top = {}
     const iframe = env.body.appendChild(new env.context.HTMLIFrameElement())
     iframe.setAttribute('src', 'https://other.example/frame')
     env.controller._registerMedia(env.document)
     env.controller._markIframeNavigationComplete(iframe)
+    // Stands in for a confirmed aggregate reply from the service worker.
     env.controller._setFrameAggregateClear(true)
     assert.equal(iframe.style.getPropertyValue('filter'), 'none', 'the fixture starts from a released iframe')
     const messages = []
@@ -292,6 +307,7 @@ test('an empty shadow root attachment leaves a released iframe alone and sends n
 
     notifyShadowRoot(env, host)
     assert.equal(env.iframe.style.getPropertyValue('filter'), 'none')
+    // 100 ms is the aggregate refresh debounce; a request scheduled by the attach would fire now.
     await env.runTimers(100)
 
     assert.equal(env.iframe.style.getPropertyValue('filter'), 'none')

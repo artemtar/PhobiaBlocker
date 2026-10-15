@@ -1,3 +1,7 @@
+// Races on the settings page between the user's edits, in-flight storage writes
+// and storage.onChanged refreshes from another context (the popup). The guarded
+// invariant: an edit may never write a list or flag that is older than a change
+// the page has already been told about.
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
@@ -7,12 +11,17 @@ const vm = require('node:vm')
 const repositoryRoot = path.resolve(__dirname, '../..')
 const settingsHtml = fs.readFileSync(path.join(repositoryRoot, 'settings.html'), 'utf8')
 const clone = value => JSON.parse(JSON.stringify(value))
+// setImmediate runs after every pending microtask, so one settle() lets a whole
+// storage callback -> promise -> render chain finish before the next assertion.
 const settle = () => new Promise(resolve => setImmediate(resolve))
+// What storage holds before the page loads; every test starts from these lists.
 const savedLists = {
     whitelistedSites: ['allowed.example', 'trusted.example'],
     blacklistedSites: ['blocked.example', 'unsafe.example'],
 }
 
+// One listener per event type is kept, which matches settings.js (one handler per
+// control); dispatch() is how a test clicks a button or changes an input.
 function createElement(tagName = 'div') {
     const listeners = new Map()
     const attributes = new Map()
@@ -37,6 +46,7 @@ function createElement(tagName = 'div') {
         removeAttribute: name => attributes.delete(name),
         focus() { this.focused = true },
         scrollIntoView() {},
+        // settings.js empties list containers with innerHTML = '' before re-rendering.
         set innerHTML(value) {
             this.html = value
             this.children = []
@@ -54,6 +64,9 @@ function createElement(tagName = 'div') {
 // only DOM/Chrome boundaries are faked to control storage callback ordering.
 function createSettings({ initial = {}, hash = '' } = {}) {
     const elements = new Map()
+    // Elements are scraped from the real settings.html, so a renamed id fails here
+    // instead of leaving a dangling fake. `tag` is the whole opening tag; the markup's
+    // disabled/hidden attributes become the initial state the page is expected to lift.
     for (const [tag, tagName, id] of settingsHtml.matchAll(/<([a-z]+)[^>]*\bid="([^"]+)"[^>]*>/g)) {
         const element = createElement(tagName)
         element.id = id
@@ -61,6 +74,7 @@ function createSettings({ initial = {}, hash = '' } = {}) {
         element.hidden = /\bhidden\b/.test(tag)
         elements.set(id, element)
     }
+    // The fake <select> has no options; whitelist is the first one in the markup.
     elements.get('site-rule-type').value = 'whitelist'
     const modeButtons = [...settingsHtml.matchAll(/<button[^>]*data-mode="([^"]+)"/g)].map(([, mode]) => {
         const button = createElement('button')
@@ -84,6 +98,8 @@ function createSettings({ initial = {}, hash = '' } = {}) {
     let readCount = 0
     const runtime = { lastError: null, getManifest: () => ({ version: 'test' }) }
     const location = { hash }
+    // Chrome reports a storage failure only through runtime.lastError, set for the
+    // duration of the callback; storage.js reads it there, so the fake does the same.
     const complete = (callback, values, error) => {
         runtime.lastError = error ? { message: error } : null
         callback(values)
@@ -119,15 +135,23 @@ function createSettings({ initial = {}, hash = '' } = {}) {
             storage: {
                 onChanged: { addListener(listener) { changeListeners.push(listener) } },
                 sync: {
+                    // The values are snapshotted when the read is requested, not when it
+                    // completes, so a deferred older read really carries the older list.
+                    // Missing keys are omitted and storage.js fills in the defaults.
                     get(keys, callback) {
                         const values = Object.fromEntries(keys
                             .filter(key => persisted[key] !== undefined)
                             .map(key => [key, clone(persisted[key])]))
                         const finish = error => complete(callback, values, error)
+                        // The very first read is the page's initial loadAll and is held
+                        // until finishInitialRead; later reads (refreshes, a retried load)
+                        // complete at once unless deferRefreshReads was called.
                         if (readCount++ === 0) initialRead = finish
                         else if (deferReads) pendingReads.push(finish)
                         else finish()
                     },
+                    // A write lands in `persisted` only when it succeeds, so `writes` is
+                    // exactly the list of committed writes a test can assert against.
                     set(values, callback) {
                         const candidate = clone(values)
                         const finish = () => {
@@ -144,9 +168,12 @@ function createSettings({ initial = {}, hash = '' } = {}) {
             },
         },
     })
+    // The load order of settings.html; each script expects the previous globals.
     for (const file of ['shared-policy.js', 'storage.js', 'settings-ui.js', 'settings.js']) {
         vm.runInContext(fs.readFileSync(path.join(repositoryRoot, 'js', file), 'utf8'), context, { filename: file })
     }
+    // Called directly because the fake document never fires DOMContentLoaded. The
+    // promise stays pending until the held initial read is released.
     const initialized = context.initializeSettingsPage()
     return {
         elements,
@@ -173,15 +200,21 @@ function createSettings({ initial = {}, hash = '' } = {}) {
             return context.addToSiteList(listType)
         },
         removeSite: (listType, index) => context.removeSiteFromList(index, listType),
+        // If a change() invalidated the load, loadAll reads again; that second read is
+        // not deferred (unless deferRefreshReads ran), so awaiting `initialized` is safe.
         async finishInitialRead(error) {
             initialRead(error)
             await initialized
         },
         deferRefreshReads() { deferReads = true },
+        // Pending reads are listed in request order; the index picks which of several
+        // overlapping refreshes completes first, which is how the races are staged.
         async finishRefreshRead(index = 0, error) {
             pendingReads.splice(index, 1)[0](error)
             await settle()
         },
+        // Another context (the popup) wrote to storage: persist first, then notify
+        // onChanged listeners with Chrome's {oldValue, newValue} shape.
         async change(values) {
             const changes = Object.fromEntries(Object.entries(values)
                 .map(([key, newValue]) => [key, { oldValue: persisted[key], newValue }]))
@@ -192,6 +225,8 @@ function createSettings({ initial = {}, hash = '' } = {}) {
     }
 }
 
+// Both lists share one input and add button, so the lock state is re-derived per
+// list by switching the type select; the last child of each row is its remove button.
 function assertSiteControlsDisabled(settings, disabled, listTypes = ['whitelist', 'blacklist']) {
     for (const listType of listTypes) {
         settings.elements.get('site-rule-type').value = listType
@@ -204,12 +239,15 @@ function assertSiteControlsDisabled(settings, disabled, listTypes = ['whitelist'
     }
 }
 
+// Before the first read the page knows no lists; an accepted edit would write
+// [new.example] over the saved whitelist.
 test('site edits before the initial settings read cannot replace saved lists', async () => {
     const settings = createSettings()
     await settings.addSite('whitelist', 'new.example')
     await settings.removeSite('blacklist', 0)
     assert.deepEqual(settings.writes, [])
     assert.deepEqual(settings.persisted, savedLists)
+    // Released so the page's pending load does not outlive the test.
     await settings.finishInitialRead()
 })
 
@@ -224,6 +262,8 @@ test('site controls remain disabled until the complete settings read succeeds', 
     assert.deepEqual(settings.persisted.blacklistedSites, ['unsafe.example'])
 })
 
+// While the page is not loaded a change only invalidates the reader; it must not
+// hand the page a partial snapshot that makes edits possible.
 test('failed initial reads keep site edits guarded even after a partial storage change', async () => {
     const settings = createSettings()
     await settings.finishInitialRead('Storage unavailable')
@@ -237,6 +277,8 @@ test('failed initial reads keep site edits guarded even after a partial storage 
     assert.equal(settings.elements.get('settings-error').hidden, false)
 })
 
+// The held initial read snapshotted the old list; the change invalidates the load,
+// so loadAll reads a second time and the page starts from latest.example.
 test('a storage change during initialization is retained by the first site edit', async () => {
     const settings = createSettings()
     await settings.change({ whitelistedSites: ['latest.example'] })
@@ -245,6 +287,8 @@ test('a storage change during initialization is retained by the first site edit'
     assert.deepEqual(settings.persisted.whitelistedSites, ['latest.example', 'new.example'])
 })
 
+// Two refreshes of the same key complete in reverse order. Read 0 snapshotted the
+// one-item list, so applying it after read 1 would drop second.example.
 test('out-of-order list refreshes cannot erase a newer site rule on the next edit', async () => {
     const settings = createSettings()
     await settings.finishInitialRead()
@@ -257,6 +301,9 @@ test('out-of-order list refreshes cannot erase a newer site rule on the next edi
     assert.deepEqual(settings.persisted.whitelistedSites, ['first.example', 'second.example', 'third.example'])
 })
 
+// Read 0 covers two keys, read 1 only previewEnabled. When read 0 lands last its
+// previewEnabled is superseded, but its whitelistedSites is still the current value
+// and must be applied; dropping the whole response would leave that key locked.
 test('overlapping refreshes retain unrelated keys from the earlier response', async () => {
     const settings = createSettings()
     await settings.finishInitialRead()
@@ -271,6 +318,9 @@ test('overlapping refreshes retain unrelated keys from the earlier response', as
 })
 
 for (const [listType, storageKey] of [['whitelist', 'whitelistedSites'], ['blacklist', 'blacklistedSites']]) {
+    // The page still shows the pre-change list while the refresh is in flight; an
+    // accepted add would write that stale list plus local.example over remote.example.
+    // The typed value is kept in the input so the user can retry after the refresh.
     test(`${listType} add/remove during a refresh cannot overwrite a remote rule`, async () => {
         const settings = createSettings()
         await settings.finishInitialRead()
@@ -290,6 +340,9 @@ for (const [listType, storageKey] of [['whitelist', 'whitelistedSites'], ['black
         assert.deepEqual(settings.persisted[storageKey], ['remote.example', 'local.example'])
     })
 
+    // A failed refresh leaves its key in settingsRefreshRequired. Successful refreshes
+    // of other keys (previewEnabled, debugMode) must not unlock it; only a later
+    // successful read of the same key does.
     test(`${listType} refresh failure keeps edits blocked through unrelated successes until recovery`, async () => {
         const settings = createSettings()
         await settings.finishInitialRead()
@@ -317,6 +370,9 @@ for (const [listType, storageKey] of [['whitelist', 'whitelistedSites'], ['black
     })
 }
 
+// The older read fails after the newer one succeeded. createRevisionedReader only
+// reports a failure while that read still owns a key, so the stale failure must
+// neither re-lock the list nor raise the refresh alert.
 test('a successful newer site refresh releases edits despite an older pending read and failure', async () => {
     const settings = createSettings()
     await settings.finishInitialRead()
@@ -332,6 +388,8 @@ test('a successful newer site refresh releases edits despite an older pending re
     assert.deepEqual(settings.persisted.whitelistedSites, ['remote.example', 'local.example'])
 })
 
+// One write per click. Two separate writes would be two storage changes, each
+// re-read by every open page, with an intermediate flag combination in between.
 test('default protection modes persist both policy flags in one write', async () => {
     const settings = createSettings()
     await settings.finishInitialRead()
@@ -356,6 +414,8 @@ test('failed mode writes restore the committed selection', async () => {
     assert.equal(settings.elements.get('settings-error').hidden, false)
 })
 
+// The mode buttons write both flags, so a pending refresh of just blurIsAlwaysOn
+// must lock them: a click would otherwise re-persist the stale value of that flag.
 test('default mode edits are blocked while either policy flag needs a refresh', async () => {
     const settings = createSettings()
     await settings.finishInitialRead()
@@ -373,6 +433,8 @@ test('default mode edits are blocked while either policy flag needs a refresh', 
     assert.deepEqual(settings.writes, [{ phobiaBlockerEnabled: true, blurIsAlwaysOn: false }])
 })
 
+// The full-width C folds to ASCII under NFKC and the whole word is lowercased, so
+// 'clown' is then a duplicate; 'two words' fails the single-word shape check.
 test('Settings adds normalized trigger words and rejects duplicates and invalid shapes', async () => {
     const settings = createSettings({ initial: { targetWords: ['spider'] } })
     await settings.finishInitialRead()
@@ -412,6 +474,8 @@ test('Settings enforces the same trigger-word limit as the popup', async () => {
     assert.match(settings.elements.get('word-error').textContent, /20/)
 })
 
+// Each tag's last child is its remove button; children[1] is 'clown'. After the
+// failed second removal the list must still show both remaining words.
 test('removing a saved word persists the remaining words and preserves them on failure', async () => {
     const settings = createSettings({ initial: { targetWords: ['spider', 'clown', 'mice'] } })
     await settings.finishInitialRead()
@@ -426,6 +490,8 @@ test('removing a saved word persists the remaining words and preserves them on f
     assert.equal(settings.elements.get('settings-error').hidden, false)
 })
 
+// The two sliders have different units: blur strength is a 0-100 scale mapped
+// through computeBlurPixels, the preview slider is literal pixels.
 test('strength and word-cover controls write their distinct shared settings keys', async () => {
     const settings = createSettings()
     await settings.finishInitialRead()
@@ -447,6 +513,8 @@ test('strength and word-cover controls write their distinct shared settings keys
     assert.equal(settings.elements.get('preview-strength-value').textContent, '7 px')
 })
 
+// '#hover-preview' is a hash from an earlier settings layout, aliased to the
+// protection section, so old bookmarks still land on a panel.
 test('sidebar navigation selects one panel and keeps the URL hash usable', async () => {
     const settings = createSettings({ hash: '#hover-preview' })
     await settings.finishInitialRead()
@@ -459,6 +527,9 @@ test('sidebar navigation selects one panel and keeps the URL hash usable', async
     assert.equal(settings.navLinks.find(link => link.getAttribute('href') === '#words').getAttribute('aria-current'), 'page')
 })
 
+// The write of `false` is still in flight when the popup sets `true`. The write's
+// callback must not paint its own value: the key's revision moved, and the refresh
+// read (snapshotted at request time, so it holds `true`) decides the final state.
 test('a pending scalar write keeps the control locked until the latest refresh finishes', async () => {
     const settings = createSettings()
     await settings.finishInitialRead()
@@ -475,6 +546,10 @@ test('a pending scalar write keeps the control locked until the latest refresh f
     assert.equal(toggle.disabled, false)
 })
 
+// Read 0 is the stale refresh, read 1 the retry's full load. The change during the
+// retry invalidates that load (the page is unloaded again, so no refresh is issued),
+// which is why read 1 must be finished twice: loadAll re-reads until no change
+// arrived mid-flight. The stale refresh completes last and is dropped by generation.
 test('retrying settings supersedes older pending refreshes before allowing list edits', async () => {
     const settings = createSettings()
     await settings.finishInitialRead()
@@ -489,6 +564,9 @@ test('retrying settings supersedes older pending refreshes before allowing list 
     assert.deepEqual(settings.persisted.whitelistedSites, ['latest.example', 'new.example'])
 })
 
+// After the failure two keys need a refresh. Finishing only previewEnabled's read
+// must unlock that control but keep the alert and retry button, because debugMode
+// is still unread; the second finishRefreshRead(0) is debugMode's read, now first.
 test('refresh recovery clears its alert only after every affected key has a current value', async () => {
     const settings = createSettings()
     await settings.finishInitialRead()
@@ -513,6 +591,9 @@ test('refresh recovery clears its alert only after every affected key has a curr
     assert.equal(settings.elements.get('retry-settings-btn').hidden, true)
 })
 
+// The alert has two sources. A refresh-caused alert clears itself on recovery; one
+// raised by the user's own action (invalid rule, failed write) replaces it and must
+// survive the recovery, with the retry button hidden since nothing is pending.
 for (const failure of ['validation', 'write']) {
     test(`refresh recovery preserves an unrelated ${failure} error`, async () => {
         const settings = createSettings()

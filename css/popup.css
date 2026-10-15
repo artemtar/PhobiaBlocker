@@ -1,3 +1,5 @@
+/* Popup layout only; tokens and shared controls come from theme.css, help from ui-help.css. */
+/* tests/live/popup-sizing.js checks the fixed width against Chrome's native popup. */
 /* Chrome sizes its toolbar popup from this document. Viewport-based width caps
    feed that size back into layout and can make the popup repeatedly resize. */
 body { width:400px; background:var(--pb-surface); font-size:14px; line-height:1.45; }
@@ -17,6 +19,8 @@ svg { width:16px; height:16px; flex:none; fill:none; stroke:currentColor; stroke
 .site-status-bar { padding:13px; border-radius:10px; background:var(--pb-accent-bg); }
 .site-status-bar h1 { font-size:19px; line-height:1.3; letter-spacing:-.025em; }
 .site-status-bar p { color:var(--pb-text-2); margin:5px 0 0; font-size:12px; }
+/* popup.js adds this whenever protection cannot run as configured: an unsupported page */
+/* (chrome://, the Web Store), a failed settings read, or Smart mode with no valid word. */
 .site-status-bar.status-unavailable { background:var(--pb-warning-bg); }
 .site-rule-line { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:10px; color:var(--pb-text-2); font-size:12px; }
 .site-rule-line > span { min-width:0; overflow-wrap:anywhere; }
@@ -33,6 +37,8 @@ svg { width:16px; height:16px; flex:none; fill:none; stroke:currentColor; stroke
 .mode-tile { position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:7px; min-height:66px; padding:10px 3px; border:1px solid var(--pb-border); border-radius:8px; background:var(--pb-surface); color:var(--pb-text); font-size:13px; }
 .mode-tile>svg { width:18px; height:18px; }
 .mode-tile:hover:not(:disabled) { background:var(--pb-bg); }
+/* Selection is read from aria-pressed, which popup.js maintains for the mode tiles and */
+/* the preference buttons, so no separate selected class exists. */
 .mode-tile[aria-pressed="true"] { background:var(--pb-accent-bg); border-color:var(--pb-accent); color:var(--pb-accent-text); font-weight:500; }
 .selected-mark { display:none; position:absolute; right:6px; top:3px; font-size:12px; }
 .mode-tile[aria-pressed="true"] .selected-mark { display:block; }
@@ -48,6 +54,8 @@ svg { width:16px; height:16px; flex:none; fill:none; stroke:currentColor; stroke
 .disclosure-button { display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; padding:4px 0; border:0; border-radius:3px; background:transparent; color:var(--pb-text); text-align:left; font-size:13px; }
 .disclosure-button .chevron { display:inline-block; color:var(--pb-text-2); font-size:18px; }
 .disclosure-button[aria-expanded="true"] .chevron { transform:rotate(180deg); }
+/* Same specificity as theme.css's .count-badge and .tag; this sheet loads last, so the */
+/* squarer, neutral variants below win in the popup. */
 .count-badge { margin-left:5px; padding:1px 6px; border-radius:5px; font-variant-numeric:tabular-nums; }
 .tags-container, .detected-words-list { display:flex; flex-wrap:wrap; gap:6px; margin:9px 0 6px; }
 .tag, .detected-word-row { border-radius:6px; background:var(--pb-bg); color:var(--pb-text); padding:4px 8px; font-size:12px; }
@@ -55,8 +63,12 @@ svg { width:16px; height:16px; flex:none; fill:none; stroke:currentColor; stroke
 .word-entry { display:flex; align-items:center; gap:7px; margin-top:10px; }
 .word-entry input { height:36px; }
 .word-entry .pb-btn { padding:7px 12px; }
+/* Orphaned: popup.js hides #detected-words-container when nothing matched instead of */
+/* rendering an empty-state row. */
 .detected-words-empty { color:var(--pb-text-2); font-size:12px; }
 .pb-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px; }
 .pb-actions .pb-btn { padding:10px 6px; font-size:12px; }
 @media (max-width:360px) { .pb-body { padding:13px; } .pb-header { padding-left:13px; padding-right:13px; } .preference-button { padding:10px 8px; } }
+/* 44px is the touch-target minimum. The tag drops its own padding on the right so the */
+/* enlarged remove button fills that side instead of floating inside it. */
 @media (pointer:coarse) { button, select { min-height:44px; } .tag-remove { min-width:44px; } .tag { padding:0 0 0 8px; } input { font-size:16px; } }

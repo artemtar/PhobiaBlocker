@@ -1,9 +1,14 @@
 #!/bin/bash
 
+# Unpacked development build for "Load unpacked" on chrome://extensions: the runtime
+# set with a relabelled manifest so the dev copy is told apart from the store install.
 set -euo pipefail
 
 echo "Building DEV version of PhobiaBlur..."
 
+# Checked first, before anything is deleted or created: without jq the manifest
+# rewrite below would truncate build/dev/manifest.json to an empty file and the build
+# would still report success.
 if ! command -v jq >/dev/null 2>&1; then
     echo "Error: jq is required to generate the dev manifest" >&2
     exit 1
@@ -19,6 +24,8 @@ BUILD_DIR="build/dev"
 echo "Building into: $BUILD_DIR"
 
 # Clean previous build
+# A fresh directory every time, so files removed from the runtime set do not linger in
+# the unpacked extension Chrome keeps loading.
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
@@ -38,6 +45,9 @@ PACKAGE_FILES=(
 cp -R "${PACKAGE_FILES[@]}" "$BUILD_DIR/"
 
 # Generate dev manifest from manifest.json
+# Only the labels change. version_name is what chrome://extensions displays when
+# present, so the -dev marker shows without touching the real version. jq reads the
+# source manifest, not the copy, so input and output never alias the same file.
 jq --arg ver "$DEV_VERSION" '
   .name = "PhobiaBlur DEV" |
   .version_name = $ver |

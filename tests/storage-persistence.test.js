@@ -1,3 +1,7 @@
+// Historical placeholder, not a release gate: a single assert.ok(true) that points
+// to a manual checklist (STORAGE_BUG_FIX.md) which is not tracked in this
+// repository. Launches no browser and touches no storage; the storage behaviour
+// itself is covered by the unit suites (settings-races, popup-initialization).
 /**
  * Storage Persistence Test Cases
  *

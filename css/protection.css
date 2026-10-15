@@ -1,7 +1,18 @@
+/* Injected at document_start into every frame (manifest.json). Everything here is the */
+/* state a page has before any script runs, so the defaults must be the fail-closed ones: */
+/* media blurred, backgrounds hidden, trigger words covered. Scripts only ever relax them. */
+/* Legacy name of the blur variable; shared-policy.js reads it as the fallback behind the */
+/* namespaced --phobiablocker-blurValueAmount. Both are overwritten inline on <html> by */
+/* early-blur.js and js.js once settings are known; nothing in this sheet reads it directly. */
 :root {
     --blurValueAmount: 40px;
 }
 
+/* The fail-closed blur, 40px literal rather than the variable: it must hold before the */
+/* settings read resolves and even if that read fails. Registered media get an inline */
+/* `filter ... !important` from VisualNode, which outranks this rule, so an unregistered */
+/* element is the only one that still shows this value. The disabled rules below never */
+/* cancel it; in DISABLED mode the controller writes `filter: none !important` per element. */
 :root :is(img, video, iframe) {
     filter: blur(40px) !important;
 }
@@ -11,31 +22,54 @@
  * Once the document is marked ready the page owns pointer events again, so
  * unregistered media can never be left permanently unclickable.
  */
+/* data-phobiablocker-frame is written by early-blur.js ("top" or "sub"); */
+/* data-phobiablocker-media marks elements the controller has registered. Iframes are */
+/* left out on purpose so embedded players and forms stay usable while blurred; */
+/* tests/unit/protection-css.test.js fails if an iframe rule ever disables pointer events. */
 :root[data-phobiablocker-frame="top"]:not(.phobia-disabled):not([data-phobiablocker-background-ready])
     :is(img, video):not([data-phobiablocker-media]) {
     pointer-events: none !important;
 }
 
+/* data-phobia-blur is set by VisualNode.blur() and restored on unblur. The pointer cursor */
+/* advertises the hover preview and the context-menu "Unblur". The transition is the only */
+/* declaration here without !important: a page's own transition rule may replace it, which */
+/* changes the easing but never whether the blur applies. */
 :root:not(.phobia-disabled) :is(img, video, iframe)[data-phobia-blur] {
     pointer-events: auto !important;
     cursor: pointer !important;
     transition: filter 0.2s ease;
 }
 
+/* CSS background images cannot be blurred until the controller has found them with a */
+/* getComputedStyle sweep, so until <html> is marked background-ready they are all hidden. */
+/* The three selectors cover the root, body and every descendant because `:root *` alone */
+/* would not reach <html> and <body> themselves. */
 :root:not([data-phobiablocker-background-ready]):not([data-phobiablocker-background-scanning]),
 :root:not([data-phobiablocker-background-ready]):not([data-phobiablocker-background-scanning]) body,
 :root:not([data-phobiablocker-background-ready]):not([data-phobiablocker-background-scanning]) body * {
     background-image: none !important;
 }
 
+/* The sweep needs the real computed backgrounds, so the rule above stops matching while */
+/* data-phobiablocker-background-scanning is set. Hiding the whole document for that instant */
+/* keeps an unblurred background from ever being painted. The controller sets the attribute */
+/* only inside the synchronous scan, so the page is never left transparent. */
 :root[data-phobiablocker-background-scanning] {
     opacity: 0 !important;
 }
 
+/* Stylesheet fallback for background nodes the controller marked blurred, in case the */
+/* inline filter is lost. Suppressed nodes are <html>, <body> and containers holding an */
+/* editing surface: a filter there would blur the whole page or the text being typed, so */
+/* VisualNode hides their background-image inline instead and this rule must skip them. */
 :root [data-phobiablocker-background][data-phobia-blur]:not([data-phobiablocker-suppressed-background]) {
     filter: blur(40px) !important;
 }
 
+/* DISABLED (extension off or site whitelisted) hands interaction back to the page. */
+/* Only cursor, pointer events and the transition are undone here; the blur itself is */
+/* countered per element by the controller, so a page is never revealed by this class alone. */
 :root.phobia-disabled :is(img, video, iframe),
 :root.phobia-disabled [data-phobiablocker-background] {
     pointer-events: auto !important;
@@ -43,8 +77,15 @@
     transition: none !important;
 }
 
+/* Trigger-word cover: the span page-text-index.js wraps a matched word in. Every property */
+/* is !important because it competes with the page's own text styling. The custom property */
+/* is set inline per cover to the text's computed colour so the bar reads as redaction; the */
+/* stripes stay visible on both light and dark text. js/js.js duplicates this block in */
+/* SHADOW_PROTECTION_CSS for shadow roots, which this document sheet cannot reach. */
 .phobia-word-cover {
     color: transparent !important;
+    /* Pages that paint gradient text set -webkit-text-fill-color, which overrides color for */
+    /* glyph painting; without this the word would show through the cover. */
     -webkit-text-fill-color: transparent !important;
     background-color: var(--phobiablocker-word-cover-color, currentColor) !important;
     background-image: repeating-linear-gradient(
@@ -55,10 +96,14 @@
         rgba(0, 0, 0, 0.16) 4px
     ) !important;
     border-radius: 2px !important;
+    /* Mid grey at half opacity stays visible on light and dark backgrounds alike. */
     outline: 1px solid rgba(127, 127, 127, 0.5) !important;
     outline-offset: 1px !important;
+    /* A page text-shadow would draw the glyph shapes in the shadow colour next to the bar. */
     text-shadow: none !important;
+    /* A cover that wraps onto a second line gets its own corners and outline per fragment. */
     box-decoration-break: clone !important;
     -webkit-box-decoration-break: clone !important;
+    /* Pairs with the title "Covered by PhobiaBlur" the cover carries. */
     cursor: help !important;
 }

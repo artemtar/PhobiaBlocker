@@ -1,5 +1,7 @@
 /* global nlp */
 
+// Offscreen document: the one NLP context every frame shares. It answers
+// PB_ANALYZE_SCOPES from the service worker and never talks to pages directly.
 (() => {
     'use strict'
 
@@ -9,6 +11,8 @@
     const { FAIL_CLOSED_RESULT, CLEAR_RESULT } = policy
     let debugMode = false
     const debug = policy.createDebugLogger('offscreen', () => debugMode)
+    // compromise normalize() options. Targets and page words go through the
+    // same set so inflections and surface noise fold onto one comparable form.
     const NORMALIZE_PARAMS = Object.freeze({
         whitespace: true,
         unicode: true,
@@ -19,9 +23,16 @@
         verbs: true,
     })
 
+    // Page words are normalized in groups of this size: one nlp() call over a
+    // whole vocabulary builds a large document, and a dropped token (see the
+    // fallback in analyzeWords) costs only a per-word re-run of its batch.
     const NORMALIZE_BATCH_SIZE = 256
+    // Anchored twin of the shared WORD_RE: it validates one whole token here
+    // rather than finding tokens inside text.
     const WORD_RE = /^[-\p{L}]+$/u
 
+    // Cached per distinct target list and rebuilt only when the key changes, so
+    // repeated requests from many frames skip the expansion work.
     let targetArtifacts = {
         key: '',
         literalTargetSet: new Set(),
@@ -33,10 +44,16 @@
         return [...new Set(
             words
                 .map((word) => typeof word === 'string' ? word.toLowerCase().trim() : '')
+                // Drop empty, two-character and non-letter tokens before they reach the sets:
+                // roughly validateTargetWord's three-letter floor (hyphens count here), so
+                // page noise that could never equal a valid target is not normalized.
                 .filter((word) => word.length > 2 && WORD_RE.test(word))
         )]
     }
 
+    // Generates the inflections of each target so that, whichever base form
+    // normalize() picks for a page word, some variant of the target lands on it
+    // too. Hyphenated targets are kept out by the caller and matched literally.
     function expandTargetWords(rawWords) {
         const expandedWords = []
         const safeWords = Array.isArray(rawWords) ? rawWords : []
@@ -74,6 +91,8 @@
         }
 
         const validatedTargets = policy.normalizeTargetWords(rawWords).valid
+        // The worker answers CLEAR itself for an empty list and never sends one,
+        // so no valid target here means a malformed request: fail closed.
         if (validatedTargets.length === 0) {
             throw new TypeError('Analysis requires at least one valid target word')
         }
@@ -85,6 +104,8 @@
         const expandedRawTargets = expandTargetWords(
             validatedTargets.filter(word => !word.includes('-'))
         )
+        // Targets take the same normalize() pass as page words, so the comparison
+        // happens in compromise's output form rather than in raw spelling.
         const normalizedWords = expandedRawTargets.length > 0
             ? normalizeWords(nlp(expandedRawTargets).normalize(NORMALIZE_PARAMS).out('array'))
             : []
@@ -100,6 +121,8 @@
     }
 
     function analyzeWords(words) {
+        // No prepared targets means the rebuild threw or never ran; never answer
+        // clear from an unprepared state.
         if (!Array.isArray(words) || targetArtifacts.literalTargetSet.size === 0) {
             return { ...FAIL_CLOSED_RESULT }
         }
@@ -110,6 +133,9 @@
         // Normalization can change the first letters (fell -> fall), so raw
         // prefixes cannot safely exclude a page word before NLP processes it.
         const normalizedPageWords = new Array(uniqueWords.length)
+        // If no target survived normalize() (all hyphenated, or tokens compromise drops
+        // such as kana-only words) there is nothing to compare normalized page words
+        // against, so the NLP pass is skipped and only the literal check below runs.
         if (targetArtifacts.normalizedTargetSet.size > 0) {
             // Bounded batches keep the NLP library's large-document work small.
             for (let start = 0; start < uniqueWords.length; start += NORMALIZE_BATCH_SIZE) {
@@ -124,6 +150,9 @@
                     }))
                 }
                 entries.forEach((entry, index) => {
+                    // A normalized form that is no longer one valid token (a space from a split
+                    // compound, an empty or tiny result) leaves undefined in its slot; Set.has
+                    // never matches undefined, so that page word can only match literally.
                     normalizedPageWords[start + index] = normalizeWords([entry.text])[0]
                 })
             }
@@ -132,10 +161,17 @@
         const matchedWords = new Set(
             normalizedPageWords.filter((word) => targetArtifacts.normalizedTargetSet.has(word))
         )
-        // Reuse the same normalization for the popup's original-word list.
+        // literalTargetSet holds every validated target as typed. The raw-token check
+        // is what catches targets normalize() cannot represent: hyphenated compounds
+        // (split into words) and tokens compromise drops outright, such as kana-only
+        // words. A Latin target spelled exactly as on the page matches here too.
         const hasLiteralMatch = uniqueWords.some(word => targetArtifacts.literalTargetSet.has(word))
         if (matchedWords.size === 0 && !hasLiteralMatch) return { ...CLEAR_RESULT }
 
+        // Map each match back to the page token it came from: getTriggeredWords in
+        // js.js counts matchedInputWords against the page's token index for the
+        // popup, while matchedWords are the normalized forms and only a display
+        // fallback. normalizedPageWords is reused so the mapping is index-exact.
         const matchedInputWords = new Set()
         uniqueWords.forEach((word, index) => {
             if (!targetArtifacts.normalizedTargetSet.has(normalizedPageWords[index])) {
@@ -164,6 +200,7 @@
 
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (!message || message.target !== 'offscreen' || message.type !== 'PB_ANALYZE_SCOPES') return
+        // This document reads no storage; the worker forwards its debug flag.
         debugMode = message.debugMode === true
         debug('message.received', () => ({ type: 'PB_ANALYZE_SCOPES' }))
 
@@ -185,6 +222,8 @@
             sendResponse({ results })
         } catch (error) {
             console.error('PhobiaBlocker: invalid scoped analysis request', error)
+            // Answer fail-closed for every scope the request named, so the
+            // worker's per-id check still sees a complete reply and each frame blurs.
             const scopes = Array.isArray(message.scopes) ? message.scopes : []
             sendResponse({
                 results: scopes

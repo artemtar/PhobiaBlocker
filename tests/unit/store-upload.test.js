@@ -1,3 +1,6 @@
+// Drives uploadToWebStore through its injectable fetch/sleep seam so the OAuth,
+// upload, status-poll and publish state machine runs without network or timers, and
+// checks loadRelease against real ZIPs built with the system zip tool.
 const assert = require('node:assert/strict')
 const { execFileSync } = require('node:child_process')
 const { createHash } = require('node:crypto')
@@ -8,6 +11,8 @@ const test = require('node:test')
 const { inspect } = require('node:util')
 const { loadRelease, uploadToWebStore } = require('../../scripts/upload-webstore.cjs')
 
+// 32 letters a-p is Chrome's extension ID alphabet; the publisher ID uses every
+// character class the script allows in the URL path.
 const extensionId = 'abcdefghijklmnopabcdefghijklmnop'
 const publisherId = 'test-publisher_123'
 const itemName = `publishers/${publisherId}/items/${extensionId}`
@@ -25,12 +30,19 @@ const config = {
     clientSecret: 'fake-client-secret',
     refreshToken: 'fake-refresh-token',
 }
+// Chrome Web Store API v2 response shapes: the synchronous upload answer carries
+// uploadState and crxVersion, fetchStatus carries lastAsyncUploadState, and publish
+// carries an ItemState. `name` is absent from the publish response.
 const token = { access_token: accessToken, token_type: 'Bearer', expires_in: 3600 }
 const uploaded = { itemId: extensionId, name: itemName, uploadState: 'SUCCEEDED', crxVersion: '1.2.3' }
 const uploading = { itemId: extensionId, name: itemName, uploadState: 'IN_PROGRESS' }
 const status = state => ({ itemId: extensionId, name: itemName, lastAsyncUploadState: state })
 const published = state => ({ itemId: extensionId, state })
 
+// A scripted fetch: responses are consumed in order, one per request, and a request
+// with nothing left to answer fails the test. That is how "no request after X" is
+// proven everywhere below. An Error entry is thrown as a network failure; a Response
+// is returned as is so status codes and non-JSON bodies can be modelled.
 function server(...responses) {
     const calls = []
     const sleeps = []
@@ -45,6 +57,9 @@ function server(...responses) {
                 if (response instanceof Error) throw response
                 return response instanceof Response ? response : Response.json(response)
             },
+            // Sleeps resolve at once and are only recorded. Three attempts keep the
+            // bounded-polling test short; 17 is an arbitrary marker the sleep
+            // assertions can recognise as the injected interval.
             sleep: async milliseconds => { sleeps.push(milliseconds) },
             pollAttempts: 3,
             pollIntervalMs: 17,
@@ -63,6 +78,8 @@ test('uploads the archive as an authenticated ZIP and leaves the item as a draft
     })
     assertRequests(fake, [tokenUrl, uploadUrl])
 
+    // Wrapping in Headers normalises header-name casing, so the assertions do not
+    // depend on how the script spells Content-Type or Authorization.
     const oauth = fake.calls[0].options
     assert.equal(oauth.method, 'POST')
     assert.match(new Headers(oauth.headers).get('content-type'), /^application\/x-www-form-urlencoded(?:;|$)/)
@@ -81,6 +98,9 @@ test('uploads the archive as an authenticated ZIP and leaves the item as a draft
     assert.deepEqual(upload.body, config.archive)
 })
 
+// The store may answer the upload with IN_PROGRESS and finish processing later;
+// the result then only appears through fetchStatus. Every recorded sleep must be the
+// injected interval, which shows no other timer path exists.
 test('waits for asynchronous upload success before submitting for review', async () => {
     const fake = server(token, uploading, status('IN_PROGRESS'), status('SUCCEEDED'), published('PENDING_REVIEW'))
     assert.deepEqual(await uploadToWebStore({ ...config, submitForReview: true }, fake.dependencies), {
@@ -111,6 +131,8 @@ test('reports each accepted publication result without claiming pending review i
     }
 })
 
+// UNRECOGNIZED_STATE stands for any enum value the API may add later: only the exact
+// SUCCEEDED string may lead to a publish call.
 test('never publishes after a failed or unrecognized upload result', async t => {
     for (const state of ['FAILED', 'NOT_FOUND', 'UPLOAD_STATE_UNSPECIFIED', 'UNRECOGNIZED_STATE']) {
         await t.test(state, async () => {
@@ -131,6 +153,8 @@ test('never publishes after asynchronous upload failure or an unrecognized statu
     }
 })
 
+// Three IN_PROGRESS answers exhaust pollAttempts = 3; a fourth status request would
+// trip the scripted server, so the request list itself is the bound.
 test('stops polling at the configured attempt limit without publishing', async () => {
     const fake = server(token, uploading, status('IN_PROGRESS'), status('IN_PROGRESS'), status('IN_PROGRESS'))
     await assert.rejects(uploadToWebStore({ ...config, submitForReview: true }, fake.dependencies))
@@ -144,6 +168,9 @@ test('rejects an uploaded version different from the archive version without pub
     assertRequests(fake, [tokenUrl, uploadUrl])
 })
 
+// A wrong itemId means a misconfigured publisher/extension pair or a response for
+// another listing; continuing could publish against it. Only itemId is spoofed in the
+// publication case because the publish response carries no `name`.
 test('rejects a different item identity returned by upload, polling, or publication', async t => {
     const wrongItem = 'pppppppppppppppppppppppppppppppp'
     const cases = [
@@ -175,6 +202,8 @@ test('rejects malformed API responses instead of treating them as success', asyn
         { name: 'missing OAuth access token', responses: [{}], urls: [tokenUrl] },
         { name: 'invalid upload JSON', responses: [token, new Response('not JSON')], urls: [tokenUrl, uploadUrl] },
         { name: 'missing upload state', responses: [token, { itemId: extensionId }], urls: [tokenUrl, uploadUrl] },
+        // A synchronous SUCCEEDED without crxVersion: the version equality check must
+        // fail on undefined rather than be skipped.
         { name: 'missing synchronous version', responses: [token, { ...uploading, uploadState: 'SUCCEEDED' }], urls: [tokenUrl, uploadUrl] },
         { name: 'missing async state', responses: [token, uploading, {}], urls: [tokenUrl, uploadUrl, statusUrl] },
         { name: 'missing publication state', responses: [token, uploaded, { itemId: extensionId }], urls: [tokenUrl, uploadUrl, publishUrl] },
@@ -188,6 +217,9 @@ test('rejects malformed API responses instead of treating them as success', asyn
     }
 })
 
+// The 403 body echoes every secret the script holds, as a misconfigured OAuth server
+// can. inspect() renders message, stack, cause and own properties, so a secret hidden
+// in any of them is caught; a correct implementation reports only the status code.
 test('rejects HTTP errors without leaking credentials echoed by the server', async t => {
     const secrets = [config.clientId, config.clientSecret, config.refreshToken, accessToken]
     const echoed = { error: { message: secrets.join(' ') } }
@@ -213,6 +245,8 @@ test('rejects HTTP errors without leaking credentials echoed by the server', asy
 test('does not expose credentials from network exceptions or malformed response values', async t => {
     const secrets = [config.clientId, config.clientSecret, config.refreshToken, accessToken]
     const echoed = secrets.join(' ')
+    // fetch implementations attach request details to error.cause; a JSON scalar body
+    // is the secret itself, so only the plain-object check keeps it out of the error.
     const cases = [
         { name: 'network exception and cause', response: new Error(echoed, { cause: new Error(echoed) }) },
         { name: 'JSON scalar', response: echoed },
@@ -231,11 +265,15 @@ test('does not expose credentials from network exceptions or malformed response 
     }
 })
 
+// server() is given no responses, so any request at all fails the test: validation
+// has to finish before the OAuth call.
 test('rejects missing credentials and invalid item inputs before any HTTP request', async t => {
     const cases = [
         { name: 'missing client ID', change: { clientId: '' }, error: /client.?id/i },
         { name: 'missing client secret', change: { clientSecret: undefined }, error: /client.?secret/i },
         { name: 'missing refresh token', change: { refreshToken: ' ' }, error: /refresh.?token/i },
+        // The publisher ID is interpolated into the URL path; unchecked, '../' would
+        // retarget the upload at another publisher's item.
         { name: 'publisher path injection', change: { publisherId: '../other/items' }, error: /publisher/i },
         { name: 'invalid extension ID', change: { extensionId: 'not-an-extension-id' }, error: /extension/i },
         { name: 'invalid version', change: { version: '1.2' }, error: /version/i },
@@ -250,6 +288,10 @@ test('rejects missing credentials and invalid item inputs before any HTTP reques
     }
 })
 
+// Models the artifact directory the upload job downloads: the ZIP plus release.json
+// with the version, archive name and SHA-256 that prepare-store-release.cjs writes.
+// `source` is kept apart from `directory` so the zip entries are bare file names, as
+// in the real archive, and so a test can re-zip a changed asset in place.
 function releaseFixture(t, manifestVersion = '1.2.3') {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'phobiablur-store-upload-'))
     t.after(() => fs.rmSync(root, { recursive: true, force: true }))
@@ -284,6 +326,8 @@ test('loadRelease returns the verified archive bytes and release version', t => 
     assert.deepEqual(result, { archive: fixture.archive, version: '1.2.3' })
 })
 
+// Re-zipping payload.txt yields a structurally valid archive with a readable manifest,
+// so only the digest comparison can notice the substitution.
 test('loadRelease rejects a valid ZIP changed after the release checksum was recorded', t => {
     const fixture = releaseFixture(t)
     fs.writeFileSync(path.join(fixture.source, 'payload.txt'), 'changed packaged asset contents')
@@ -296,6 +340,8 @@ test('loadRelease rejects a matching checksum when the manifest version differs'
     assert.throws(() => loadRelease(fixture.directory), /manifest.*version/i)
 })
 
+// The archive name is derived from the version rather than read from release.json, so
+// a '../' name fails the metadata check before any file outside the directory is read.
 test('loadRelease refuses metadata that points to a valid archive outside its directory', t => {
     const fixture = releaseFixture(t)
     fs.renameSync(fixture.archivePath, path.join(fixture.root, fixture.metadata.archive))
@@ -305,6 +351,9 @@ test('loadRelease refuses metadata that points to a valid archive outside its di
     assert.throws(() => loadRelease(fixture.directory), /archive.*metadata|metadata.*archive/i)
 })
 
+// The digest is recomputed over the damaged bytes, so release.json and the file agree
+// and only `unzip -t`'s CRC pass can reject it. Flipping one byte inside the stored
+// payload leaves the central directory and the manifest entry readable.
 test('loadRelease checks ZIP integrity even when the recorded checksum matches corrupted bytes', t => {
     const fixture = releaseFixture(t)
     const corrupted = Buffer.from(fixture.archive)

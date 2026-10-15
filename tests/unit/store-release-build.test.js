@@ -1,3 +1,6 @@
+// Runs scripts/prepare-store-release.cjs as a child process against a copy of the
+// real runtime set, and reads .github/workflows/chrome-web-store.yml to pin down the
+// supply-chain layout the packaging job relies on.
 const assert = require('node:assert/strict')
 const { spawnSync, execFileSync } = require('node:child_process')
 const { createHash } = require('node:crypto')
@@ -11,6 +14,10 @@ const script = path.join(repoRoot, 'scripts/prepare-store-release.cjs')
 const json = file => JSON.parse(fs.readFileSync(file, 'utf8'))
 const writeJson = (file, value) => fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`)
 
+// A throwaway checkout: the real runtime files plus pack.sh, with both version
+// records rewritten to a known value so assertions do not depend on the repo's
+// current version. No package-lock.json is copied; the script treats it as
+// optional and the one test that needs it writes its own.
 function fixture(t, version = '1.3.1') {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'phobiablur-store-release-'))
     t.after(() => fs.rmSync(cwd, { recursive: true, force: true }))
@@ -23,6 +30,8 @@ function fixture(t, version = '1.3.1') {
     return cwd
 }
 
+// Run the way the CI package job runs it: a separate Node process with the fixture
+// as cwd, and the version as an argv element that never passes through a shell.
 function run(cwd, ...args) {
     return spawnSync(process.execPath, [script, ...args], { cwd, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
 }
@@ -32,6 +41,8 @@ function assertFailed(result, pattern) {
     assert.match(result.stderr, pattern)
 }
 
+// upload-webstore.cjs requires this module for validateReleaseVersion, so loading it
+// must not run the CLI (guarded by require.main) or touch the working tree.
 test('release validation is safe to import and returns the original valid version', () => {
     const { validateReleaseVersion } = require('../../scripts/prepare-store-release.cjs')
     assert.equal(validateReleaseVersion('1.3.2'), '1.3.2')
@@ -40,6 +51,8 @@ test('release validation is safe to import and returns the original valid versio
 
 test('release build creates a verified runtime ZIP and synchronized version records', t => {
     const cwd = fixture(t)
+    // A minimal lockfileVersion 3 file: packages[''] is the root entry that must be
+    // bumped with manifest and package.json, while dependency entries keep their own.
     const lock = {
         name: 'phobiablur', version: '1.3.1', lockfileVersion: 3,
         packages: { '': { name: 'phobiablur', version: '1.3.1' }, 'node_modules/example': { version: '9.8.7' } }
@@ -67,6 +80,8 @@ test('release build creates a verified runtime ZIP and synchronized version reco
     assert.equal(updatedLock.version, '1.3.2')
     assert.equal(updatedLock.packages[''].version, '1.3.2')
     assert.equal(updatedLock.packages['node_modules/example'].version, '9.8.7')
+    // release.json is the contract the upload job trusts without rebuilding; the
+    // digest must be of the final archive bytes.
     assert.deepEqual(json(path.join(output, 'release.json')), {
         version: '1.3.2',
         archive: 'phobiablur-v1.3.2.zip',
@@ -78,12 +93,18 @@ test('release version validation rejects malformed and out-of-range inputs witho
     const cwd = fixture(t)
     const originalManifest = fs.readFileSync(path.join(cwd, 'manifest.json'), 'utf8')
     const originalPackage = fs.readFileSync(path.join(cwd, 'package.json'), 'utf8')
+    // One input per rule: component count (npm needs exactly three), leading zeroes,
+    // Chrome's 65535 ceiling, all-zero, prefix/suffix text, trailing whitespace and a
+    // shell metacharacter payload.
     for (const version of ['1', '1.3', '1.3.2.0', '01.3.2', '1.03.2', '1.3.02', '65536.0.0', '1.65536.0', '1.0.65536', '0.0.0', 'v1.3.2', '1.3.2-beta', '1.3.2\n', '1.3.2; touch injected']) {
         assertFailed(run(cwd, version), /version/i)
     }
     assert.equal(fs.readFileSync(path.join(cwd, 'manifest.json'), 'utf8'), originalManifest)
     assert.equal(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8'), originalPackage)
+    // The `touch` payload could only have run if some step handed the version to a shell.
     assert.ok(!fs.existsSync(path.join(cwd, 'injected')))
+    // release.json is the only thing the upload job reads, so its absence is the proof
+    // that a failed run left nothing to upload. Later tests repeat this check.
     assert.ok(!fs.existsSync(path.join(cwd, 'build/store-release/release.json')))
 })
 
@@ -95,6 +116,8 @@ test('release CLI requires exactly one explicit version', t => {
 
 test('release build rejects equal or older versions using numeric component ordering', t => {
     const cwd = fixture(t, '1.10.0')
+    // '1.9.65535' sorts after '1.10.0' as a string; only per-component numeric
+    // comparison recognises it as older.
     for (const version of ['1.10.0', '1.9.65535', '0.65535.65535']) {
         assertFailed(run(cwd, version), /greater|newer/i)
     }
@@ -103,6 +126,8 @@ test('release build rejects equal or older versions using numeric component orde
 
 test('release build compares missing source version components as zero', t => {
     const cwd = fixture(t, '1.3')
+    // The source record is only held to Chrome's grammar (1 to 4 components); the
+    // strict X.Y.Z rule applies to the release version alone. 1.3 equals 1.3.0.
     assertFailed(run(cwd, '1.3.0'), /greater|newer/i)
     const result = run(cwd, '1.3.1')
     assert.equal(result.status, 0, result.stderr)
@@ -126,6 +151,10 @@ test('release build rejects inconsistent source version records before changing 
 
 test('release build refuses a missing manifest-referenced runtime file and emits no success metadata', t => {
     const cwd = fixture(t)
+    // editor-frames.js sits in a directory pack.sh zips whole, so the archive would
+    // still be structurally valid without it; only the per-file derivation from the
+    // manifest catches the gap. The pre-existing output models a previous successful
+    // run on the same runner, which must not survive as a stale success.
     fs.unlinkSync(path.join(cwd, 'js/editor-frames.js'))
     const output = path.join(cwd, 'build/store-release')
     fs.mkdirSync(output, { recursive: true })
@@ -139,6 +168,8 @@ test('release build refuses a missing manifest-referenced runtime file and emits
 
 test('release build refuses missing HTML dependencies even when their asset directory exists', t => {
     const cwd = fixture(t)
+    // settings-ui.js is referenced only by <script src> in the HTML pages, not by the
+    // manifest, so this exercises the page-asset derivation specifically.
     fs.unlinkSync(path.join(cwd, 'js/settings-ui.js'))
     assertFailed(run(cwd, '1.3.2'), /js\/settings-ui\.js/)
     assert.ok(!fs.existsSync(path.join(cwd, 'build/store-release/release.json')))
@@ -165,18 +196,23 @@ function releaseWorkflowJobs() {
     return jobs
 }
 
+// Jobs are identified by the command they run rather than by name, so renaming a
+// job cannot silently drop it out of these checks.
 function jobRunning(jobs, command) {
     const matches = [...jobs].filter(([, lines]) => lines.some(line => line.includes(command)))
     assert.equal(matches.length, 1, `exactly one job must run ${command}`)
     return matches[0]
 }
 
+// Accepts both `needs: validate` and `needs: [validate, package]`.
 function jobNeeds(lines) {
     const needs = lines.map(line => line.match(/^\s+needs:\s*(.+?)\s*$/)).find(Boolean)
     if (!needs) return []
     return needs[1].replace(/^\[|\]$/g, '').split(',').map(name => name.trim()).filter(Boolean)
 }
 
+// A dev dependency executing in the same checkout could rewrite the files pack.sh
+// zips, and the recorded checksum would then vouch for the tampered bytes.
 test('the release ZIP is packaged in a job that never installs or runs npm packages', () => {
     const jobs = releaseWorkflowJobs()
     const [, packageLines] = jobRunning(jobs, 'prepare-store-release.cjs')
@@ -186,6 +222,8 @@ test('the release ZIP is packaged in a job that never installs or runs npm packa
     assert.deepEqual(thirdPartyCode, [], 'the packaging job must build from the pristine checkout with Node built-ins only')
 })
 
+// `needs` is what keeps the publisher credentials out of reach until lint and the unit
+// suite have passed in a checkout the packaging job never shares.
 test('the upload job is gated by both the validation job and the packaging job', () => {
     const jobs = releaseWorkflowJobs()
     const [packageJob] = jobRunning(jobs, 'prepare-store-release.cjs')
@@ -208,12 +246,17 @@ test('every action the release workflow uses is pinned to a full commit SHA with
 
     const unpinned = usesLines.filter(line => !PINNED_ACTION.test(line)).map(line => line.trim())
 
+    // The count floor keeps the check from passing vacuously if `uses:` lines were
+    // reformatted so that the filter above matched nothing.
     assert.ok(usesLines.length >= 3, 'the workflow must use checkout, artifact upload and download actions')
     assert.deepEqual(unpinned, [], 'every uses: line must be `owner/repo@<40-hex-sha> # vX.Y.Z`')
 })
 
 const PUBLIC_REGISTRY = 'https://registry.npmjs.org/'
 
+// `npm ci` refuses a missing or out-of-sync lockfile, so drift here fails the validate
+// job at install time. The registry check exists because the quarantined Puppeteer
+// suite's own lockfile resolves from an internal mirror a public runner cannot reach.
 test('the validation job installs the committed lockfile, which resolves every package from the public registry', () => {
     const jobs = releaseWorkflowJobs()
     const [, validateLines] = jobRunning(jobs, 'npm run lint')
@@ -236,6 +279,9 @@ test('the validation job installs the committed lockfile, which resolves every p
 
 test('a failed pack command restores source versions and never retains a stale archive', t => {
     const cwd = fixture(t)
+    // The stub fails after the script has already rewritten the version records, so
+    // this is the catch-block rollback. The ZIP in the repo root stands for a leftover
+    // from an earlier run that must not be mistaken for this run's output.
     fs.writeFileSync(path.join(cwd, 'pack.sh'), '#!/bin/bash\nexit 8\n')
     fs.writeFileSync(path.join(cwd, 'phobiablur-v1.3.2.zip'), 'stale archive')
     assertFailed(run(cwd, '1.3.2'), /pack|failed/i)

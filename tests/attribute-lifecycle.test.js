@@ -1,3 +1,8 @@
+// Historical Puppeteer suite, not a release gate: root `npm test` fails on purpose and the
+// unit suite under tests/unit/ is the gate (see tests/README.md). Several cases below model
+// behaviour the extension no longer has: per-section ("scope") verdicts, data-phobia-container,
+// the #phobiablocker-early-blur style, the targetWordsChanged and wordCoverSettingsChanged
+// messages, and names such as DEFAULT_BLUR_SLIDER_VALUE and BgImageNode from that version.
 /**
  * Attribute Lifecycle Test Cases
  *
@@ -39,6 +44,8 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
         browser = await launchBrowserWithExtension()
         await clearExtensionStorage(browser)
         await setExtensionEnabled(browser, true)
+        // 60 is computeBlurPixels(60), about 14.94px on the current curve; the suite only
+        // needs a clearly non-zero radius so computed-filter reads can tell blur from none.
         await setBlurAmount(browser, 60)
         page = await browser.newPage()
         page.setDefaultTimeout(5000)
@@ -49,6 +56,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
     })
 
     describe('data-phobia-blur attribute set on detection', () => {
+        // data-phobia-blur is the marker protection.css keys pointer-events, cursor and the
+        // filter transition on. VisualNode.blur() sets it together with .phobia-blur and
+        // unblur() restores whatever the page had, so the two must always move together.
         it('detected image should have data-phobia-blur attribute set after analysis', async () => {
             await setPhobiaWords(browser, ['spider'])
 
@@ -73,7 +83,8 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
         })
 
         it('non-detected image should NOT have data-phobia-blur attribute', async () => {
-            // Use a word not present in the image's local scope so the sibling scope stays clean.
+            // Use a word that appears nowhere on the page. The verdict is page-wide, so a match
+            // anywhere would blur #safe-image too; only a clear page leaves it phobia-noblur.
             await setPhobiaWords(browser, ['butterfly'])
 
             await loadTestPage(page, 'simple-image.html')
@@ -97,6 +108,10 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
         })
     })
 
+    // Models a per-section verdict that no longer exists: analysis is page-wide and
+    // applyPageResult applies one verdict to every registered node. With 'spider' in
+    // #spider-scope, #safe-image blurs as well, and injecting 'butterfly' into #safe-scope
+    // blurs #spider-image too, so both cases fail on the current code.
     describe('Scope-aware matching', () => {
         it('matching text in one scope should not blur a clean sibling scope', async () => {
             await setPhobiaWords(browser, ['spider'])
@@ -159,6 +174,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
     })
 
     describe('data-phobia-blur attribute removed on unblur', () => {
+        // unblurAll records an explicit reveal for every registered node (rememberExplicitReveal),
+        // which is why phobia-permanent-unblur appears next to phobia-noblur: a later automatic
+        // verdict leaves explicitly revealed media alone instead of re-blurring it.
         it('data-phobia-blur should be removed after unblurAll', async () => {
             await setPhobiaWords(browser, ['spider'])
 
@@ -189,6 +207,8 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             assert.ok(after.hasPermanentUnblur, 'phobia-permanent-unblur class must be added after unblurAll')
         })
 
+        // data-phobia-container is not written by the current code (VisualNode marks only the
+        // media element itself), so this query is always empty and the case passes vacuously.
         it('data-phobia-container should be removed from container when all images unblurred', async () => {
             await setPhobiaWords(browser, ['spider'])
 
@@ -208,6 +228,10 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
     })
 
     describe('No premature .blur class before analysis (flash prevention)', () => {
+        // Models an older build that injected a <style id="phobiablocker-early-blur"> from
+        // script. Today protection.css arrives through the manifest "css" entry and
+        // early-blur.js writes only root attributes and CSS variables, so the observer below
+        // never sees such an element and this case fails on the current code.
         it('CSS flash prevention: #phobiablocker-early-blur style is injected on page load', async () => {
             await setPhobiaWords(browser, ['spider'])
 
@@ -333,6 +357,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                 'dynamically added image with spider text should have .blur class')
         })
 
+        // The page's own "Add Spider Content" button label is indexed text (buttons are not in
+        // EXCLUDED_SELECTOR), so with 'spider' as the target the page-wide verdict is already
+        // blur before the click and .dynamic-safe never reaches phobia-noblur on current code.
         it('dynamically added safe image should get .noblur and no data-phobia-blur', async () => {
             await setPhobiaWords(browser, ['spider'])
 
@@ -363,13 +390,16 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
     })
 
     describe('src attribute mutation re-blur', () => {
-        // When a site sets a new src on an already-analyzed element (e.g. YouTube preview
-        // hover or lazy-load), the extension must re-blur immediately and re-analyze.
-        // The observer watches attributeFilter: ['src'] to catch this.
+        // When a site sets a new src on an already-judged element (e.g. YouTube preview
+        // hover or lazy-load), the current verdict is re-applied to it at once; only a text
+        // change triggers a new analysis. src is one of the observed attributes and the
+        // element's load/loadstart events re-apply as well; an explicit reveal is dropped
+        // once the element's fingerprint no longer matches the one recorded at reveal time.
 
         it('changing src on a phobia-noblur image re-blurs it when text is injected into the same scope', async () => {
-            // Use a phobia word not present in the safe scope so it starts phobia-noblur.
-            // Then inject that word into the safe scope and change src together.
+            // Use a word that appears nowhere on the page so every image starts phobia-noblur.
+            // Then inject that word and change src in the same task: the text change drives the
+            // re-analysis, the src change alone would only re-apply the existing clear verdict.
             await setPhobiaWords(browser, ['butterfly'])
 
             await loadTestPage(page, 'simple-image.html')
@@ -430,6 +460,8 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                 img.src = 'https://via.placeholder.com/300x200/11aa11/ffffff?text=Safe+Reloaded'
             })
 
+            // Nothing to wait for by class: the expectation is that nothing changes, so give
+            // the 200 ms analysis debounce and the image's load events ample time to run first.
             await wait(2000)
 
             const after = await page.evaluate(() => {
@@ -465,7 +497,7 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                 img.src = 'https://via.placeholder.com/300x200/880000/ffffff?text=Spider2'
             })
 
-            // Allow the src-triggered re-analysis to settle.
+            // Allow the src attribute record and the image's load events to re-apply the verdict.
             await wait(2000)
 
             const after = await page.evaluate(() => {
@@ -481,6 +513,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
         })
     })
 
+    // Media other than <img> reach the registry by different routes: background images via
+    // the computed-style scan, <video> and <iframe> as elements. Each must pick up a later
+    // blur verdict the same way an <img> does.
     describe('safe-to-matched re-blur for non-img media', () => {
         it('background-image span should be discovered and re-blur when local scope text starts matching', async () => {
             await setPhobiaWords(browser, ['butterfly'])
@@ -499,6 +534,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                 document.querySelector('#safe-scope').appendChild(span)
             })
 
+            // Registration is proven first: a background node is born blurred and only the
+            // committed clear verdict moves it to noblur, so reaching this class also shows the
+            // inline background-image was discovered by the mutation-triggered scan.
             await waitForPhobiaNoblur(page, '#safe-span-bg')
 
             await page.evaluate(() => {
@@ -526,6 +564,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             await setPhobiaWords(browser, ['butterfly'])
 
             await loadTestPage(page, 'video-iframe.html')
+            // 'butterfly' is not on video-iframe.html; waiting on #cat-image confirms the clear
+            // verdict was committed before the video is added, so its later blur can only come
+            // from the injected text.
             await waitForPhobiaNoblur(page, '#cat-image')
 
             await page.evaluate(() => {
@@ -566,6 +607,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             await setPhobiaWords(browser, ['butterfly'])
 
             await loadTestPage(page, 'cross-origin-iframe.html')
+            // src="about:blank" inherits the parent origin, so isCrossOriginIframe is false and
+            // the page verdict alone releases it without the cross-origin frame protocol; the
+            // case is about the iframe kind taking a later blur verdict, not about frames.
             await waitForPhobiaNoblur(page, '#same-origin-iframe')
 
             await page.evaluate(() => {
@@ -592,11 +636,17 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
         })
     })
 
+    // "BgImageNode" is the former name of what is now a VisualNode of kind 'background'.
+    // Background nodes blur through an inline filter rather than the img/video/iframe
+    // stylesheet rule, so the reveal paths are checked on them separately.
     describe('unblurAll covers BgImageNode (background-image div) elements', () => {
         it('BgImageNode div should have phobia-blur class after detection', async () => {
             await setPhobiaWords(browser, ['snake'])
 
             await loadTestPage(page, 'simple-image.html')
+            // Computed filter values are read below. In a background tab the 0.2 s filter
+            // transition does not advance (the storage helpers open and close extension
+            // pages, which can front another tab), so the page is fronted before measuring.
             await page.bringToFront()
             await waitForPhobiaBlur(page, '#bg-image-snake')
 
@@ -656,6 +706,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                 `BgImageNode should be visually unblurred after unblurAll (got ${after.filterPx}px)`)
         })
 
+        // Explicit reveals are per element (a WeakMap keyed by the node), never page-wide: a
+        // video that did not exist at unblurAll time is born blurred and takes the standing
+        // blur verdict. This is the fail-closed half of "unblur all".
         it('new video added after unblurAll should still blur when page text matches', async () => {
             await setPhobiaWords(browser, ['spider'])
 
@@ -693,6 +746,10 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
         })
     })
 
+    // The content script records the contextmenu target and point in a capture listener; the
+    // later "unblur" message from the service worker resolves the media by hit-testing the
+    // registered nodes at that point (smallest first) and only then by walking the target's
+    // ancestors through the registry. A covered word under the target wins over media.
     describe('right-click unblur (context menu)', () => {
         it('unblur message on a phobia-blur img removes class, attribute, inline filter and adds permanent-unblur', async () => {
             await setPhobiaWords(browser, ['spider'])
@@ -712,7 +769,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             assert.ok(before.hasBlur, '#spider-image should have phobia-blur before right-click unblur')
             assert.ok(before.hasDataAttr, '#spider-image should have data-phobia-blur before right-click unblur')
 
-            // Simulate contextmenu on the blurred image (pointer-events: auto on .phobia-blur)
+            // Simulate contextmenu on the blurred image (protection.css sets pointer-events:
+            // auto on [data-phobia-blur]). Without clientX/clientY the point hit test finds
+            // nothing at (0,0), so resolution falls back to the recorded event target.
             await page.evaluate(() => {
                 const img = document.querySelector('#spider-image')
                 if (img) img.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
@@ -751,12 +810,11 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             await page.bringToFront()
             await waitForPhobiaBlur(page, '#spider-image')
 
-            // Remove phobia-blur (and noblur/permanent) to simulate a CSS-only-blurred image
-            // (pre-analysis state, or an element not yet processed by the extension).
-            // Also remove data-phobia-blur so pointer-events:none applies (no data attr rule).
-            // The image is still visually blurred by: img:not(.phobia-noblur):not(.phobia-permanent-unblur)
-            // Contextmenu fires on the image — the last-resort code in the unblur handler
-            // walks ancestors looking for any img:not(.phobia-noblur):not(.phobia-permanent-unblur).
+            // Models a right-click on media the extension has not classified. Stripping the
+            // classes does not reveal it: VisualNode's inline filter and the stylesheet's
+            // unconditional 40px rule stay, and the observed class record makes VisualNode
+            // repair its projection. The handler resolves media through the registry (point
+            // hit test, then the ancestor walk), never by class selector.
             await page.evaluate(() => {
                 const img = document.querySelector('#spider-image')
                 if (img) {
@@ -791,6 +849,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                 `image should be visually unblurred after last-resort unblur (got ${after.filterPx}px)`)
         })
 
+        // Models feed cards where a full-size overlay button receives the right-click: the
+        // event target has no media above it, so only the recorded point can identify the
+        // poster underneath (the smallest registered node containing the point).
         it('overlay right-click unblur should unblur the background poster underneath', async () => {
             await setPhobiaWords(browser, ['spider'])
 
@@ -857,6 +918,8 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                 `background poster should be visually unblurred after overlay unblur (got ${after.posterFilterPx}px)`)
         })
 
+        // Overlays are often re-rendered between the right-click and the menu command. The
+        // point was captured at contextmenu time, so a target detached since must not matter.
         it('overlay right-click unblur should still work if the overlay node is replaced before the message', async () => {
             await setPhobiaWords(browser, ['spider'])
 
@@ -968,6 +1031,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
         })
     })
 
+    // The current handler answers from the committed verdict: words are hidden only in
+    // DISABLED mode or when shouldBlur is false, and counts come from the text index. Three
+    // cases below still expect the rendered state to matter and fail on the current code.
     describe('getTriggeredWords message', () => {
         it('returns detected words with counts when images are blurred', async () => {
             await setBlurAmount(browser, 60)
@@ -985,6 +1051,8 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             assert.ok(spiderEntry.count >= 1, `spider count should be >= 1, got ${spiderEntry.count}`)
         })
 
+        // Models an older handler that read the rendered blur radius. The current one ignores
+        // CSS variables, so with a blur verdict it still returns 'spider'.
         it('returns empty when blur amount is set to 0', async () => {
             await setPhobiaWords(browser, ['spider'])
             await setBlurAmount(browser, 0)
@@ -1008,6 +1076,8 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             await setBlurAmount(browser, 60)
         })
 
+        // unblurAll reveals media and covers but does not touch _pageAnalysisResult, so the
+        // current handler keeps reporting the detected words after the reveal.
         it('returns empty after unblurAll (elements no longer have phobia-blur)', async () => {
             await setBlurAmount(browser, 60)
             await setPhobiaWords(browser, ['spider'])
@@ -1028,6 +1098,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                 'getTriggeredWords should return empty array after unblurAll (no phobia-blur elements remain)')
         })
 
+        // Adding the class by hand does not change controller.mode, which is what the current
+        // handler checks; the DISABLED path needs a real settings change (phobiaBlockerEnabled
+        // false or a whitelist rule), so the words are still returned here.
         it('returns empty when extension is disabled on the page', async () => {
             await setBlurAmount(browser, 60)
             await setPhobiaWords(browser, ['spider'])
@@ -1061,6 +1134,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             )
         }
 
+        // getAnalysisDebugState is answered only by the top frame (hence frameId 0). The
+        // counters are the ANALYSIS_DEBUG_STATE diagnostics in js.js; nothing in the extension
+        // reads them to make a decision, so exact equality assertions on them are safe.
         const queryAnalysisDebugState = async () => {
             const swTarget = await getExtensionServiceWorker(browser)
             const swWorker = await swTarget.worker()
@@ -1117,6 +1193,8 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             assert.fail(`page analysis did not reach ${minimumRequests} requests`)
         }
 
+        // Form controls are in EXCLUDED_SELECTOR and contenteditable text is skipped by
+        // isEditableElement: a cover span inside an editor would break the caret and typing.
         it('covers exact and smart-variant target words on text-only pages', async () => {
             await setPhobiaWords(browser, ['spider'])
 
@@ -1143,6 +1221,8 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             assert.strictEqual(state.inputWrapperCount, 0, 'form/editor text should not be wrapped')
         })
 
+        // Models IMDb card markup where the whole text node is the trigger word, sitting
+        // under an overlay link; the cover must wrap it even with no surrounding text.
         it('covers a single-word IMDb-style card title', async () => {
             await setPhobiaWords(browser, ['short'])
 
@@ -1165,6 +1245,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                 `IMDb-style title should be covered, got ${state.titleHtml}`)
         })
 
+        // The content script has no targetWordsChanged handler; setPhobiaWords writes storage
+        // and chrome.storage.onChanged already re-reads the settings and re-covers, so the
+        // message is a no-op and the case passes through the storage path alone.
         it('re-covers words after targetWordsChanged while blur-always mode is active', async () => {
             await setBlurAlwaysOn(browser, true)
 
@@ -1198,6 +1281,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             }
         })
 
+        // The rAF probe counts rendered frames in which the trigger word was readable. The
+        // early-blur shim covers words from document_start and the controller re-covers in the
+        // same synchronous turn as the hand-off, so zero readable frames is the invariant.
         it('covers target words before the first visible animation frame', async () => {
             await setPhobiaWords(browser, ['spider'])
 
@@ -1215,6 +1301,8 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                         }
                     }
 
+                    // Stop after about 60 frames (roughly a second) so a page that never
+                    // covers the word does not keep the probe alive forever.
                     if (window.__phobiaWordCoverFrames === 0 && window.__phobiaWordVisibleFrames < 60) {
                         requestAnimationFrame(check)
                     }
@@ -1237,6 +1325,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             await page.evaluateOnNewDocument(() => {
                 window.__phobiaSafeWordBlurredFrames = 0
 
+                // '0px 0px 7px' is the text-shadow signature of the pending-text mask these
+                // probes were written to catch; the current build never masks text, it only
+                // covers matched words, so any hit here means safe text was obscured.
                 const isCssBlurred = (element) => {
                     if (!element) return false
                     const style = window.getComputedStyle(element)
@@ -1300,6 +1391,7 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                     if (textShadow.includes('blur') || textShadow.includes('0px 0px 7px')) frames.textShadow += 1
                     if (style.webkitTextFillColor === 'rgba(0, 0, 0, 0)') frames.textFill += 1
                     if (dynamicText.querySelectorAll('.phobia-word-cover').length > 0) frames.covers += 1
+                    // 1.5 s covers the 200 ms mutation debounce plus the offscreen round trip.
                     if (performance.now() - startedAt < 1500) requestAnimationFrame(check)
                     else resolve(frames)
                 }
@@ -1316,6 +1408,10 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                 'safe dynamic text should not be covered before analysis marks it as a target word')
         })
 
+        // word-cover.html's inline script inserts a trigger word while the parser is still
+        // running and records, from its own MutationObserver, whether it was already covered.
+        // Observers are notified in creation order, so the document_start shim's observer
+        // covers the word before the page's observer looks; this checks the shim, not js.js.
         it('covers parser-inserted target words during the early mutation pass', async () => {
             await setPhobiaWords(browser, ['spider'])
 
@@ -1365,6 +1461,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                 'custom target word should not be visible for a rendered frame before being covered')
         })
 
+        // Only the keys the suite needs are written; targetWords is left unset so the content
+        // script must fall back to DEFAULTS.targetWords ('clown', 'mice', 'spider') through
+        // Storage.getWithDefaults rather than treating a missing list as empty.
         it('uses default target words when storage has not populated targetWords yet', async () => {
             await clearExtensionStorage(browser)
             const swTarget = await getExtensionServiceWorker(browser)
@@ -1389,6 +1488,8 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                 'default target word "spider" should be active without opening the popup first')
         })
 
+        // Covers have no hover preview on purpose: protection.css styles .phobia-word-cover
+        // with !important and no :hover variant, so a pointer over a word changes nothing.
         it('hover does not reveal a covered word', async () => {
             await setPhobiaWords(browser, ['spider'])
 
@@ -1673,6 +1774,8 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                         target: 'background',
                         type: 'toggleWordCover'
                     }, (response) => {
+                        // Reading lastError marks it checked so Chrome does not log an
+                        // unchecked-error warning if the worker drops the response.
                         void chrome.runtime.lastError
                         resolve(response)
                     })
@@ -1709,6 +1812,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             assert.ok(coverCount > 0, 'toggle command should re-cover words when enabling')
         })
 
+        // Synthetic CDP key events reach the page but not Chrome's commands API, so this
+        // exercises the content script's own keydown listener (which forwards toggleWordCover
+        // to the service worker), not the manifest command binding.
         it('Alt+Shift+W toggles word covers off when the page has focus', async () => {
             await setPhobiaWords(browser, ['spider'])
 
@@ -1741,6 +1847,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             await waitForWordCovers(1)
         })
 
+        // The content script has no wordCoverSettingsChanged handler and storage is not
+        // written here, so the covers stay and this case fails on the current code. The live
+        // path is a storage change (popup, settings page or the toggle command).
         it('word cover toggle off unwraps covered words', async () => {
             await setPhobiaWords(browser, ['spider'])
 
@@ -1762,6 +1871,10 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             assert.ok(state.text.includes('spider'), 'original text should remain readable')
         })
 
+        // revealAll deactivates the WordCoverManager so the text index cannot re-cover text
+        // the user chose to reveal, which is why the newly added 'spider' stays plain. blurAll
+        // never calls configure() (only enableProtection does, via applyProtectionMode), so
+        // the re-cover expected at the end does not happen on the current code.
         it('unblurAll reveals all covered words and blurAll covers them again', async () => {
             await setPhobiaWords(browser, ['spider'])
 
@@ -1793,6 +1906,8 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             assert.ok(coverCount > 0, 'blurAll should re-cover target words after unblurAll')
         })
 
+        // revealContextWord marks only the clicked wrapper: it swaps .phobia-word-cover for
+        // .phobia-word-permanent-uncover on that span, and the second occurrence stays covered.
         it('right-click unblur reveals only the clicked covered word occurrence', async () => {
             await setPhobiaWords(browser, ['spider'])
 
@@ -1839,7 +1954,9 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
 
             await loadTestPage(page, 'simple-image.html')
             await page.bringToFront()
-            // 'butterfly' matches nothing → wait for noblur (2s unveil timer) to confirm analysis done
+            // 'butterfly' matches nothing → wait for noblur, which only appears once the clear
+            // verdict is committed (postponed up to MAX_DEFERRED_CLEAR_VERDICTS times while the
+            // page is still producing text), so analysis is known to be done.
             await waitForPhobiaNoblur(page, '#spider-image')
 
             // Verify images are unblurred (no phobia match)
@@ -1850,7 +1967,7 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
             })
             assert.strictEqual(blurBefore, 0, 'image should be unblurred before blurAll (no phobia match)')
 
-            // Send blurAll (same as Ctrl+Alt+B hotkey)
+            // Send blurAll (same as the Alt+Shift+B command)
             await sendMessageViaServiceWorker(browser, { type: 'blurAll' })
             await wait(300)
 
@@ -1860,11 +1977,16 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
                 return m ? parseFloat(m[1]) : 0
             })
 
+            // With nothing stored, DEFAULTS.blurValueAmount (50) gives computeBlurPixels(50),
+            // about 9.05px on the current curve.
             // blurAll should produce a non-zero blur regardless of whether blurValueAmount is in storage
             assert.ok(blurAfter > 0,
                 `blurAll should apply a non-zero blur amount even without stored blurValueAmount, got ${blurAfter}px`)
         })
 
+        // blurAll sets _manualBlurAllActive and _applyResultToNode blurs while that flag is set
+        // regardless of the verdict. The 3.5 s wait outlasts the debounce and the deferred-clear
+        // retries, so a clear verdict has had every chance to be applied and was refused.
         it('blurAll should stay blurred when later clean-page analysis finishes', async () => {
             await clearExtensionStorage(browser)
             await setExtensionEnabled(browser, true)
@@ -1935,6 +2057,8 @@ describe('PhobiaBlocker - Attribute Lifecycle', () => {
 
             assert.ok(analysisBluePx > 0, 'analysis blur should be non-zero')
             assert.ok(hotkeyBlurPx > 0, 'hotkey blur should be non-zero')
+            // Both values come from controller.blurFilter and should be identical; the
+            // tolerance only absorbs CSSOM serialisation rounding.
             assert.ok(
                 Math.abs(analysisBluePx - hotkeyBlurPx) < 1,
                 `blurAll (${hotkeyBlurPx}px) and analysis blur (${analysisBluePx}px) should match for the same slider value`

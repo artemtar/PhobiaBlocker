@@ -1,3 +1,5 @@
+// computeBlurPixels maps the 0-100 slider onto blur pixels with the 1.3.1 curve
+// 101^(v/100) - 1: about 2px at 25, 9px at 50, 32px at 75 and exactly 100px at 100.
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
@@ -23,6 +25,7 @@ test('each slider step increases blur without discontinuities or invalid CSS val
     for (let value = 1; value <= 100; value++) {
         const pixels = computeBlurPixels(value)
         assert.ok(Number.isFinite(pixels) && pixels > previous, `invalid step at ${value}`)
+        // The steepest step is the last one, about 4.5px from 99 to 100.
         assert.ok(pixels - previous < 5, `abrupt step at ${value}`)
         previous = pixels
     }
@@ -33,10 +36,14 @@ test('blur computation bounds saved out-of-range values and defaults invalid inp
     assert.equal(computeBlurPixels(150), 100)
     for (const value of [undefined, null, '50', NaN, Infinity, -Infinity]) {
         const pixels = computeBlurPixels(value)
+        // Anything non-finite falls back to the default slider value 50, about 9px.
         assert.ok(pixels >= 8 && pixels <= 10, `${String(value)} produced ${pixels}px`)
     }
 })
 
+// setSettings re-styles registered media without a new policy application. The
+// hover preview must restore the strength current at that time, not the one the
+// node was first blurred with.
 test('existing media updates to the gentler strength immediately and restores it after preview', async () => {
     const env = createContentHarness()
     const image = env.image()
